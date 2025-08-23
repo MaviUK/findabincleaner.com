@@ -56,10 +56,15 @@ export default function ServiceAreaEditor({ cleanerId }: Props) {
         const p = path.getAt(i);
         coords.push([p.lng(), p.lat()]); // GeoJSON expects [lng,lat]
       }
-      // Close the ring
-      if (coords.length && (coords[0][0] !== coords.at(-1)![0] || coords[0][1] !== coords.at(-1)![1])) {
-        coords.push(coords[0]);
-      }
+     // Close the ring (avoid .at for ES2020)
+if (coords.length) {
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    coords.push(first);
+  }
+}
+
 
       const geojson = {
         type: "MultiPolygon",
