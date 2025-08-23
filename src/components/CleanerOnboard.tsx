@@ -1,258 +1,74 @@
-// src/components/CleanerOnboard.tsx
-import { useMemo, useRef, useState } from "react";
+// src/pages/Dashboard.tsx
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
-import {
-  GoogleMap,
-  useLoadScript,
-  DrawingManager,
-  Polygon as GPolygon,
-  StandaloneSearchBox,
-} from "@react-google-maps/api";
+import CleanerOnboard from "../components/CleanerOnboard";
+import ServiceAreaEditor from "../components/ServiceAreaEditor";
 
 type Cleaner = {
-  id: string;
-  user_id: string;
-  business_name: string | null;
-  logo_url: string | null;
-  address: string | null;
+  id: string; user_id: string;
+  business_name: string | null; logo_url: string | null; address: string | null;
   subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
 };
 
-export default function CleanerOnboard({
-  userId,
-  cleaner,
-  onSaved,
-}: {
-  userId: string;
-  cleaner: Cleaner;
-  onSaved?: (patch: Partial<Cleaner>) => void;
-}) {
-  const [businessName, setBusinessName] = useState(cleaner.business_name ?? "");
-  const [address, setAddress] = useState(cleaner.address ?? "");
-  const [logoFile, setLogoFile] = useState<File | null>(null);
-  const [logoPreview, setLogoPreview] = useState<string | null>(cleaner.logo_url || null);
-  const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+export default function Dashboard() {
+  const [userId, setUserId] = useState<string | null>(null);
+  const [cleaner, setCleaner] = useState<Cleaner | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // Polygon state
-  const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
+  useEffect(() => {
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { window.location.href = "/login"; return; }
+      setUserId(user.id);
 
-  // Google Maps / Places
-  const { isLoaded, loadError } = useLoadScript({
-    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
-    libraries: ["drawing", "places"],
-  });
-  const center = useMemo(() => ({ lat: 54.6079, lng: -5.9264 }), []);
-  const searchBoxRef = useRef<google.maps.places.SearchBox | null>(null);
-  const inputRef = useRef<HTMLInputElement | null>(null);
+      const { data: existing } = await supabase
+        .from("cleaners")
+        .select("*")
+        .eq("user_id", user.id)
+        .maybeSingle();
 
-  const onSBLoad = (ref: google.maps.places.SearchBox) => (searchBoxRef.current = ref);
-  const onPlacesChanged = () => {
-    const sb = searchBoxRef.current;
-    if (!sb) return;
-    const places = sb.getPlaces();
-    if (!places || !places[0]) return;
-    const p = places[0];
-    setAddress(p.formatted_address || inputRef.current?.value || "");
-  };
-
-  const onPolygonComplete = (poly: google.maps.Polygon) => {
-    const path = poly.getPath();
-    const coords: google.maps.LatLngLiteral[] = [];
-    for (let i = 0; i < path.getLength(); i++) {
-      const p = path.getAt(i);
-      coords.push({ lat: p.lat(), lng: p.lng() });
-    }
-    // close ring if needed
-    if (coords.length) {
-      const first = coords[0];
-      const last = coords[coords.length - 1];
-      if (first.lat !== last.lat || first.lng !== last.lng) coords.push(first);
-    }
-    setRing(coords);
-    poly.setMap(null);
-  };
-
-  // Upload logo to Storage and return public URL
-  const uploadLogo = async (): Promise<string | null> => {
-    if (!logoFile) return cleaner.logo_url || null;
-
-    const fileExt = (logoFile.name.split(".").pop() || "png").toLowerCase();
-    const objectName = `${userId}/logo.${fileExt}`;
-
-    const { error: upErr } = await supabase.storage
-      .from("logos") // make sure bucket "logos" exists & is Public
-      .upload(objectName, logoFile, {
-        cacheControl: "3600",
-        upsert: true,
-        contentType: logoFile.type || `image/${fileExt}`,
-      });
-
-    if (upErr) throw upErr;
-
-    const { data } = supabase.storage.from("logos").getPublicUrl(objectName);
-    setLogoPreview(data.publicUrl); // keep it visible after save
-    return data.publicUrl;
-  };
-
-  const save = async () => {
-    setSaving(true);
-    setMsg(null);
-    setError(null);
-
-    try {
-      // 1) Upload logo if provided
-      const logoUrl = await uploadLogo();
-
-      // 2) Client-side geocode (optional, best-effort)
-      let latLng: google.maps.LatLngLiteral | null = null;
-      if (address && isLoaded && (window as any).google?.maps?.Geocoder) {
-        latLng = await new Promise<google.maps.LatLngLiteral | null>((resolve) => {
-          const geocoder = new google.maps.Geocoder();
-          geocoder.geocode({ address }, (results, status) => {
-            if (status === "OK" && results && results[0]) {
-              const g = results[0].geometry.location;
-              resolve({ lat: g.lat(), lng: g.lng() });
-            } else resolve(null);
-          });
-        });
+      if (!existing) {
+        const { data: created } = await supabase.from("cleaners")
+          .insert({
+            user_id: user.id,
+            business_name: user.email?.split("@")[0] || "My Bin Cleaning",
+            // FREE MODE: default everyone to active so the data looks consistent
+            subscription_status: "active",
+          })
+          .select("*")
+          .single();
+        setCleaner(created as Cleaner);
+      } else {
+        setCleaner(existing as Cleaner);
       }
+      setLoading(false);
+    })();
+  }, []);
 
-      // 3) Update cleaner row
-      const payload: Partial<Cleaner> = {
-        business_name: businessName || cleaner.business_name,
-        address: address || cleaner.address,
-        logo_url: logoUrl || cleaner.logo_url,
-      };
+  if (loading || !userId || !cleaner) return <div className="p-6">Loading…</div>;
 
-      const { error: upErr } = await supabase.from("cleaners").update(payload).eq("id", cleaner.id);
-      if (upErr) throw upErr;
-
-      // 3b) Save point location if we got one
-      if (latLng) {
-        const { error: locErr } = await supabase.rpc("set_cleaner_location", {
-          p_cleaner_id: cleaner.id,
-          p_lat: latLng.lat,
-          p_lng: latLng.lng,
-        });
-        if (locErr) throw locErr;
-      }
-
-      // 4) Save polygon if user drew one
-      if (ring && ring.length >= 4) {
-        const coords = ring.map(({ lng, lat }) => [lng, lat]) as [number, number][];
-        const geojson = { type: "MultiPolygon", coordinates: [[coords]] };
-        const { error: areaErr } = await supabase.rpc("insert_service_area", {
-          cleaner_id: cleaner.id,
-          gj: geojson,
-          name: "Primary Area",
-        });
-        if (areaErr) throw areaErr;
-      }
-
-      setMsg("Saved! You can now subscribe and start receiving leads.");
-
-      // Notify parent so it can update state and hide onboarding without reload
-      onSaved?.({
-        business_name: payload.business_name ?? null,
-        address: payload.address ?? null,
-        logo_url: payload.logo_url ?? null,
-      });
-    } catch (e: any) {
-      setError(e.message || "Failed to save.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (loadError) return <div>Failed to load Google Maps.</div>;
+  const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
   return (
-    <div className="grid md:grid-cols-2 gap-6">
-      {/* Left: Business info */}
-      <div className="space-y-3 p-4 border rounded-xl">
-        <h2 className="text-xl font-semibold">Business details</h2>
+    <div className="p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
-        <label className="block">
-          <span className="text-sm">Business name</span>
-          <input
-            className="w-full border rounded px-3 py-2"
-            value={businessName}
-            onChange={(e) => setBusinessName(e.target.value)}
-            placeholder="e.g., Wheelie Clean Andy"
-          />
-        </label>
+      {needsOnboard && (
+        <CleanerOnboard
+          userId={userId}
+          cleaner={cleaner}
+          // keep local state updated without reload
+          onSaved={(patch) => setCleaner(prev => prev ? { ...prev, ...patch } as Cleaner : prev)}
+        />
+      )}
 
-        <label className="block">
-          <span className="text-sm">Logo</span>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => {
-              const f = e.target.files?.[0] || null;
-              setLogoFile(f);
-              if (f) setLogoPreview(URL.createObjectURL(f)); // instant local preview
-            }}
-          />
-          {logoPreview && (
-            <div className="mt-2">
-              <img src={logoPreview} alt="logo" className="h-12" />
-            </div>
-          )}
-        </label>
-
-        <label className="block">
-          <span className="text-sm">Business address</span>
-          {isLoaded ? (
-            <StandaloneSearchBox onLoad={onSBLoad} onPlacesChanged={onPlacesChanged}>
-              <input
-                ref={inputRef}
-                className="w-full border rounded px-3 py-2"
-                placeholder="Start typing your address…"
-                defaultValue={address || ""}
-                onChange={(e) => setAddress(e.target.value)}
-              />
-            </StandaloneSearchBox>
-          ) : (
-            <input
-              className="w-full border rounded px-3 py-2"
-              placeholder="Start typing your address…"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-            />
-          )}
-        </label>
-
-        <button className="bg-black text-white rounded px-4 py-2" onClick={save} disabled={saving}>
-          {saving ? "Saving…" : "Save details"}
-        </button>
-
-        {msg && <div className="text-green-700 text-sm">{msg}</div>}
-        {error && <div className="text-red-700 text-sm">{error}</div>}
-      </div>
-
-      {/* Right: Draw service area */}
-      <div className="p-4 border rounded-xl">
-        <h2 className="text-xl font-semibold mb-3">Select your service area</h2>
-        <div className="h-[55vh] w-full rounded-lg overflow-hidden">
-          {isLoaded ? (
-            <GoogleMap zoom={11} center={center} mapContainerClassName="w-full h-full">
-              {ring && <GPolygon paths={ring} options={{ editable: false }} />}
-              <DrawingManager
-                onPolygonComplete={onPolygonComplete}
-                options={{
-                  drawingControl: true,
-                  drawingControlOptions: { drawingModes: [google.maps.drawing.OverlayType.POLYGON] },
-                  polygonOptions: { fillOpacity: 0.2, strokeWeight: 2, clickable: false, editable: false },
-                }}
-              />
-            </GoogleMap>
-          ) : (
-            <div>Loading map…</div>
-          )}
-        </div>
-      </div>
+      {/* FREE MODE: always show the app after onboarding; no subscription checks */}
+      {!needsOnboard && (
+        <>
+          <h2 className="text-xl font-semibold">Your Service Areas</h2>
+          <ServiceAreaEditor cleanerId={cleaner.id} />
+        </>
+      )}
     </div>
   );
 }
