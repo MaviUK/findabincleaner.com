@@ -97,18 +97,21 @@ export default function ServiceAreaEditor({ cleanerId }: Props) {
 
         {/* Draw new area */}
         <DrawingManager
-          onPolygonComplete={onPolygonComplete}
-          options={{
-            drawingControl: true,
-            drawingControlOptions: { drawingModes: ["polygon"] },
-            polygonOptions: {
-              fillOpacity: 0.2,
-              strokeWeight: 2,
-              clickable: false,
-              editable: false,
-            },
-          }}
-        />
+  onPolygonComplete={onPolygonComplete}
+  options={{
+    drawingControl: true,
+    drawingControlOptions: {
+      drawingModes: [google.maps.drawing.OverlayType.POLYGON], // 👈 this
+    },
+    polygonOptions: {
+      fillOpacity: 0.2,
+      strokeWeight: 2,
+      clickable: false,
+      editable: false,
+    },
+  }}
+/>
+
       </GoogleMap>
     </div>
   );
