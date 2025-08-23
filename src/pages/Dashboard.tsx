@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
-import CleanerOnboard, { Cleaner } from "../components/CleanerOnboard";
+import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
+
+type Cleaner = {
+  id: string; user_id: string;
+  business_name: string | null; logo_url: string | null; address: string | null;
+  subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
+};
 
 export default function Dashboard() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -14,21 +20,12 @@ export default function Dashboard() {
       if (!user) { window.location.href = "/login"; return; }
       setUserId(user.id);
 
-      const { data: existing } = await supabase
-        .from("cleaners")
-        .select("*")
-        .eq("user_id", user.id)
-        .maybeSingle();
+      const { data: existing } = await supabase.from("cleaners").select("*").eq("user_id", user.id).maybeSingle();
 
       if (!existing) {
         const { data: created } = await supabase.from("cleaners")
-          .insert({
-            user_id: user.id,
-            business_name: user.email?.split("@")[0] || "My Bin Cleaning",
-            subscription_status: "active", // free mode
-          })
-          .select("*")
-          .single();
+          .insert({ user_id: user.id, business_name: user.email?.split("@")[0] || "My Bin Cleaning" })
+          .select("*").single();
         setCleaner(created as Cleaner);
       } else {
         setCleaner(existing as Cleaner);
@@ -45,19 +42,20 @@ export default function Dashboard() {
     <div className="p-6 space-y-6">
       <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
-      {needsOnboard && (
-        <CleanerOnboard
-          userId={userId}
-          cleaner={cleaner}
-          onSaved={(patch) => setCleaner(prev => (prev ? { ...prev, ...patch } : prev))}
-        />
-      )}
+      {needsOnboard && <CleanerOnboard userId={userId} cleaner={cleaner} />}
 
-      {!needsOnboard && (
+      {!needsOnboard && cleaner.subscription_status === "active" && (
         <>
           <h2 className="text-xl font-semibold">Your Service Areas</h2>
           <ServiceAreaEditor cleanerId={cleaner.id} />
         </>
+      )}
+
+      {!needsOnboard && cleaner.subscription_status !== "active" && (
+        <div className="p-4 border rounded">
+          <p>Your subscription is <b>{cleaner.subscription_status}</b>.</p>
+          <a className="inline-block mt-2 bg-black text-white px-4 py-2 rounded" href="/subscribe">Activate subscription</a>
+        </div>
       )}
     </div>
   );
