@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+// src/components/CleanerOnboard.tsx
+import { useMemo, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
   GoogleMap,
@@ -17,10 +18,19 @@ type Cleaner = {
   subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
 };
 
-export default function CleanerOnboard({ userId, cleaner }: { userId: string; cleaner: Cleaner }) {
-  const [businessName, setBusinessName] = useState(cleaner.business_name || "");
-  const [address, setAddress] = useState(cleaner.address || "");
+export default function CleanerOnboard({
+  userId,
+  cleaner,
+  onSaved,
+}: {
+  userId: string;
+  cleaner: Cleaner;
+  onSaved?: (patch: Partial<Cleaner>) => void;
+}) {
+  const [businessName, setBusinessName] = useState(cleaner.business_name ?? "");
+  const [address, setAddress] = useState(cleaner.address ?? "");
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(cleaner.logo_url || null);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +38,7 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
   // Polygon state
   const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
 
-  // Map & Places
+  // Google Maps / Places
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
     libraries: ["drawing", "places"],
@@ -61,34 +71,41 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
       if (first.lat !== last.lat || first.lng !== last.lng) coords.push(first);
     }
     setRing(coords);
-    poly.setMap(null); // remove the editable instance
+    poly.setMap(null);
   };
 
-  // Helper: upload logo
+  // Upload logo to Storage and return public URL
   const uploadLogo = async (): Promise<string | null> => {
     if (!logoFile) return cleaner.logo_url || null;
-    const fileExt = logoFile.name.split(".").pop();
+
+    const fileExt = (logoFile.name.split(".").pop() || "png").toLowerCase();
     const objectName = `${userId}/logo.${fileExt}`;
-    const { error: upErr } = await supabase.storage.from("logos").upload(objectName, logoFile, {
-      cacheControl: "3600",
-      upsert: true,
-      contentType: logoFile.type || "image/png",
-    });
+
+    const { error: upErr } = await supabase.storage
+      .from("logos") // make sure bucket "logos" exists & is Public
+      .upload(objectName, logoFile, {
+        cacheControl: "3600",
+        upsert: true,
+        contentType: logoFile.type || `image/${fileExt}`,
+      });
+
     if (upErr) throw upErr;
+
     const { data } = supabase.storage.from("logos").getPublicUrl(objectName);
-    return data.publicUrl; // or keep private & sign URLs if you prefer
+    setLogoPreview(data.publicUrl); // keep it visible after save
+    return data.publicUrl;
   };
 
   const save = async () => {
-    setSaving(true); setMsg(null); setError(null);
+    setSaving(true);
+    setMsg(null);
+    setError(null);
+
     try {
       // 1) Upload logo if provided
       const logoUrl = await uploadLogo();
 
-      // 2) Geocode "address" (using Places result if available)
-      // Lightweight approach: use the Places input to bias, but
-      // for server-side integrity, you could use postcodes.io or Google Geocoding.
-      // Here we do a client geocode via Maps Geocoder:
+      // 2) Client-side geocode (optional, best-effort)
       let latLng: google.maps.LatLngLiteral | null = null;
       if (address && isLoaded && (window as any).google?.maps?.Geocoder) {
         latLng = await new Promise<google.maps.LatLngLiteral | null>((resolve) => {
@@ -114,7 +131,6 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
 
       // 3b) Save point location if we got one
       if (latLng) {
-        // Small RPC to set point (safer than exposing ST_SetSRID in client)
         const { error: locErr } = await supabase.rpc("set_cleaner_location", {
           p_cleaner_id: cleaner.id,
           p_lat: latLng.lat,
@@ -136,6 +152,13 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
       }
 
       setMsg("Saved! You can now subscribe and start receiving leads.");
+
+      // Notify parent so it can update state and hide onboarding without reload
+      onSaved?.({
+        business_name: payload.business_name ?? null,
+        address: payload.address ?? null,
+        logo_url: payload.logo_url ?? null,
+      });
     } catch (e: any) {
       setError(e.message || "Failed to save.");
     } finally {
@@ -150,6 +173,7 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
       {/* Left: Business info */}
       <div className="space-y-3 p-4 border rounded-xl">
         <h2 className="text-xl font-semibold">Business details</h2>
+
         <label className="block">
           <span className="text-sm">Business name</span>
           <input
@@ -162,10 +186,18 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
 
         <label className="block">
           <span className="text-sm">Logo</span>
-          <input type="file" accept="image/*" onChange={(e) => setLogoFile(e.target.files?.[0] || null)} />
-          {cleaner.logo_url && (
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(e) => {
+              const f = e.target.files?.[0] || null;
+              setLogoFile(f);
+              if (f) setLogoPreview(URL.createObjectURL(f)); // instant local preview
+            }}
+          />
+          {logoPreview && (
             <div className="mt-2">
-              <img src={cleaner.logo_url} alt="logo" className="h-12" />
+              <img src={logoPreview} alt="logo" className="h-12" />
             </div>
           )}
         </label>
@@ -192,11 +224,7 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
           )}
         </label>
 
-        <button
-          className="bg-black text-white rounded px-4 py-2"
-          onClick={save}
-          disabled={saving}
-        >
+        <button className="bg-black text-white rounded px-4 py-2" onClick={save} disabled={saving}>
           {saving ? "Saving…" : "Save details"}
         </button>
 
@@ -215,15 +243,8 @@ export default function CleanerOnboard({ userId, cleaner }: { userId: string; cl
                 onPolygonComplete={onPolygonComplete}
                 options={{
                   drawingControl: true,
-                  drawingControlOptions: {
-                    drawingModes: [google.maps.drawing.OverlayType.POLYGON],
-                  },
-                  polygonOptions: {
-                    fillOpacity: 0.2,
-                    strokeWeight: 2,
-                    clickable: false,
-                    editable: false,
-                  },
+                  drawingControlOptions: { drawingModes: [google.maps.drawing.OverlayType.POLYGON] },
+                  polygonOptions: { fillOpacity: 0.2, strokeWeight: 2, clickable: false, editable: false },
                 }}
               />
             </GoogleMap>
