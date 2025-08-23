@@ -1,57 +1,62 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
+import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 
+type Cleaner = {
+  id: string; user_id: string;
+  business_name: string | null; logo_url: string | null; address: string | null;
+  subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
+};
+
 export default function Dashboard() {
-  const [status, setStatus] = useState<string | null>(null);
-  const [cleanerId, setCleanerId] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
+  const [cleaner, setCleaner] = useState<Cleaner | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       const { data: { user } } = await supabase.auth.getUser();
-      if (!user) {
-        // You can redirect to login here
-        return;
-      }
+      if (!user) { window.location.href = "/login"; return; }
+      setUserId(user.id);
 
-      // Ensure cleaner row exists
-      const { data: existing } = await supabase
-        .from("cleaners")
-        .select("id, subscription_status")
-        .eq("user_id", user.id)
-        .maybeSingle();
+      const { data: existing } = await supabase.from("cleaners").select("*").eq("user_id", user.id).maybeSingle();
 
       if (!existing) {
-        const { data: created } = await supabase
-          .from("cleaners")
-          .insert({ user_id: user.id, business_name: user.email || "My Cleaning" })
-          .select("id, subscription_status")
-          .single();
-
-        setCleanerId(created?.id || null);
-        setStatus(created?.subscription_status || "incomplete");
+        const { data: created } = await supabase.from("cleaners")
+          .insert({ user_id: user.id, business_name: user.email?.split("@")[0] || "My Bin Cleaning" })
+          .select("*").single();
+        setCleaner(created as Cleaner);
       } else {
-        setCleanerId(existing.id);
-        setStatus(existing.subscription_status);
+        setCleaner(existing as Cleaner);
       }
+      setLoading(false);
     })();
   }, []);
 
-  if (!status) return <div className="p-6">Loading…</div>;
+  if (loading || !userId || !cleaner) return <div className="p-6">Loading…</div>;
 
-  if (status !== "active") {
-    return (
-      <div className="p-6">
-        <p>Your subscription is <b>{status}</b>.</p>
-        <a className="btn" href="/subscribe">Activate subscription</a>
-      </div>
-    );
-  }
+  const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
   return (
-    <div className="p-6">
-      <h2 className="text-xl mb-4">Your Service Areas</h2>
-      {cleanerId && <ServiceAreaEditor cleanerId={cleanerId} />}
+    <div className="p-6 space-y-6">
+      <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
+
+      {needsOnboard && <CleanerOnboard userId={userId} cleaner={cleaner} />}
+
+      {!needsOnboard && cleaner.subscription_status === "active" && (
+        <>
+          <h2 className="text-xl font-semibold">Your Service Areas</h2>
+          <ServiceAreaEditor cleanerId={cleaner.id} />
+        </>
+      )}
+
+      {!needsOnboard && cleaner.subscription_status !== "active" && (
+        <div className="p-4 border rounded">
+          <p>Your subscription is <b>{cleaner.subscription_status}</b>.</p>
+          <a className="inline-block mt-2 bg-black text-white px-4 py-2 rounded" href="/subscribe">Activate subscription</a>
+        </div>
+      )}
     </div>
   );
 }
