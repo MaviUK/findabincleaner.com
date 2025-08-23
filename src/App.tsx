@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
@@ -33,7 +33,7 @@ function Header({ user }: { user: User | null }) {
   );
 }
 
-function ProtectedRoute({ user, children }: { user: User | null | undefined; children: JSX.Element }) {
+function ProtectedRoute({ user, children }: { user: User | null | undefined; children: ReactNode }) {
   const location = useLocation();
   if (user === undefined) return <div className="p-6">Checking session…</div>;
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
