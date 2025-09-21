@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  BrowserRouter,  // 👉 if you still see blank pages on deep links, swap to HashRouter
+  HashRouter as Router,   // ← HashRouter avoids server redirect issues
   Routes,
   Route,
   Link,
@@ -51,13 +51,8 @@ function ProtectedRoute({
   children: ReactNode;
 }) {
   const location = useLocation();
-
-  // ✅ Never render nothing—show a small fallback while we check the session
   if (loading) return <div className="p-6">Loading…</div>;
-
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  }
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   return <>{children}</>;
 }
 
@@ -73,54 +68,59 @@ function NotFound() {
 }
 
 export default function App() {
-  // `undefined` means “still resolving”; `null` means “no user”
+  // undefined = checking; null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
-    // initial load
+    // Initial session
     supabase.auth.getUser().then(({ data: { user } }) => {
       setUser(user ?? null);
     });
 
-    // keep in sync with auth changes
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    // Subscribe to auth changes
+    const { data: authListener } = supabase.auth.onAuthStateChange((_e, session) => {
       setUser(session?.user ?? null);
     });
-    return () => sub.subscription.unsubscribe();
+
+    return () => {
+      // guard for older typings
+      authListener?.subscription?.unsubscribe?.();
+    };
   }, []);
 
   const loading = user === undefined;
 
   return (
-    // 👉 If Netlify ever serves a blank page on direct links like /settings,
-    // change BrowserRouter to HashRouter (and no other code changes needed).
-    <BrowserRouter>
+    <Router>
       <Header user={user} />
-     <Routes>
-  <Route path="/" element={<Landing />} />
-  <Route path="/login" element={<Login />} />
-  <Route
-    path="/dashboard"
-    element={
-      <ProtectedRoute user={user} loading={loading}>
-        <Dashboard />
-      </ProtectedRoute>
-    }
-  />
-  <Route
-    path="/settings"
-    element={
-      <ProtectedRoute user={user} loading={loading}>
-        <Settings />
-      </ProtectedRoute>
-    }
-  />
-  {/* TEMP: debug */}
-  <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
-  {/* Always render something on unknown routes */}
-  <Route path="*" element={<div className="p-6">No match for this route.</div>} />
-</Routes>
+      <Routes>
+        <Route path="/" element={<Landing />} />
+        <Route path="/login" element={<Login />} />
 
-    </BrowserRouter>
+        <Route
+          path="/dashboard"
+          element={
+            <ProtectedRoute user={user} loading={loading}>
+              <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/settings"
+          element={
+            <ProtectedRoute user={user} loading={loading}>
+              <Settings />
+            </ProtectedRoute>
+          }
+        />
+
+        {/* Tiny debug route to confirm the live bundle */}
+        <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
+
+        {/* Fallback */}
+        <Route path="*" element={<NotFound />} />
+      </Routes>
+    </Router>
   );
 }
