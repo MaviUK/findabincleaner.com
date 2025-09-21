@@ -1,7 +1,6 @@
-// src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  HashRouter as Router, // ⬅️ use HashRouter
+  HashRouter as Router,
   Routes,
   Route,
   Link,
@@ -30,7 +29,8 @@ function Header({ user }: { user: User | null | undefined }) {
             className="bg-black text-white px-3 py-1 rounded"
             onClick={async () => {
               await supabase.auth.signOut();
-              window.location.href = "/"; // sends you back to the hash root
+              // With HashRouter we must navigate via hash
+              window.location.hash = "#/";
             }}
           >
             Logout
@@ -86,6 +86,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
+
         <Route
           path="/dashboard"
           element={
@@ -94,6 +95,7 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+
         <Route
           path="/settings"
           element={
@@ -102,7 +104,10 @@ export default function App() {
             </ProtectedRoute>
           }
         />
+
+        {/* Optional: quick sanity check */}
         <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
+
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Router>
