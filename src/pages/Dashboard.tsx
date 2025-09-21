@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";            // ⬅️ add this
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
@@ -58,7 +59,6 @@ export default function Dashboard() {
         />
       ) : (
         <>
-          {/* Profile summary + edit link */}
           <div className="p-4 border rounded-xl flex items-center gap-4">
             {cleaner.logo_url ? (
               <img src={cleaner.logo_url} alt="logo" className="h-14 w-14 object-contain rounded" />
@@ -69,12 +69,11 @@ export default function Dashboard() {
               <div className="font-semibold">{cleaner.business_name}</div>
               <div className="text-sm text-gray-600">{cleaner.address || "No address yet"}</div>
             </div>
-            import { Link } from "react-router-dom";
-// ...
-<Link to="/settings" className="bg-black text-white px-3 py-2 rounded">
-  Edit profile
-</Link>
 
+            {/* use Link for client-side nav */}
+            <Link to="/settings" className="bg-black text-white px-3 py-2 rounded">
+              Edit profile
+            </Link>
           </div>
 
           <h2 className="text-xl font-semibold">Your Service Areas</h2>
