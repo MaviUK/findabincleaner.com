@@ -1,7 +1,8 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  BrowserRouter,  // <- use BrowserRouter
+  // swap BrowserRouter -> HashRouter
+  HashRouter as Router,
   Routes,
   Route,
   Link,
@@ -30,7 +31,7 @@ function Header({ user }: { user: User | null | undefined }) {
             className="bg-black text-white px-3 py-1 rounded"
             onClick={async () => {
               await supabase.auth.signOut();
-              window.location.href = "/";
+              window.location.href = "/"; // keeps it simple
             }}
           >
             Logout
@@ -60,26 +61,25 @@ function NotFound() {
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold">404</h1>
-      <p className="mt-2">That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.</p>
+      <p className="mt-2">That page doesn’t exist. <Link className="underline" to="/">Go home</Link>.</p>
     </div>
   );
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
-
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
-    });
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) =>
+      setUser(session?.user ?? null)
+    );
     return () => sub.subscription.unsubscribe();
   }, []);
-
   const loading = user === undefined;
 
   return (
-    <BrowserRouter>
+    // Hash router = URLs like /#/settings. No server rewrites needed.
+    <Router>
       <Header user={user} />
       <Routes>
         <Route path="/" element={<Landing />} />
@@ -103,6 +103,6 @@ export default function App() {
         <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
         <Route path="*" element={<NotFound />} />
       </Routes>
-    </BrowserRouter>
+    </Router>
   );
 }
