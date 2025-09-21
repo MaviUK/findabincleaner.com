@@ -8,6 +8,7 @@ import {
   Polygon as GPolygon,
   StandaloneSearchBox,
 } from "@react-google-maps/api";
+import type { Libraries } from "@react-google-maps/api";
 
 export type Cleaner = {
   id: string;
@@ -28,7 +29,7 @@ type Props = {
   onSaved?: (patch: Partial<Cleaner>) => void;
 };
 
-/** Resize any image file to exactly 300x300 using "contain" (no crop), centered, transparent padding */
+/** Resize any image to exactly 300×300 using "contain" (no crop), centered, transparent padding. */
 async function resizeTo300PNG(file: File): Promise<Blob> {
   const img = await new Promise<HTMLImageElement>((resolve, reject) => {
     const el = new Image();
@@ -43,7 +44,7 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   canvas.height = target;
   const ctx = canvas.getContext("2d")!;
 
-  // If you want a white square background instead of transparent, uncomment:
+  // If you prefer a white background instead of transparent, uncomment:
   // ctx.fillStyle = "#ffffff";
   // ctx.fillRect(0, 0, target, target);
 
@@ -72,13 +73,8 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
 
   const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
 
-  // ↓ memoize libraries to avoid "LoadScript reloaded" warning
- // memoize as a mutable array (no `as const`)
-const libraries = useMemo(
-  () => ["drawing", "places"] as ("drawing" | "geometry" | "localContext" | "places" | "visualization")[],
-  []
-);
-
+  // Memoize libraries with correct type to avoid warnings & TS errors
+  const libraries = useMemo<Libraries>(() => ["drawing", "places"], []);
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
     libraries,
@@ -112,11 +108,11 @@ const libraries = useMemo(
     poly.setMap(null);
   };
 
-  /** Upload resized (300x300) logo to Storage and return public URL */
+  /** Upload resized (300×300) logo to Storage and return public URL */
   const uploadLogo = async (): Promise<string | null> => {
     if (!logoFile) return cleaner.logo_url || null;
 
-    // 1) resize to 300x300 PNG
+    // 1) resize to 300×300 PNG
     const resized = await resizeTo300PNG(logoFile);
 
     // 2) upload (always PNG after resize)
@@ -167,7 +163,9 @@ const libraries = useMemo(
 
       if (latLng) {
         const { error: locErr } = await supabase.rpc("set_cleaner_location", {
-          p_cleaner_id: cleaner.id, p_lat: latLng.lat, p_lng: latLng.lng,
+          p_cleaner_id: cleaner.id,
+          p_lat: latLng.lat,
+          p_lng: latLng.lng,
         });
         if (locErr) throw locErr;
       }
@@ -176,7 +174,9 @@ const libraries = useMemo(
         const coords = ring.map(({ lng, lat }) => [lng, lat]) as [number, number][];
         const geojson = { type: "MultiPolygon", coordinates: [[coords]] };
         const { error: areaErr } = await supabase.rpc("insert_service_area", {
-          cleaner_id: cleaner.id, gj: geojson, name: "Primary Area",
+          cleaner_id: cleaner.id,
+          gj: geojson,
+          name: "Primary Area",
         });
         if (areaErr) throw areaErr;
       }
