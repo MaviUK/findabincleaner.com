@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  HashRouter as Router,   // ← HashRouter avoids server redirect issues
+  HashRouter,   // ✅ use hash-based routing (/#/settings)
   Routes,
   Route,
   Link,
@@ -30,7 +30,7 @@ function Header({ user }: { user: User | null | undefined }) {
             className="bg-black text-white px-3 py-1 rounded"
             onClick={async () => {
               await supabase.auth.signOut();
-              window.location.href = "/";
+              window.location.href = "/"; // send back to landing
             }}
           >
             Logout
@@ -68,35 +68,25 @@ function NotFound() {
 }
 
 export default function App() {
-  // undefined = checking; null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
-    // Initial session
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      setUser(user ?? null);
-    });
-
-    // Subscribe to auth changes
-    const { data: authListener } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
-    });
-
-    return () => {
-      // guard for older typings
-      authListener?.subscription?.unsubscribe?.();
-    };
+    supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) =>
+      setUser(session?.user ?? null)
+    );
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   const loading = user === undefined;
 
   return (
-    <Router>
+    // ✅ HashRouter makes deep links like https://site/#/settings work without any server rewrites
+    <HashRouter>
       <Header user={user} />
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
-
         <Route
           path="/dashboard"
           element={
@@ -105,7 +95,6 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/settings"
           element={
@@ -114,13 +103,9 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
-        {/* Tiny debug route to confirm the live bundle */}
         <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
-
-        {/* Fallback */}
         <Route path="*" element={<NotFound />} />
       </Routes>
-    </Router>
+    </HashRouter>
   );
 }
