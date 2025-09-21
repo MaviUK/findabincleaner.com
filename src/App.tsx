@@ -96,30 +96,31 @@ export default function App() {
     // change BrowserRouter to HashRouter (and no other code changes needed).
     <BrowserRouter>
       <Header user={user} />
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/login" element={<Login />} />
+     <Routes>
+  <Route path="/" element={<Landing />} />
+  <Route path="/login" element={<Login />} />
+  <Route
+    path="/dashboard"
+    element={
+      <ProtectedRoute user={user} loading={loading}>
+        <Dashboard />
+      </ProtectedRoute>
+    }
+  />
+  <Route
+    path="/settings"
+    element={
+      <ProtectedRoute user={user} loading={loading}>
+        <Settings />
+      </ProtectedRoute>
+    }
+  />
+  {/* TEMP: debug */}
+  <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
+  {/* Always render something on unknown routes */}
+  <Route path="*" element={<div className="p-6">No match for this route.</div>} />
+</Routes>
 
-        <Route
-          path="/dashboard"
-          element={
-            <ProtectedRoute user={user} loading={loading}>
-              <Dashboard />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route
-          path="/settings"
-          element={
-            <ProtectedRoute user={user} loading={loading}>
-              <Settings />
-            </ProtectedRoute>
-          }
-        />
-
-        <Route path="*" element={<NotFound />} />
-      </Routes>
     </BrowserRouter>
   );
 }
