@@ -69,7 +69,12 @@ export default function Dashboard() {
               <div className="font-semibold">{cleaner.business_name}</div>
               <div className="text-sm text-gray-600">{cleaner.address || "No address yet"}</div>
             </div>
-            <a href="/settings" className="bg-black text-white px-3 py-2 rounded">Edit profile</a>
+            import { Link } from "react-router-dom";
+// ...
+<Link to="/settings" className="bg-black text-white px-3 py-2 rounded">
+  Edit profile
+</Link>
+
           </div>
 
           <h2 className="text-xl font-semibold">Your Service Areas</h2>
