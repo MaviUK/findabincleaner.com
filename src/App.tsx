@@ -1,17 +1,22 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
-import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from "react-router-dom";
+import {
+  BrowserRouter,  // 👉 if you still see blank pages on deep links, swap to HashRouter
+  Routes,
+  Route,
+  Link,
+  Navigate,
+  useLocation,
+} from "react-router-dom";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 
-// pages you already have (or added earlier)
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
-import Settings from "./pages/Settings"; // the cleaner settings page we just made
-// import Subscribe from "./pages/Subscribe"; // keep for later if you re-enable billing
+import Settings from "./pages/Settings";
 
-function Header({ user }: { user: User | null }) {
+function Header({ user }: { user: User | null | undefined }) {
   return (
     <header className="px-4 py-3 border-b flex items-center gap-4">
       <Link to="/" className="font-bold">Find a Bin Cleaner</Link>
@@ -23,7 +28,10 @@ function Header({ user }: { user: User | null }) {
         ) : (
           <button
             className="bg-black text-white px-3 py-1 rounded"
-            onClick={() => supabase.auth.signOut().then(() => (window.location.href = "/"))}
+            onClick={async () => {
+              await supabase.auth.signOut();
+              window.location.href = "/";
+            }}
           >
             Logout
           </button>
@@ -33,38 +41,61 @@ function Header({ user }: { user: User | null }) {
   );
 }
 
-function ProtectedRoute({ user, children }: { user: User | null | undefined; children: ReactNode }) {
+function ProtectedRoute({
+  user,
+  loading,
+  children,
+}: {
+  user: User | null | undefined;
+  loading: boolean;
+  children: ReactNode;
+}) {
   const location = useLocation();
-  if (user === undefined) return <div className="p-6">Checking session…</div>;
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return children;
+
+  // ✅ Never render nothing—show a small fallback while we check the session
+  if (loading) return <div className="p-6">Loading…</div>;
+
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
+  return <>{children}</>;
 }
 
 function NotFound() {
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold">404</h1>
-      <p className="mt-2">That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.</p>
+      <p className="mt-2">
+        That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.
+      </p>
     </div>
   );
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null | undefined>(undefined); // undefined = loading
+  // `undefined` means “still resolving”; `null` means “no user”
+  const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
     // initial load
-    supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
-    // subscribe to changes
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      setUser(user ?? null);
+    });
+
+    // keep in sync with auth changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       setUser(session?.user ?? null);
     });
-    return () => sub?.subscription.unsubscribe();
+    return () => sub.subscription.unsubscribe();
   }, []);
 
+  const loading = user === undefined;
+
   return (
+    // 👉 If Netlify ever serves a blank page on direct links like /settings,
+    // change BrowserRouter to HashRouter (and no other code changes needed).
     <BrowserRouter>
-      <Header user={user ?? null} />
+      <Header user={user} />
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
@@ -72,7 +103,7 @@ export default function App() {
         <Route
           path="/dashboard"
           element={
-            <ProtectedRoute user={user}>
+            <ProtectedRoute user={user} loading={loading}>
               <Dashboard />
             </ProtectedRoute>
           }
@@ -81,13 +112,12 @@ export default function App() {
         <Route
           path="/settings"
           element={
-            <ProtectedRoute user={user}>
+            <ProtectedRoute user={user} loading={loading}>
               <Settings />
             </ProtectedRoute>
           }
         />
 
-        {/* <Route path="/subscribe" element={<Subscribe />} /> */}
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
