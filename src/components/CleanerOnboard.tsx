@@ -28,6 +28,39 @@ type Props = {
   onSaved?: (patch: Partial<Cleaner>) => void;
 };
 
+/** Resize any image file to exactly 300x300 using "contain" (no crop), centered, transparent padding */
+async function resizeTo300PNG(file: File): Promise<Blob> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image();
+    el.onload = () => resolve(el);
+    el.onerror = reject;
+    el.src = URL.createObjectURL(file);
+  });
+
+  const target = 300;
+  const canvas = document.createElement("canvas");
+  canvas.width = target;
+  canvas.height = target;
+  const ctx = canvas.getContext("2d")!;
+
+  // If you want a white square background instead of transparent, uncomment:
+  // ctx.fillStyle = "#ffffff";
+  // ctx.fillRect(0, 0, target, target);
+
+  // keep aspect ratio (CONTAIN)
+  const scale = Math.min(target / img.width, target / img.height);
+  const drawW = Math.round(img.width * scale);
+  const drawH = Math.round(img.height * scale);
+  const dx = Math.floor((target - drawW) / 2);
+  const dy = Math.floor((target - drawH) / 2);
+
+  ctx.drawImage(img, dx, dy, drawW, drawH);
+
+  return await new Promise<Blob>((resolve) => {
+    canvas.toBlob((blob) => resolve(blob!), "image/png", 0.92);
+  });
+}
+
 export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
   const [businessName, setBusinessName] = useState(cleaner.business_name ?? "");
   const [address, setAddress] = useState(cleaner.address ?? "");
@@ -39,10 +72,13 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
 
   const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
 
+  // ↓ memoize libraries to avoid "LoadScript reloaded" warning
+  const libraries = useMemo(() => ["drawing", "places"] as const, []);
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
-    libraries: ["drawing", "places"],
+    libraries,
   });
+
   const center = useMemo(() => ({ lat: 54.6079, lng: -5.9264 }), []);
   const searchBoxRef = useRef<google.maps.places.SearchBox | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -71,25 +107,28 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
     poly.setMap(null);
   };
 
-  // Upload logo to Storage and return public URL
+  /** Upload resized (300x300) logo to Storage and return public URL */
   const uploadLogo = async (): Promise<string | null> => {
     if (!logoFile) return cleaner.logo_url || null;
 
-    const fileExt = (logoFile.name.split(".").pop() || "png").toLowerCase();
-    const objectName = `${userId}/logo.${fileExt}`;
+    // 1) resize to 300x300 PNG
+    const resized = await resizeTo300PNG(logoFile);
 
+    // 2) upload (always PNG after resize)
+    const objectName = `${userId}/logo.png`;
     const { error: upErr } = await supabase.storage
-      .from("logos") // ensure bucket 'logos' exists and is Public
-      .upload(objectName, logoFile, {
+      .from("logos") // ensure bucket 'logos' exists & is Public
+      .upload(objectName, resized, {
         upsert: true,
         cacheControl: "3600",
-        contentType: logoFile.type || `image/${fileExt}`,
+        contentType: "image/png",
       });
 
     if (upErr) throw upErr;
 
+    // 3) get public URL
     const { data } = supabase.storage.from("logos").getPublicUrl(objectName);
-    setLogoPreview(data.publicUrl); // keep it visible after save
+    setLogoPreview(data.publicUrl);
     return data.publicUrl;
   };
 
@@ -159,7 +198,11 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
 
         <label className="block">
           <span className="text-sm">Business name</span>
-          <input className="w-full border rounded px-3 py-2" value={businessName} onChange={(e) => setBusinessName(e.target.value)} />
+          <input
+            className="w-full border rounded px-3 py-2"
+            value={businessName}
+            onChange={(e) => setBusinessName(e.target.value)}
+          />
         </label>
 
         <label className="block">
@@ -175,7 +218,8 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
           />
           {logoPreview && (
             <div className="mt-2">
-              <img src={logoPreview} alt="logo" className="h-12" />
+              {/* constrain preview in UI too */}
+              <img src={logoPreview} alt="logo" className="h-20 w-20 object-contain rounded" />
             </div>
           )}
         </label>
@@ -193,7 +237,12 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
               />
             </StandaloneSearchBox>
           ) : (
-            <input className="w-full border rounded px-3 py-2" placeholder="Start typing your address…" value={address} onChange={(e) => setAddress(e.target.value)} />
+            <input
+              className="w-full border rounded px-3 py-2"
+              placeholder="Start typing your address…"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
           )}
         </label>
 
