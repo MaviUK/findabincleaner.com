@@ -1,4 +1,3 @@
-// src/pages/Settings.tsx
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -26,14 +25,16 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   canvas.width = target;
   canvas.height = target;
   const ctx = canvas.getContext("2d")!;
-  // transparent bg; if you want white, uncomment:
-  // ctx.fillStyle = "#fff"; ctx.fillRect(0,0,target,target);
+  // Optional: white background instead of transparent
+  // ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, target, target);
+
   const scale = Math.min(target / img.width, target / img.height);
   const w = Math.round(img.width * scale);
   const h = Math.round(img.height * scale);
   const dx = Math.floor((target - w) / 2);
   const dy = Math.floor((target - h) / 2);
   ctx.drawImage(img, dx, dy, w, h);
+
   return await new Promise<Blob>((res) => canvas.toBlob(b => res(b!), "image/png", 0.92));
 }
 
@@ -58,10 +59,20 @@ export default function Settings() {
     (async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (!user) { window.location.href = "/login"; return; }
+        if (!user) {
+          // ProtectedRoute will handle redirect; just stop.
+          return;
+        }
         setUserId(user.id);
-        const { data, error } = await supabase.from("cleaners").select("*").eq("user_id", user.id).maybeSingle();
+
+        const { data, error } = await supabase
+          .from("cleaners")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+
         if (error) throw error;
+
         if (data) {
           const c = data as Cleaner;
           setCleaner(c);
@@ -86,7 +97,9 @@ export default function Settings() {
     const resized = await resizeTo300PNG(logoFile);
     const path = `${userId}/logo.png`;
     const { error } = await supabase.storage.from("logos").upload(path, resized, {
-      upsert: true, cacheControl: "3600", contentType: "image/png",
+      upsert: true,
+      cacheControl: "3600",
+      contentType: "image/png",
     });
     if (error) throw error;
     const { data } = supabase.storage.from("logos").getPublicUrl(path);
@@ -95,18 +108,24 @@ export default function Settings() {
 
   async function save() {
     if (!cleaner) return;
-    setSaving(true); setMsg(null); setErr(null);
+    setSaving(true);
+    setMsg(null);
+    setErr(null);
     try {
       const newLogo = await uploadLogo();
-      const { error } = await supabase.from("cleaners").update({
-        business_name: name || null,
-        address: address || null,
-        phone: phone || null,
-        website: website || null,
-        about: about || null,
-        contact_email: contactEmail || null,
-        logo_url: newLogo ?? logoPreview ?? null,
-      }).eq("id", cleaner.id);
+      const { error } = await supabase
+        .from("cleaners")
+        .update({
+          business_name: name || null,
+          address: address || null,
+          phone: phone || null,
+          website: website || null,
+          about: about || null,
+          contact_email: contactEmail || null,
+          logo_url: newLogo ?? logoPreview ?? null,
+        })
+        .eq("id", cleaner.id);
+
       if (error) throw error;
       if (newLogo) setLogoPreview(newLogo);
       setMsg("Settings saved.");
@@ -129,33 +148,60 @@ export default function Settings() {
         <div className="space-y-3 p-4 border rounded-xl">
           <label className="block">
             <span className="text-sm">Business name</span>
-            <input className="w-full border rounded px-3 py-2" value={name} onChange={e => setName(e.target.value)} />
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={name}
+              onChange={e => setName(e.target.value)}
+            />
           </label>
 
           <label className="block">
             <span className="text-sm">Address</span>
-            <input className="w-full border rounded px-3 py-2" value={address} onChange={e => setAddress(e.target.value)} placeholder="Street, Town, Postcode" />
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={address}
+              onChange={e => setAddress(e.target.value)}
+              placeholder="Street, Town, Postcode"
+            />
           </label>
 
           <div className="grid md:grid-cols-2 gap-3">
             <label className="block">
               <span className="text-sm">Phone</span>
-              <input className="w-full border rounded px-3 py-2" value={phone} onChange={e => setPhone(e.target.value)} />
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+              />
             </label>
             <label className="block">
               <span className="text-sm">Website</span>
-              <input className="w-full border rounded px-3 py-2" value={website} onChange={e => setWebsite(e.target.value)} placeholder="https://…" />
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={website}
+                onChange={e => setWebsite(e.target.value)}
+                placeholder="https://…"
+              />
             </label>
           </div>
 
           <label className="block">
             <span className="text-sm">Contact email</span>
-            <input className="w-full border rounded px-3 py-2" value={contactEmail} onChange={e => setContactEmail(e.target.value)} />
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={contactEmail}
+              onChange={e => setContactEmail(e.target.value)}
+            />
           </label>
 
           <label className="block">
             <span className="text-sm">About</span>
-            <textarea className="w-full border rounded px-3 py-2" rows={4} value={about} onChange={e => setAbout(e.target.value)} />
+            <textarea
+              className="w-full border rounded px-3 py-2"
+              rows={4}
+              value={about}
+              onChange={e => setAbout(e.target.value)}
+            />
           </label>
 
           <label className="block">
@@ -169,13 +215,23 @@ export default function Settings() {
                 if (f) setLogoPreview(URL.createObjectURL(f));
               }}
             />
-            {logoPreview && <img src={logoPreview} alt="logo" className="h-20 w-20 object-contain mt-2 rounded" />}
+            {logoPreview && (
+              <img
+                src={logoPreview}
+                alt="logo"
+                className="h-20 w-20 object-contain mt-2 rounded bg-white"
+              />
+            )}
           </label>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
           {err && <div className="text-red-700 text-sm">{err}</div>}
 
-          <button className="bg-black text-white px-4 py-2 rounded disabled:opacity-60" onClick={save} disabled={saving}>
+          <button
+            className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+            onClick={save}
+            disabled={saving}
+          >
             {saving ? "Saving…" : "Save settings"}
           </button>
         </div>
