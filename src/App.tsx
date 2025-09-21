@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  HashRouter,   // ✅ use hash-based routing (/#/settings)
+  BrowserRouter,  // <- use BrowserRouter
   Routes,
   Route,
   Link,
@@ -30,7 +30,7 @@ function Header({ user }: { user: User | null | undefined }) {
             className="bg-black text-white px-3 py-1 rounded"
             onClick={async () => {
               await supabase.auth.signOut();
-              window.location.href = "/"; // send back to landing
+              window.location.href = "/";
             }}
           >
             Logout
@@ -60,9 +60,7 @@ function NotFound() {
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold">404</h1>
-      <p className="mt-2">
-        That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.
-      </p>
+      <p className="mt-2">That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.</p>
     </div>
   );
 }
@@ -72,17 +70,16 @@ export default function App() {
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) =>
-      setUser(session?.user ?? null)
-    );
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
   const loading = user === undefined;
 
   return (
-    // ✅ HashRouter makes deep links like https://site/#/settings work without any server rewrites
-    <HashRouter>
+    <BrowserRouter>
       <Header user={user} />
       <Routes>
         <Route path="/" element={<Landing />} />
@@ -106,6 +103,6 @@ export default function App() {
         <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
         <Route path="*" element={<NotFound />} />
       </Routes>
-    </HashRouter>
+    </BrowserRouter>
   );
 }
