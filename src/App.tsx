@@ -1,21 +1,37 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  HashRouter as Router,
+  HashRouter as Router,  // <-- hash routing to avoid Netlify rewrites
   Routes,
   Route,
   Link,
   Navigate,
   useLocation,
 } from "react-router-dom";
-import type { User } from "@supabase/supabase-js";
-import { supabase } from "./lib/supabase";
+
+// If you want to wire Supabase later, you can.
+// For this sanity pass, we keep auth out so it can't block rendering.
+// import { supabase } from "./lib/supabase";
+// import type { User } from "@supabase/supabase-js";
 
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 
-function Header({ user }: { user: User | null | undefined }) {
+// Minimal fake “auth” to prove routing works.
+// Replace with supabase once you’ve verified /#/settings renders.
+type User = { id: string } | null;
+
+function useFakeAuth() {
+  const [user, setUser] = useState<User>(null);
+  useEffect(() => {
+    // Pretend we are logged in. Set to `null` to test the login redirect.
+    setUser({ id: "demo" });
+  }, []);
+  return { user, loading: false };
+}
+
+function Header({ user }: { user: User }) {
   return (
     <header className="px-4 py-3 border-b flex items-center gap-4">
       <Link to="/" className="font-bold">Find a Bin Cleaner</Link>
@@ -27,10 +43,10 @@ function Header({ user }: { user: User | null | undefined }) {
         ) : (
           <button
             className="bg-black text-white px-3 py-1 rounded"
-            onClick={async () => {
-              await supabase.auth.signOut();
-              // With HashRouter we must navigate via hash
+            onClick={() => {
+              // Replace with supabase.auth.signOut() later
               window.location.hash = "#/";
+              location.reload();
             }}
           >
             Logout
@@ -46,7 +62,7 @@ function ProtectedRoute({
   loading,
   children,
 }: {
-  user: User | null | undefined;
+  user: User;
   loading: boolean;
   children: ReactNode;
 }) {
@@ -57,28 +73,17 @@ function ProtectedRoute({
 }
 
 function NotFound() {
+  const loc = useLocation();
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold">404</h1>
-      <p className="mt-2">
-        That page doesn’t exist. <Link to="/" className="underline">Go home</Link>.
-      </p>
+      <p className="mt-2">No match for: <code>{loc.pathname}</code>. <Link to="/" className="underline">Go home</Link>.</p>
     </div>
   );
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-
-  useEffect(() => {
-    supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) =>
-      setUser(session?.user ?? null)
-    );
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  const loading = user === undefined;
+  const { user, loading } = useFakeAuth(); // swap to real supabase later
 
   return (
     <Router>
@@ -86,7 +91,6 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/login" element={<Login />} />
-
         <Route
           path="/dashboard"
           element={
@@ -95,7 +99,6 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
         <Route
           path="/settings"
           element={
@@ -104,10 +107,7 @@ export default function App() {
             </ProtectedRoute>
           }
         />
-
-        {/* Optional: quick sanity check */}
         <Route path="/_debug" element={<div className="p-6">Router is working ✅</div>} />
-
         <Route path="*" element={<NotFound />} />
       </Routes>
     </Router>
