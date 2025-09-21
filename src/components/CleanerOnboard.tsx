@@ -73,7 +73,12 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
   const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
 
   // ↓ memoize libraries to avoid "LoadScript reloaded" warning
-  const libraries = useMemo(() => ["drawing", "places"] as const, []);
+ // memoize as a mutable array (no `as const`)
+const libraries = useMemo(
+  () => ["drawing", "places"] as ("drawing" | "geometry" | "localContext" | "places" | "visualization")[],
+  []
+);
+
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
     libraries,
