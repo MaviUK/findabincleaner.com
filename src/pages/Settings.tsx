@@ -14,8 +14,8 @@ type Cleaner = {
   contact_email: string | null;
 };
 
-// Resize an image file to a centered, covered 300x300 PNG (high quality)
-async function resizeTo300PNG(file: File): Promise<Blob> {
+// Resize an image file to a centered, covered 400x400 PNG (high quality)
+async function resizeTo400PNG(file: File): Promise<Blob> {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -25,7 +25,7 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
       el.src = url;
     });
 
-    const size = 300;
+    const size = 400;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -34,7 +34,7 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
     // If you prefer non-transparent logos:
     // ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, size, size);
 
-    // Cover strategy to fill 300x300 while preserving aspect ratio
+    // Cover strategy to fill 400x400 while preserving aspect ratio
     const scale = Math.max(size / img.width, size / img.height);
     const w = Math.round(img.width * scale);
     const h = Math.round(img.height * scale);
@@ -131,7 +131,7 @@ export default function Settings() {
   async function uploadLogoIfAny(): Promise<string | null> {
     if (!logoFile || !userId) return logoPreview || null;
 
-    const png = resizedLogo ?? (await resizeTo300PNG(logoFile)); // <= prefer the prepared blob
+    const png = resizedLogo ?? (await resizeTo400PNG(logoFile)); // <= prefer the prepared blob
     const path = `${userId}/logo.png`;
 
     const { error: upErr } = await supabase.storage
@@ -268,7 +268,7 @@ export default function Settings() {
           </label>
 
           <label className="block">
-            <span className="text-sm">Logo (auto-resized to 300×300 PNG)</span>
+            <span className="text-sm">Logo (auto-resized to 400×400 PNG)</span>
             <input
               type="file"
               accept="image/*"
@@ -279,9 +279,9 @@ export default function Settings() {
                 setErr(null);
                 try {
                   if (f) {
-                    const blob = await resizeTo300PNG(f);
+                    const blob = await resizeTo400PNG(f);
                     setResizedLogo(blob);
-                    setLogoPreview(URL.createObjectURL(blob)); // preview the 300×300 version
+                    setLogoPreview(URL.createObjectURL(blob)); // preview the 400×400 version
                   } else {
                     setResizedLogo(null);
                     setLogoPreview(cleaner.logo_url ?? null);
@@ -300,7 +300,7 @@ export default function Settings() {
                 className="mt-2 h-20 w-20 object-contain rounded bg-white"
               />
             )}
-            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
+            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 400×400 image.</p>
           </label>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
@@ -318,7 +318,7 @@ export default function Settings() {
         <div className="p-4 border rounded-xl text-sm text-gray-600">
           <p className="mb-2 font-semibold">Tips</p>
           <ul className="list-disc ml-5 space-y-1">
-            <li>Your logo is stored and served as a **300×300 PNG** for consistent display.</li>
+            <li>Your logo is stored and served as a **400×400 PNG** for consistent display.</li>
             <li>Keep your address accurate so search results and quotes show the right area.</li>
             <li>Website and phone are optional but help customers contact you faster.</li>
           </ul>
