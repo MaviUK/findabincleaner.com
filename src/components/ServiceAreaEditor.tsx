@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabase";
  * - Create: click to add vertices → Finish & Save (insert)
  * - Edit: select → polygon becomes editable → Save (update) / Delete
  * - Save enables when name OR geometry changed
- * - Robust listener attach: on selection AND when the selected polygon mounts
+ * - Robust attach for edit listeners: on select, on polygon mount, and on first interaction
  */
 
 type Mode = "idle" | "drawing" | "editing";
@@ -78,7 +78,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   // Geometry buffers / refs
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
 
-  // Keep polygon instances by area id; attach listeners on selection or mount
+  // Keep polygon instances by area id; attach listeners on selection/mount/interaction
   const polyRefs = useRef(new Map<string, google.maps.Polygon>());
   const selectedPolyRef = useRef<google.maps.Polygon | null>(null);
   const listenerRefs = useRef<google.maps.MapsEventListener[]>([]);
@@ -176,50 +176,14 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setSelectedId((data as ServiceAreaRow)?.id ?? null);
   }
 
-  // ---------- Select / edit existing ----------
-  function selectArea(id: string) {
-    // Clear previous selection & listeners
-    listenerRefs.current.forEach((l) => l.remove());
-    listenerRefs.current = [];
-    editedPathRef.current = null;
-    selectedPolyRef.current = null;
-
-    setSelectedId(id);
-    setMode("editing");
-    setEditingDirty(false);
-    setNameDirty(false);
-
-    const found = areas.find((a) => a.id === id) || null;
-    setAreaName(found?.name ?? "");
-
-    if (found && mapRef.current) {
-      const b = new google.maps.LatLngBounds();
-      gjToPaths(found.gj).flat().forEach((pt) => b.extend(pt));
-      if (!b.isEmpty()) mapRef.current.fitBounds(b, 48);
-    }
-
-    // If the polygon instance already exists (mounted earlier), attach now
-    const maybePoly = polyRefs.current.get(id);
-    if (maybePoly) attachEditListeners(maybePoly);
-  }
-
-  function cancelEditing() {
-    listenerRefs.current.forEach((l) => l.remove());
-    listenerRefs.current = [];
-    setMode("idle");
-    setSelectedId(null);
-    setAreaName("");
-    setEditingDirty(false);
-    setNameDirty(false);
-    editedPathRef.current = null;
-    selectedPolyRef.current = null;
-  }
-
   // ---------- Attach listeners helper ----------
-  const attachEditListeners = useCallback((poly: google.maps.Polygon) => {
-    // clear old listeners first
+  const clearListeners = useCallback(() => {
     listenerRefs.current.forEach((l) => l.remove());
     listenerRefs.current = [];
+  }, []);
+
+  const attachEditListeners = useCallback((poly: google.maps.Polygon) => {
+    clearListeners();
 
     selectedPolyRef.current = poly;
     poly.setEditable(true);
@@ -237,14 +201,57 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       google.maps.event.addListener(path, "remove_at", updateFromPath),
       google.maps.event.addListener(path, "set_at", updateFromPath)
     );
-  }, []);
+  }, [clearListeners]);
 
-  // When selection changes OR polygons remount after a reload, (re)attach listeners
+  // ---------- Select / edit existing ----------
+  function selectArea(id: string) {
+    // Clear previous selection & listeners
+    clearListeners();
+    editedPathRef.current = null;
+    selectedPolyRef.current = null;
+
+    setSelectedId(id);
+    setMode("editing");
+    setEditingDirty(false);
+    setNameDirty(false);
+
+    const found = areas.find((a) => a.id === id) || null;
+    setAreaName(found?.name ?? "");
+
+    if (found && mapRef.current) {
+      const b = new google.maps.LatLngBounds();
+      gjToPaths(found.gj).flat().forEach((pt) => b.extend(pt));
+      if (!b.isEmpty()) mapRef.current.fitBounds(b, 48);
+    }
+
+    // Try to attach immediately if the polygon instance already exists
+    const maybePoly = polyRefs.current.get(id);
+    if (maybePoly) attachEditListeners(maybePoly);
+
+    // And retry on next tick in case the polygon mounts right after selection
+    setTimeout(() => {
+      const poly = polyRefs.current.get(id);
+      if (poly) attachEditListeners(poly);
+    }, 0);
+  }
+
+  function cancelEditing() {
+    clearListeners();
+    setMode("idle");
+    setSelectedId(null);
+    setAreaName("");
+    setEditingDirty(false);
+    setNameDirty(false);
+    editedPathRef.current = null;
+    selectedPolyRef.current = null;
+  }
+
+  // When polygons remount after a reload, reattach if we have a selection
   useEffect(() => {
     if (mode !== "editing" || !selectedId) return;
     const poly = polyRefs.current.get(selectedId);
     if (poly) attachEditListeners(poly);
-  }, [mode, selectedId, areas, attachEditListeners]); // include areas to catch remounts
+  }, [mode, selectedId, areas, attachEditListeners]);
 
   // ---------- Save / Delete ----------
   async function saveEditing() {
@@ -258,13 +265,16 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     // Prefer captured edits
     if (editedPathRef.current && editedPathRef.current.length >= 3) {
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
-    } else if (selectedPolyRef.current) {
-      // Fallback: read live vertices from polygon instance
-      const path = selectedPolyRef.current.getPath();
-      const pts: google.maps.LatLngLiteral[] = [];
-      for (let i = 0; i < path.getLength(); i++) pts.push(path.getAt(i).toJSON());
-      if (pts.length >= 3) {
-        gj = pathsToMultiPolygonGeoJSON([pts]);
+    } else {
+      // Fallback: read live vertices from whichever instance we have
+      let poly = selectedPolyRef.current || polyRefs.current.get(selectedId) || null;
+      if (poly) {
+        const path = poly.getPath();
+        const pts: google.maps.LatLngLiteral[] = [];
+        for (let i = 0; i < path.getLength(); i++) pts.push(path.getAt(i).toJSON());
+        if (pts.length >= 3) {
+          gj = pathsToMultiPolygonGeoJSON([pts]);
+        }
       }
     }
 
@@ -284,8 +294,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     editedPathRef.current = null;
 
     await loadAreas();
-    // keep focus; listeners will reattach because `areas` changed and we include it in deps
-    setSelectedId(area.id);
+    setSelectedId(area.id); // keep focus
   }
 
   async function deleteSelected() {
@@ -295,9 +304,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setError(error.message);
       return;
     }
-    // cleanup
-    listenerRefs.current.forEach((l) => l.remove());
-    listenerRefs.current = [];
+    clearListeners();
     polyRefs.current.delete(selectedId);
     setSelectedId(null);
     setMode("idle");
@@ -311,7 +318,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       polyRefs.current.set(areaId, poly);
       poly.setEditable(areaId === selectedId && mode === "editing");
 
-      // If this polygon is the currently selected one, attach listeners NOW.
+      // If this polygon is the selected one, attach now (covers first render after save)
       if (mode === "editing" && selectedId === areaId) {
         attachEditListeners(poly);
       }
@@ -321,12 +328,18 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
 
   const handlePolygonUnmount = useCallback((areaId: string) => {
     if (polyRefs.current.get(areaId) === selectedPolyRef.current) {
-      listenerRefs.current.forEach((l) => l.remove());
-      listenerRefs.current = [];
+      clearListeners();
       selectedPolyRef.current = null;
     }
     polyRefs.current.delete(areaId);
-  }, []);
+  }, [clearListeners]);
+
+  // Also attach on first user interaction (covers “drag immediately after select”)
+  const handlePolygonMouseDown = useCallback((areaId: string) => {
+    if (mode !== "editing" || !selectedId || selectedId !== areaId) return;
+    const poly = polyRefs.current.get(areaId);
+    if (poly) attachEditListeners(poly);
+  }, [mode, selectedId, attachEditListeners]);
 
   if (loadError) {
     return <div className="text-red-600">Failed to load Google Maps.</div>;
@@ -491,6 +504,8 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                   onClick={() => selectArea(a.id)}
                   onLoad={(poly) => handlePolygonLoad(poly, a.id)}
                   onUnmount={() => handlePolygonUnmount(a.id)}
+                  // Attach on first interaction to catch instant drags
+                  onMouseDown={() => handlePolygonMouseDown(a.id)}
                 />
               );
             })}
@@ -519,10 +534,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   );
 }
 
-/* ---------- Polygon load/unmount handlers (after component to keep above code tidy) ---------- */
-function handlePolygonLoad(poly: google.maps.Polygon, areaId: string) {
-  // This function body is replaced in the component via useCallback; this stub is only for TS hints.
-}
-function handlePolygonUnmount(areaId: string) {
-  // Stub for TS hints; the real function is defined above in the component.
-}
+/* Stubs for TS hints; real handlers are defined via useCallback above */
+function handlePolygonLoad(_: google.maps.Polygon, __: string) {}
+function handlePolygonUnmount(_: string) {}
+function handlePolygonMouseDown(_: string) {}
