@@ -141,7 +141,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase.rpc("list_service_areas", { cleaner_id: cleanerId });
+      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: cleanerId });
       if (error) throw error;
       setServiceAreas(data || []);
     } catch (e: any) {
@@ -226,17 +226,17 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       if (activeAreaId) {
         // update
         const { data, error } = await supabase.rpc("update_service_area", {
-          area_id: activeAreaId,
-          cleaner_id: cleanerId,
-          gj: multi,
-          name: draftName || "Untitled Area",
+          p_area_id: activeAreaId,
+          p_cleaner_id: cleanerId,
+          p_gj: multi,
+          p_name: draftName || "Untitled Area",
         });
         if (error) throw error;
       } else {
         const { data, error } = await supabase.rpc("insert_service_area", {
-          cleaner_id: cleanerId,
-          gj: multi,
-          name: draftName || "Untitled Area",
+          p_cleaner_id: cleanerId,
+          p_gj: multi,
+          p_name: draftName || "Untitled Area",
         });
         if (error) throw error;
       }
@@ -255,7 +255,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setLoading(true);
       setError(null);
       try {
-        const { error } = await supabase.rpc("delete_service_area", { area_id: area.id, cleaner_id: cleanerId });
+        const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id, p_cleaner_id: cleanerId });
         if (error) throw error;
         await fetchAreas();
       } catch (e: any) {
