@@ -198,14 +198,26 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     editedPathRef.current = null;
   }
 
-  async function saveEditing() {
+   async function saveEditing() {
     if (mode !== "editing" || !selectedId) return;
     const area = areas.find((a) => a.id === selectedId);
     if (!area) return;
 
     let gj = area.gj;
+
     if (editedPathRef.current && editedPathRef.current.length >= 3) {
+      // geometry changed via listeners
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
+    } else if (selectedPolyRef.current) {
+      // Fallback: read whatever is on the map right now
+      const path = selectedPolyRef.current.getPath();
+      const pts: google.maps.LatLngLiteral[] = [];
+      for (let i = 0; i < path.getLength(); i++) {
+        pts.push(path.getAt(i).toJSON());
+      }
+      if (pts.length >= 3) {
+        gj = pathsToMultiPolygonGeoJSON([pts]);
+      }
     }
 
     const nameToSave = areaName.trim() || "Service Area";
@@ -218,44 +230,40 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setError(error.message);
       return;
     }
+
     setEditingDirty(false);
     setNameDirty(false);
     editedPathRef.current = null;
-    await loadAreas();
-  }
 
-  async function deleteSelected() {
-    if (!selectedId) return;
-    const { error } = await supabase.rpc("delete_service_area", { p_area_id: selectedId });
-    if (error) {
-      setError(error.message);
-      return;
-    }
-    setSelectedId(null);
-    setMode("idle");
-    setAreaName("");
+    // Keep you in context: reload areas but stay on the same selection
     await loadAreas();
+    setSelectedId(area.id);
   }
 
   // ---------- Polygon load (for editing) ----------
   const onPolygonLoad = useCallback(
-    (poly: google.maps.Polygon) => {
-      if (mode !== "editing" || !selectedArea) return;
-      const path = poly.getPath();
-      const updateRefFromPath = () => {
-        const pts: google.maps.LatLngLiteral[] = [];
-        for (let i = 0; i < path.getLength(); i++) {
-          pts.push(path.getAt(i).toJSON());
-        }
-        editedPathRef.current = pts;
-        setEditingDirty(true);
-      };
-      google.maps.event.addListener(path, "insert_at", updateRefFromPath);
-      google.maps.event.addListener(path, "remove_at", updateRefFromPath);
-      google.maps.event.addListener(path, "set_at", updateRefFromPath);
-    },
-    [mode, selectedArea]
-  );
+  (poly: google.maps.Polygon) => {
+    if (mode !== "editing" || !selectedArea) return;
+
+    // ADD THIS:
+    selectedPolyRef.current = poly;
+
+    const path = poly.getPath();
+    const updateRefFromPath = () => {
+      const pts: google.maps.LatLngLiteral[] = [];
+      for (let i = 0; i < path.getLength(); i++) {
+        pts.push(path.getAt(i).toJSON());
+      }
+      editedPathRef.current = pts;
+      setEditingDirty(true);
+    };
+    google.maps.event.addListener(path, "insert_at", updateRefFromPath);
+    google.maps.event.addListener(path, "remove_at", updateRefFromPath);
+    google.maps.event.addListener(path, "set_at", updateRefFromPath);
+  },
+  [mode, selectedArea]
+);
+
 
   if (loadError) {
     return <div className="text-red-600">Failed to load Google Maps.</div>;
