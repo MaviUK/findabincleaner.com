@@ -3,11 +3,11 @@ import { GoogleMap, Polygon, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
 
 /**
- * ServiceAreaEditor_v2 (custom drawing, no DrawingManager)
+ * ServiceAreaEditor (custom drawing, no DrawingManager)
  * - Create: click to add vertices → Finish & Save (insert)
- * - Edit: select existing → polygon becomes editable → Save (update) / Delete
+ * - Edit: select → polygon becomes editable → Save (update) / Delete
  * - Rename on create & edit; Save enables when name OR geometry changed
- * - Stores as GeoJSON MultiPolygon in service_areas.gj
+ * - Stores as GeoJSON MultiPolygon in service_areas.gj (outer ring only)
  */
 
 type Mode = "idle" | "drawing" | "editing";
@@ -43,7 +43,7 @@ function ensureClosedRing(ring: google.maps.LatLngLiteral[]): google.maps.LatLng
 function pathsToMultiPolygonGeoJSON(paths: google.maps.LatLngLiteral[][]): any {
   const coords = paths.map((ring) => {
     const closed = ensureClosedRing(ring).map((pt) => [pt.lng, pt.lat]);
-    return [closed];
+    return [closed]; // outer ring only
   });
   return { type: "MultiPolygon", coordinates: coords };
 }
@@ -75,7 +75,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [editingDirty, setEditingDirty] = useState(false);
   const [nameDirty, setNameDirty] = useState(false);
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
+
+  // Live polygon handle for the selected area (so we can read its path on save)
   const selectedPolyRef = useRef<google.maps.Polygon | null>(null);
+
+  // Enable Save only if something changed (name or geometry)
   const canSave = nameDirty || editingDirty;
 
   const selectedArea = useMemo(
@@ -197,20 +201,23 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     selectedPolyRef.current = null;
   }
 
+  // ---------- Save / Delete ----------
   async function saveEditing() {
     if (mode !== "editing" || !selectedId) return;
     const area = areas.find((a) => a.id === selectedId);
     if (!area) return;
 
+    // Start with the server's current geometry
     let gj = area.gj;
+
+    // If path listeners captured a change, prefer that geometry
     if (editedPathRef.current && editedPathRef.current.length >= 3) {
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
     } else if (selectedPolyRef.current) {
+      // Fallback: read the current vertices off the map
       const path = selectedPolyRef.current.getPath();
       const pts: google.maps.LatLngLiteral[] = [];
-      for (let i = 0; i < path.getLength(); i++) {
-        pts.push(path.getAt(i).toJSON());
-      }
+      for (let i = 0; i < path.getLength(); i++) pts.push(path.getAt(i).toJSON());
       if (pts.length >= 3) {
         gj = pathsToMultiPolygonGeoJSON([pts]);
       }
@@ -226,10 +233,14 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setError(error.message);
       return;
     }
+
     setEditingDirty(false);
     setNameDirty(false);
     editedPathRef.current = null;
+
+    // Reload and keep focus on the same area
     await loadAreas();
+    setSelectedId(area.id);
   }
 
   async function deleteSelected() {
@@ -247,9 +258,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
 
   // ---------- Polygon load (for editing) ----------
   const onPolygonLoad = useCallback(
-    (poly: google.maps.Polygon) => {
-      if (mode !== "editing" || !selectedArea) return;
+    (poly: google.maps.Polygon, areaId: string) => {
+      // Only attach listeners to the polygon that belongs to the SELECTED area
+      if (mode !== "editing" || !selectedId || areaId !== selectedId) return;
+
       selectedPolyRef.current = poly;
+
       const path = poly.getPath();
       const updateRefFromPath = () => {
         const pts: google.maps.LatLngLiteral[] = [];
@@ -257,13 +271,13 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           pts.push(path.getAt(i).toJSON());
         }
         editedPathRef.current = pts;
-        setEditingDirty(true);
+        setEditingDirty(true); // Save becomes enabled on any vertex edit
       };
       google.maps.event.addListener(path, "insert_at", updateRefFromPath);
       google.maps.event.addListener(path, "remove_at", updateRefFromPath);
       google.maps.event.addListener(path, "set_at", updateRefFromPath);
     },
-    [mode, selectedArea]
+    [mode, selectedId]
   );
 
   if (loadError) {
@@ -313,7 +327,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                 clicking on the map to draw.
               </div>
             )}
-        </div>
+          </div>
         )}
 
         {mode === "drawing" && (
@@ -363,7 +377,10 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             <input
               type="text"
               value={areaName}
-              onChange={(e) => { setAreaName(e.target.value); setNameDirty(true); }}
+              onChange={(e) => {
+                setAreaName(e.target.value);
+                setNameDirty(true);
+              }}
               placeholder="Area name"
               className="w-full border rounded-lg px-3 py-1.5 text-sm"
             />
@@ -406,7 +423,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               fullscreenControl: false,
             }}
           >
-            {/* Existing areas */}
+            {/* Existing areas (render outer ring only) */}
             {areas.map((a) => {
               const paths = gjToPaths(a.gj);
               const isSelected = selectedId === a.id && mode === "editing";
@@ -424,7 +441,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                     zIndex: isSelected ? 2 : 1,
                   }}
                   onClick={() => selectArea(a.id)}
-                  onLoad={onPolygonLoad}
+                  onLoad={(poly) => onPolygonLoad(poly, a.id)} // pass area id so we only bind to selected
                 />
               );
             })}
