@@ -255,7 +255,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setLoading(true);
       setError(null);
       try {
-        const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id, p_cleaner_id: cleanerId });
+       const { error } = await supabase.rpc("update_service_area", {
+  p_area_id: activeAreaId,
+  p_gj: multi,
+  p_name: draftName || "Untitled Area",
+});
         if (error) throw error;
         await fetchAreas();
       } catch (e: any) {
