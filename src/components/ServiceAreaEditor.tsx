@@ -75,9 +75,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [editingDirty, setEditingDirty] = useState(false);
   const [nameDirty, setNameDirty] = useState(false);
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
-  const selectedPolyRef = useRef<google.maps.Polygon | null>(null); // <-- NEW: live polygon handle
-
-  // Enable Save only if something changed (name or geometry)
+  const selectedPolyRef = useRef<google.maps.Polygon | null>(null);
   const canSave = nameDirty || editingDirty;
 
   const selectedArea = useMemo(
@@ -204,17 +202,15 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     const area = areas.find((a) => a.id === selectedId);
     if (!area) return;
 
-    // Start with the server's current geometry
     let gj = area.gj;
-
-    // If our edit listeners captured a path, prefer that
     if (editedPathRef.current && editedPathRef.current.length >= 3) {
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
     } else if (selectedPolyRef.current) {
-      // Fallback: read the live path from the on-map polygon
       const path = selectedPolyRef.current.getPath();
       const pts: google.maps.LatLngLiteral[] = [];
-      for (let i = 0; i < path.getLength(); i++) pts.push(path.getAt(i).toJSON());
+      for (let i = 0; i < path.getLength(); i++) {
+        pts.push(path.getAt(i).toJSON());
+      }
       if (pts.length >= 3) {
         gj = pathsToMultiPolygonGeoJSON([pts]);
       }
@@ -230,14 +226,10 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       setError(error.message);
       return;
     }
-
     setEditingDirty(false);
     setNameDirty(false);
     editedPathRef.current = null;
-
-    // Reload and keep focus on the same area
     await loadAreas();
-    setSelectedId(area.id);
   }
 
   async function deleteSelected() {
@@ -257,10 +249,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const onPolygonLoad = useCallback(
     (poly: google.maps.Polygon) => {
       if (mode !== "editing" || !selectedArea) return;
-
-      // Keep a handle to the live polygon so we can read path on save
       selectedPolyRef.current = poly;
-
       const path = poly.getPath();
       const updateRefFromPath = () => {
         const pts: google.maps.LatLngLiteral[] = [];
@@ -268,7 +257,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           pts.push(path.getAt(i).toJSON());
         }
         editedPathRef.current = pts;
-        setEditingDirty(true); // enables Save when map is edited
+        setEditingDirty(true);
       };
       google.maps.event.addListener(path, "insert_at", updateRefFromPath);
       google.maps.event.addListener(path, "remove_at", updateRefFromPath);
@@ -324,7 +313,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                 clicking on the map to draw.
               </div>
             )}
-          </div>
+        </div>
         )}
 
         {mode === "drawing" && (
@@ -374,10 +363,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             <input
               type="text"
               value={areaName}
-              onChange={(e) => {
-                setAreaName(e.target.value);
-                setNameDirty(true);
-              }}
+              onChange={(e) => { setAreaName(e.target.value); setNameDirty(true); }}
               placeholder="Area name"
               className="w-full border rounded-lg px-3 py-1.5 text-sm"
             />
