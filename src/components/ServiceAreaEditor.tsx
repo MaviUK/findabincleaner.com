@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Polygon, useJsApiLoader } from "@react-google-maps/api";
-import type { LatLngLiteral } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
 
 /**
@@ -30,21 +29,21 @@ interface ServiceAreaRow {
 type Mode = "idle" | "drawing" | "editing";
 
 // --- Helpers: GeoJSON <-> paths ---
-function gjToPaths(gj: any): LatLngLiteral[][] {
+function gjToPaths(gj: any): google.maps.LatLngLiteral[][] {
   // Expect MultiPolygon [[[ [lng,lat], ... ]]]
-  const paths: LatLngLiteral[][] = [];
+  const paths: google.maps.LatLngLiteral[][] = [];
   if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return paths;
   // We only render the first polygon ring of each polygon (outer ring)
   for (const polygon of gj.coordinates) {
     if (!polygon || !Array.isArray(polygon[0])) continue;
     const outer = polygon[0];
-    const ring: LatLngLiteral[] = outer.map((c: number[]) => ({ lat: c[1], lng: c[0] }));
+    const ring: google.maps.LatLngLiteral[] = outer.map((c: number[]) => ({ lat: c[1], lng: c[0] }));
     paths.push(ring);
   }
   return paths;
 }
 
-function pathsToMultiPolygonGeoJSON(paths: LatLngLiteral[][]): any {
+function pathsToMultiPolygonGeoJSON(paths: google.maps.LatLngLiteral[][]): any {
   // MultiPolygon expects [[[ [lng,lat] ]]] with closed rings
   const coords = paths.map((ring) => {
     const closed = ring.length > 0 && (ring[0].lat !== ring[ring.length - 1].lat || ring[0].lng !== ring[ring.length - 1].lng)
@@ -61,7 +60,7 @@ function pathsToMultiPolygonGeoJSON(paths: LatLngLiteral[][]): any {
 
 // --- Map defaults ---
 const containerStyle: React.CSSProperties = { width: "100%", height: 520 };
-const defaultCenter: LatLngLiteral = { lat: 54.653, lng: -5.669 }; // Bangor-ish as sensible NI default
+const defaultCenter: google.maps.LatLngLiteral = { lat: 54.653, lng: -5.669 }; // Bangor-ish as sensible NI default
 
 export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) {
   const { isLoaded } = useJsApiLoader({ id: "gmap-script", googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY });
@@ -74,10 +73,10 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [error, setError] = useState<string | null>(null);
 
   // Draft drawing state
-  const [draftPath, setDraftPath] = useState<LatLngLiteral[]>([]);
+  const [draftPath, setDraftPath] = useState<google.maps.LatLngLiteral[]>([]);
 
   // Live editing state for selected polygon
-  const editedPathRef = useRef<LatLngLiteral[] | null>(null);
+  const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
   const [editingDirty, setEditingDirty] = useState(false);
 
   // --- Load areas ---
@@ -224,7 +223,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     const path = poly.getPath();
 
     const updateRefFromPath = () => {
-      const pts: LatLngLiteral[] = [];
+      const pts: google.maps.LatLngLiteral[] = [];
       for (let i = 0; i < path.getLength(); i++) {
         const p = path.getAt(i).toJSON();
         pts.push(p);
