@@ -57,18 +57,16 @@ function pathToGeoJSONRing(path: google.maps.MVCArray<google.maps.LatLng> | goog
 
 // Assemble MultiPolygon from an array of google.maps.Polygon
 function makeMultiPolygon(polys: google.maps.Polygon[]): any {
+  // MultiPolygon = array of Polygons; each Polygon = array of LinearRings; each LinearRing = array of [lng,lat]
   const coords: number[][][][] = polys.map((poly) => {
     const paths = poly.getPaths();
     const rings: number[][][] = [];
-    // Outer ring + possible holes
     for (let i = 0; i < paths.getLength(); i++) {
       const path = paths.getAt(i);
       rings.push(pathToGeoJSONRing(path));
     }
-    return rings;
+    return rings; // <— one Polygon worth of rings
   });
-  return { type: "MultiPolygon", coordinates: coords };
-});
   return { type: "MultiPolygon", coordinates: coords };
 }
 
