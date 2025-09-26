@@ -323,6 +323,24 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
             </div>
           </div>
+        )}
+                placeholder="Area name"
+                className="flex-1 border rounded-lg px-3 py-1.5 text-sm"
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button onClick={undoVertex} className="px-3 py-1.5 border rounded-lg text-sm">Undo</button>
+              <button onClick={clearDraft} className="px-3 py-1.5 border rounded-lg text-sm">Clear</button>
+              <button
+                onClick={finishDraft}
+                disabled={draftPath.length < 3}
+                className={`px-3 py-1.5 rounded-lg text-sm ${draftPath.length < 3 ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
+              >
+                Finish & Save
+              </button>
+              <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
+            </div>
+          </div>
         )} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
             </div>
           </div>
@@ -335,6 +353,23 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               type="text"
               value={areaName}
               onChange={(e) => setAreaName(e.target.value)}
+              placeholder="Area name"
+              className="w-full border rounded-lg px-3 py-1.5 text-sm"
+            />
+            <div className="text-xs text-gray-600">Drag vertices to adjust the shape. Add points by dragging midpoints.</div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                onClick={saveEditing}
+                disabled={!editingDirty}
+                className={`px-3 py-1.5 rounded-lg text-sm ${!editingDirty ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
+              >
+                Save changes
+              </button>
+              <button onClick={cancelEditing} className="px-3 py-1.5 border rounded-lg text-sm">Close</button>
+              <button onClick={deleteSelected} className="px-3 py-1.5 border rounded-lg text-sm text-red-600">Delete</button>
+            </div>
+          </div>
+        )}
               placeholder="Area name"
               className="w-full border rounded-lg px-3 py-1.5 text-sm"
             />
