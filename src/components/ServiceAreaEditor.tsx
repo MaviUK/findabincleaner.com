@@ -73,10 +73,10 @@ function makeMultiPolygon(polys: google.maps.Polygon[]): any {
 // Normalize MultiPolygon for rough duplicate detection
 function normalizeMultiPolygon(multi: any): string {
   if (!multi || multi.type !== "MultiPolygon") return "";
-  const polys = (multi.coordinates as number[][][][]).map((poly) =>
-    poly[0]
-      .map((ring) => ring.map(([lng, lat]) => [round(lng, 5), round(lat, 5)]))
-      .map((ring) => JSON.stringify(ring))
+  const polys = (multi.coordinates as number[][][][]).map((rings: number[][][]) =>
+    rings
+      .map((ring: number[][]) => ring.map(([lng, lat]) => [round(lng, 5), round(lat, 5)]))
+      .map((ring: number[][]) => JSON.stringify(ring))
       .sort()
       .join("|")
   );
