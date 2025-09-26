@@ -65,8 +65,10 @@ function makeMultiPolygon(polys: google.maps.Polygon[]): any {
       const path = paths.getAt(i);
       rings.push(pathToGeoJSONRing(path));
     }
-    return [rings]; // Each Polygon -> one Polygon item (with rings). We don't draw holes in UI, but API supports.
+    return rings;
   });
+  return { type: "MultiPolygon", coordinates: coords };
+});
   return { type: "MultiPolygon", coordinates: coords };
 }
 
@@ -187,7 +189,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       if (!gj || gj.type !== "MultiPolygon") return;
       const newPolys: google.maps.Polygon[] = [];
       (gj.coordinates as number[][][][]).forEach((poly) => {
-        const rings = poly[0];
+        const rings = poly;
         const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
         const gpoly = new google.maps.Polygon({ paths, ...polyStyle, editable: true });
         gpoly.setMap(mapRef.current);
@@ -279,7 +281,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     if (!gj || gj.type !== "MultiPolygon") return;
     const bounds = new google.maps.LatLngBounds();
     (gj.coordinates as number[][][][]).forEach((poly) => {
-      const rings = poly[0];
+      const rings = poly;
       rings.forEach((ring) =>
         ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng)))
       );
@@ -405,7 +407,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               const gj = a.gj;
               if (!gj || gj.type !== "MultiPolygon") return null;
               return (gj.coordinates as number[][][][]).map((poly, i) => {
-                const rings = poly[0];
+                const rings = poly;
                 const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
                 return <Polygon key={`${a.id}-${i}`} paths={paths} options={{ ...polyStyle, editable: false, draggable: false }} />;
               });
