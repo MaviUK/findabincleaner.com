@@ -8,8 +8,8 @@ import { supabase } from "../lib/supabase";
  * - RPCs used:
  *    list_service_areas(p_cleaner_id)
  *    insert_service_area(p_cleaner_id, p_gj, p_name)
- *    update_service_area(p_area_id, p_gj, p_name)        // cleaner inferred by auth.uid() in SQL
- *    delete_service_area(p_area_id)                       // cleaner inferred by auth.uid() in SQL
+ *    update_service_area(p_area_id, p_gj, p_name)   // owner inferred via auth.uid() in SQL
+ *    delete_service_area(p_area_id)                 // owner inferred via auth.uid() in SQL
  * - Tailwind helpers expected: card, card-pad, btn, input, etc.
  */
 
@@ -126,16 +126,18 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // current draft / edit state
+  // draft / edit state
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState<string>("");
   const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
+  const [creating, setCreating] = useState<boolean>(false); // show panel as soon as "New Area" is clicked
 
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
     setDraftPolys([]);
     setDraftName("");
     setActiveAreaId(null);
+    setCreating(false);
   }, [draftPolys]);
 
   // Fetch areas
@@ -169,7 +171,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
     poly.setOptions(polyStyle);
     poly.setEditable(true);
-    // exit drawing mode so clicks don't start a new polygon immediately
+    // stop auto-starting another polygon
     drawingMgrRef.current?.setDrawingMode(null);
     setDraftPolys((prev) => [...prev, poly]);
   }, []);
@@ -177,6 +179,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   // Start a new area
   const startNewArea = useCallback(() => {
     resetDraft();
+    setCreating(true); // show panel immediately
     setDraftName("New Service Area");
     setTimeout(
       () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
@@ -248,6 +251,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       }
       await fetchAreas();
       resetDraft();
+      setCreating(false);
     } catch (e: any) {
       setError(e.message || "Failed to save area");
     } finally {
@@ -265,10 +269,8 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
         const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
         if (error) throw error;
         if (activeAreaId === area.id) resetDraft();
-        // update UI after success
-        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
-        // sanity refresh
-        await fetchAreas();
+        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id)); // optimistic remove
+        await fetchAreas(); // final refresh
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
       } finally {
@@ -280,6 +282,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
 
   const cancelDraft = useCallback(() => {
     resetDraft();
+    setCreating(false);
   }, [resetDraft]);
 
   // Center map on first area if available
@@ -326,7 +329,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           )}
 
           {/* Draft editor */}
-          {(draftPolys.length > 0 || activeAreaId !== null) && (
+          {(creating || activeAreaId !== null || draftPolys.length > 0) && (
             <div className="border rounded-lg p-3 mb-4">
               <div className="flex items-center gap-2 mb-2">
                 <input
@@ -336,9 +339,17 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                   placeholder="Area name"
                 />
               </div>
+
+              {creating && draftPolys.length === 0 && (
+                <div className="text-xs text-gray-600 mb-2">
+                  Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                </div>
+              )}
+
               <div className="text-sm text-gray-600 mb-2">
                 Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
               </div>
+
               <div className="flex gap-2">
                 <button className="btn" onClick={saveDraft} disabled={loading}>
                   {activeAreaId ? "Save Changes" : "Save Area"}
