@@ -4,20 +4,14 @@ import { supabase } from "../lib/supabase";
 
 /**
  * ServiceAreaEditor (custom drawing, no DrawingManager)
- *
- * Features
- * - Load & list areas (RPC list_service_areas)
- * - Create new area: click-to-add vertices ➜ Finish ➜ saved via insert_service_area
- * - Edit existing area: select ➜ polygon becomes editable ➜ Save to update_service_area
- * - Delete area (delete_service_area)
- * - Fit bounds to first area
- *
- * Notes
- * - Stores geometry as GeoJSON MultiPolygon in `gj`
- * - Uses only core Maps JS overlays (Polygon), avoiding deprecated Drawing Library
+ * - Click-to-add vertices ➜ Finish & Save (insert)
+ * - Select existing ➜ editable polygon ➜ Save (update) / Delete
+ * - Name areas on create & edit
+ * - Stores as GeoJSON MultiPolygon in service_areas.gj
  */
 
-// --- Types ---
+type Mode = "idle" | "drawing" | "editing";
+
 interface ServiceAreaRow {
   id: string;
   cleaner_id: string;
@@ -26,61 +20,69 @@ interface ServiceAreaRow {
   created_at: string;
 }
 
-type Mode = "idle" | "drawing" | "editing";
-
-// --- Helpers: GeoJSON <-> paths ---
+// ---------- Helpers: GeoJSON <-> Maps paths ----------
 function gjToPaths(gj: any): google.maps.LatLngLiteral[][] {
-  // Expect MultiPolygon [[[ [lng,lat], ... ]]]
-  const paths: google.maps.LatLngLiteral[][] = [];
-  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return paths;
-  // We only render the first polygon ring of each polygon (outer ring)
-  for (const polygon of gj.coordinates) {
-    if (!polygon || !Array.isArray(polygon[0])) continue;
-    const outer = polygon[0];
-    const ring: google.maps.LatLngLiteral[] = outer.map((c: number[]) => ({ lat: c[1], lng: c[0] }));
-    paths.push(ring);
+  const out: google.maps.LatLngLiteral[][] = [];
+  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return out;
+  // Only outer rings for display/edit (first ring of each polygon)
+  for (const polygon of gj.coordinates as number[][][][]) {
+    const outer = polygon?.[0];
+    if (!outer) continue;
+    out.push(outer.map(([lng, lat]) => ({ lat, lng })));
   }
-  return paths;
+  return out;
+}
+
+function ensureClosedRing(ring: google.maps.LatLngLiteral[]): google.maps.LatLngLiteral[] {
+  if (ring.length < 3) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first.lat === last.lat && first.lng === last.lng) return ring;
+  return [...ring, first];
 }
 
 function pathsToMultiPolygonGeoJSON(paths: google.maps.LatLngLiteral[][]): any {
-  // MultiPolygon expects [[[ [lng,lat] ]]] with closed rings
   const coords = paths.map((ring) => {
-    const closed = ring.length > 0 && (ring[0].lat !== ring[ring.length - 1].lat || ring[0].lng !== ring[ring.length - 1].lng)
-      ? [...ring, ring[0]]
-      : ring;
-    const asLngLat = closed.map(pt => [pt.lng, pt.lat]);
-    return [asLngLat]; // outer ring only
+    const closed = ensureClosedRing(ring).map((pt) => [pt.lng, pt.lat]);
+    return [closed]; // outer ring only
   });
-  return {
-    type: "MultiPolygon",
-    coordinates: coords,
-  };
+  return { type: "MultiPolygon", coordinates: coords };
 }
 
-// --- Map defaults ---
+// ---------- Map defaults ----------
 const containerStyle: React.CSSProperties = { width: "100%", height: 520 };
-const defaultCenter: google.maps.LatLngLiteral = { lat: 54.653, lng: -5.669 }; // Bangor-ish as sensible NI default
+const defaultCenter: google.maps.LatLngLiteral = { lat: 54.653, lng: -5.669 };
 
+// ======================================================
 export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) {
-  const { isLoaded } = useJsApiLoader({ id: "gmap-script", googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY });
+  const { isLoaded, loadError } = useJsApiLoader({
+    id: "gmap-script",
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
+  });
 
   const mapRef = useRef<google.maps.Map | null>(null);
+
   const [mode, setMode] = useState<Mode>("idle");
   const [areas, setAreas] = useState<ServiceAreaRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Draft drawing state
+  // Drawing draft
   const [draftPath, setDraftPath] = useState<google.maps.LatLngLiteral[]>([]);
-
-  // Live editing state for selected polygon
-  const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
-  const [editingDirty, setEditingDirty] = useState(false);
   const [areaName, setAreaName] = useState<string>("");
 
-  // --- Load areas ---
+  // Editing existing
+  const [editingDirty, setEditingDirty] = useState(false);
+  const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
+
+  const selectedArea = useMemo(
+    () => (selectedId ? areas.find((a) => a.id === selectedId) ?? null : null),
+    [areas, selectedId]
+  );
+
+  // ---------- Load areas ----------
   const loadAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -98,29 +100,32 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     loadAreas();
   }, [loadAreas]);
 
-  // --- Fit bounds to first area on initial load ---
+  // ---------- Fit bounds to first area ----------
   useEffect(() => {
     if (!isLoaded || !mapRef.current || areas.length === 0) return;
     const first = areas[0];
     const paths = gjToPaths(first.gj);
-    const bounds = new google.maps.LatLngBounds();
-    paths.flat().forEach((pt) => bounds.extend(pt));
-    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 48);
+    const b = new google.maps.LatLngBounds();
+    paths.flat().forEach((pt) => b.extend(pt));
+    if (!b.isEmpty()) mapRef.current.fitBounds(b, 48);
   }, [isLoaded, areas]);
 
-  // --- Map handlers ---
+  // ---------- Map handlers ----------
   const onMapLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map;
   }, []);
 
-  const handleMapClick = useCallback((e: google.maps.MapMouseEvent) => {
-    if (mode !== "drawing") return;
-    const latLng = e.latLng?.toJSON();
-    if (!latLng) return;
-    setDraftPath((prev) => [...prev, latLng]);
-  }, [mode]);
+  const handleMapClick = useCallback(
+    (e: google.maps.MapMouseEvent) => {
+      if (mode !== "drawing") return;
+      const pt = e.latLng?.toJSON();
+      if (!pt) return;
+      setDraftPath((prev) => [...prev, pt]);
+    },
+    [mode]
+  );
 
-  // --- Start new area drawing ---
+  // ---------- Start / finish drawing ----------
   function startNewArea() {
     setMode("drawing");
     setSelectedId(null);
@@ -143,7 +148,8 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     if (mode !== "drawing" || draftPath.length < 3) return;
     const gj = pathsToMultiPolygonGeoJSON([draftPath]);
     const defaultName = `Service Area ${areas.length + 1}`;
-    const nameToSave = areaName?.trim() ? areaName.trim() : defaultName;
+    const nameToSave = areaName.trim() || defaultName;
+
     const { data, error } = await supabase.rpc("insert_service_area", {
       p_cleaner_id: cleanerId,
       p_gj: gj,
@@ -155,22 +161,24 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     }
     setMode("idle");
     setDraftPath([]);
+    setAreaName("");
     await loadAreas();
     setSelectedId((data as ServiceAreaRow)?.id ?? null);
   }
 
-  // --- Select & edit existing area ---
+  // ---------- Select / edit existing ----------
   function selectArea(id: string) {
     setSelectedId(id);
     setMode("editing");
     setEditingDirty(false);
     editedPathRef.current = null;
-    const found = areas.find(a => a.id === id);
+
+    const found = areas.find((a) => a.id === id) || null;
     setAreaName(found?.name ?? "");
-    // Fit bounds to this area
+
     if (found && mapRef.current) {
       const b = new google.maps.LatLngBounds();
-      gjToPaths(found.gj).flat().forEach(pt => b.extend(pt));
+      gjToPaths(found.gj).flat().forEach((pt) => b.extend(pt));
       if (!b.isEmpty()) mapRef.current.fitBounds(b, 48);
     }
   }
@@ -178,24 +186,26 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   function cancelEditing() {
     setMode("idle");
     setSelectedId(null);
+    setAreaName("");
     setEditingDirty(false);
     editedPathRef.current = null;
   }
 
   async function saveEditing() {
     if (mode !== "editing" || !selectedId) return;
-    const area = areas.find(a => a.id === selectedId);
+    const area = areas.find((a) => a.id === selectedId);
     if (!area) return;
 
     let gj = area.gj;
-    if (editedPathRef.current) {
+    if (editedPathRef.current && editedPathRef.current.length >= 3) {
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
     }
 
+    const nameToSave = areaName.trim() || "Service Area";
     const { error } = await supabase.rpc("update_service_area", {
       p_area_id: area.id,
       p_gj: gj,
-      p_name: (areaName?.trim() || "Service Area"),
+      p_name: nameToSave,
     });
     if (error) {
       setError(error.message);
@@ -215,59 +225,42 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     }
     setSelectedId(null);
     setMode("idle");
+    setAreaName("");
     await loadAreas();
   }
 
-  // --- Render helpers ---
-  const selectedArea = useMemo(() => areas.find(a => a.id === selectedId) ?? null, [areas, selectedId]);
+  // ---------- Polygon load (for editing) ----------
+  const onPolygonLoad = useCallback(
+    (poly: google.maps.Polygon) => {
+      if (mode !== "editing" || !selectedArea) return;
 
-  // Attach path listeners when a polygon loads in editing mode
-  const onPolygonLoad = useCallback((poly: google.maps.Polygon) => {
-    if (mode !== "editing" || !selectedArea) return;
-    const path = poly.getPath();
+      // Only track the first path (outer ring) for edits
+      const path = poly.getPath();
+      const updateRefFromPath = () => {
+        const pts: google.maps.LatLngLiteral[] = [];
+        for (let i = 0; i < path.getLength(); i++) {
+          pts.push(path.getAt(i).toJSON());
+        }
+        editedPathRef.current = pts;
+        setEditingDirty(true);
+      };
 
-    const updateRefFromPath = () => {
-      const pts: google.maps.LatLngLiteral[] = [];
-      for (let i = 0; i < path.getLength(); i++) {
-        const p = path.getAt(i).toJSON();
-        pts.push(p);
-      }
-      editedPathRef.current = pts;
-      setEditingDirty(true);
-    };
+      const insertListener = google.maps.event.addListener(path, "insert_at", updateRefFromPath);
+      const removeListener = google.maps.event.addListener(path, "remove_at", updateRefFromPath);
+      const setListener = google.maps.event.addListener(path, "set_at", updateRefFromPath);
 
-    // Listen to vertex edits
-    const insertListener = google.maps.event.addListener(path, "insert_at", updateRefFromPath);
-    const removeListener = google.maps.event.addListener(path, "remove_at", updateRefFromPath);
-    const setListener = google.maps.event.addListener(path, "set_at", updateRefFromPath);
+      return () => {
+        google.maps.event.removeListener(insertListener);
+        google.maps.event.removeListener(removeListener);
+        google.maps.event.removeListener(setListener);
+      };
+    },
+    [mode, selectedArea]
+  );
 
-    // Cleanup when polygon unmounts or mode changes
-    return () => {
-      google.maps.event.removeListener(insertListener);
-      google.maps.event.removeListener(removeListener);
-      google.maps.event.removeListener(setListener);
-    };
-  }, [mode, selectedArea]);
-
-  // List UI
-  function AreaList() {
-    return (
-      <div className="space-y-2">
-        {areas.map((a) => (
-          <button
-            key={a.id}
-            onClick={() => selectArea(a.id)}
-            className={`w-full text-left border rounded-xl px-3 py-2 hover:bg-gray-50 ${selectedId === a.id ? "border-black bg-gray-50" : "border-gray-200"}`}
-          >
-            <div className="font-medium">{a.name ?? "Untitled area"}</div>
-            <div className="text-xs text-gray-500">Created {new Date(a.created_at).toLocaleString()}</div>
-          </button>
-        ))}
-        {areas.length === 0 && (
-          <div className="text-sm text-gray-500">No service areas yet. Click <span className="font-medium">New Area</span> and start clicking on the map to draw.</div>
-        )}
-      </div>
-    );
+  // ---------- UI ----------
+  if (loadError) {
+    return <div className="text-red-600">Failed to load Google Maps.</div>;
   }
 
   return (
@@ -276,14 +269,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       <div className="lg:col-span-4 space-y-4">
         <div className="flex items-center justify-between">
           <h2 className="text-xl font-bold">Service Areas</h2>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={startNewArea}
-              className="px-3 py-2 rounded-lg bg-black text-white text-sm hover:opacity-90"
-            >
-              New Area
-            </button>
-          </div>
+          <button
+            onClick={startNewArea}
+            className="px-3 py-2 rounded-lg bg-black text-white text-sm hover:opacity-90"
+          >
+            New Area
+          </button>
         </div>
 
         {error && <div className="text-sm text-red-600">{error}</div>}
@@ -294,14 +285,38 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             <div className="h-10 bg-gray-100 rounded" />
           </div>
         ) : (
-          <AreaList />
+          <div className="space-y-2">
+            {areas.map((a) => (
+              <button
+                key={a.id}
+                onClick={() => selectArea(a.id)}
+                className={`w-full text-left border rounded-xl px-3 py-2 hover:bg-gray-50 ${
+                  selectedId === a.id ? "border-black bg-gray-50" : "border-gray-200"
+                }`}
+              >
+                <div className="font-medium">{a.name ?? "Untitled area"}</div>
+                <div className="text-xs text-gray-500">
+                  Created {new Date(a.created_at).toLocaleString()}
+                </div>
+              </button>
+            ))}
+            {areas.length === 0 && (
+              <div className="text-sm text-gray-500">
+                No service areas yet. Click <span className="font-medium">New Area</span> and start
+                clicking on the map to draw.
+              </div>
+            )}
+          </div>
         )}
 
         {mode === "drawing" && (
-          <div className="border rounded-xl p-3 space-y-2">
+          <div className="border rounded-xl p-3 space-y-3">
             <div className="font-medium">Drawing new area…</div>
-            <div className="text-xs text-gray-600">Click on the map to add points. You need at least 3 points. Use Undo to remove the last point.</div>
-            <div className="flex items-center gap-2 pt-1">
+            <div className="text-xs text-gray-600">
+              Click on the map to add points. You need at least 3 points. Use Undo to remove the
+              last point.
+            </div>
+            <div className="flex items-center gap-2">
               <input
                 type="text"
                 value={areaName}
@@ -310,44 +325,33 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                 className="flex-1 border rounded-lg px-3 py-1.5 text-sm"
               />
             </div>
-            <div className="flex gap-2 pt-1">
-              <button onClick={undoVertex} className="px-3 py-1.5 border rounded-lg text-sm">Undo</button>
-              <button onClick={clearDraft} className="px-3 py-1.5 border rounded-lg text-sm">Clear</button>
+            <div className="flex gap-2">
+              <button onClick={undoVertex} className="px-3 py-1.5 border rounded-lg text-sm">
+                Undo
+              </button>
+              <button onClick={clearDraft} className="px-3 py-1.5 border rounded-lg text-sm">
+                Clear
+              </button>
               <button
                 onClick={finishDraft}
                 disabled={draftPath.length < 3}
-                className={`px-3 py-1.5 rounded-lg text-sm ${draftPath.length < 3 ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  draftPath.length < 3
+                    ? "bg-gray-100 text-gray-400 border border-gray-200"
+                    : "bg-black text-white"
+                }`}
               >
-                Finish & Save
+                Finish &amp; Save
               </button>
-              <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
-            </div>
-          </div>
-        )}
-                placeholder="Area name"
-                className="flex-1 border rounded-lg px-3 py-1.5 text-sm"
-              />
-            </div>
-            <div className="flex gap-2 pt-1">
-              <button onClick={undoVertex} className="px-3 py-1.5 border rounded-lg text-sm">Undo</button>
-              <button onClick={clearDraft} className="px-3 py-1.5 border rounded-lg text-sm">Clear</button>
-              <button
-                onClick={finishDraft}
-                disabled={draftPath.length < 3}
-                className={`px-3 py-1.5 rounded-lg text-sm ${draftPath.length < 3 ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
-              >
-                Finish & Save
+              <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">
+                Cancel
               </button>
-              <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
-            </div>
-          </div>
-        )} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
             </div>
           </div>
         )}
 
         {mode === "editing" && selectedArea && (
-          <div className="border rounded-xl p-3 space-y-2">
+          <div className="border rounded-xl p-3 space-y-3">
             <div className="font-medium">Editing area</div>
             <input
               type="text"
@@ -356,34 +360,25 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               placeholder="Area name"
               className="w-full border rounded-lg px-3 py-1.5 text-sm"
             />
-            <div className="text-xs text-gray-600">Drag vertices to adjust the shape. Add points by dragging midpoints.</div>
-            <div className="flex flex-wrap gap-2 pt-1">
-              <button
-                onClick={saveEditing}
-                disabled={!editingDirty}
-                className={`px-3 py-1.5 rounded-lg text-sm ${!editingDirty ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
-              >
-                Save changes
-              </button>
-              <button onClick={cancelEditing} className="px-3 py-1.5 border rounded-lg text-sm">Close</button>
-              <button onClick={deleteSelected} className="px-3 py-1.5 border rounded-lg text-sm text-red-600">Delete</button>
+            <div className="text-xs text-gray-600">
+              Drag vertices to adjust the shape. Add points by dragging midpoints.
             </div>
-          </div>
-        )}
-              placeholder="Area name"
-              className="w-full border rounded-lg px-3 py-1.5 text-sm"
-            />
-            <div className="text-xs text-gray-600">Drag vertices to adjust the shape. Add points by dragging midpoints.</div>
-            <div className="flex flex-wrap gap-2 pt-1">
+            <div className="flex flex-wrap gap-2">
               <button
                 onClick={saveEditing}
                 disabled={!editingDirty}
-                className={`px-3 py-1.5 rounded-lg text-sm ${!editingDirty ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"}`}
+                className={`px-3 py-1.5 rounded-lg text-sm ${
+                  !editingDirty ? "bg-gray-100 text-gray-400 border border-gray-200" : "bg-black text-white"
+                }`}
               >
                 Save changes
               </button>
-              <button onClick={cancelEditing} className="px-3 py-1.5 border rounded-lg text-sm">Close</button>
-              <button onClick={deleteSelected} className="px-3 py-1.5 border rounded-lg text-sm text-red-600">Delete</button>
+              <button onClick={cancelEditing} className="px-3 py-1.5 border rounded-lg text-sm">
+                Close
+              </button>
+              <button onClick={deleteSelected} className="px-3 py-1.5 border rounded-lg text-sm text-red-600">
+                Delete
+              </button>
             </div>
           </div>
         )}
@@ -442,7 +437,9 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             )}
           </GoogleMap>
         ) : (
-          <div className="h-[520px] flex items-center justify-center border rounded-xl bg-white">Loading map…</div>
+          <div className="h-[520px] flex items-center justify-center border rounded-xl bg-white">
+            Loading map…
+          </div>
         )}
       </div>
     </div>
