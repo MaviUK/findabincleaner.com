@@ -78,6 +78,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   // Live editing state for selected polygon
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
   const [editingDirty, setEditingDirty] = useState(false);
+  const [areaName, setAreaName] = useState<string>("");
 
   // --- Load areas ---
   const loadAreas = useCallback(async () => {
@@ -125,6 +126,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setSelectedId(null);
     setDraftPath([]);
     setEditingDirty(false);
+    setAreaName(`Service Area ${areas.length + 1}`);
   }
 
   function undoVertex() {
@@ -141,10 +143,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     if (mode !== "drawing" || draftPath.length < 3) return;
     const gj = pathsToMultiPolygonGeoJSON([draftPath]);
     const defaultName = `Service Area ${areas.length + 1}`;
+    const nameToSave = areaName?.trim() ? areaName.trim() : defaultName;
     const { data, error } = await supabase.rpc("insert_service_area", {
       p_cleaner_id: cleanerId,
       p_gj: gj,
-      p_name: defaultName,
+      p_name: nameToSave,
     });
     if (error) {
       setError(error.message);
@@ -162,8 +165,9 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setMode("editing");
     setEditingDirty(false);
     editedPathRef.current = null;
-    // Fit bounds to this area
     const found = areas.find(a => a.id === id);
+    setAreaName(found?.name ?? "");
+    // Fit bounds to this area
     if (found && mapRef.current) {
       const b = new google.maps.LatLngBounds();
       gjToPaths(found.gj).flat().forEach(pt => b.extend(pt));
@@ -191,7 +195,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     const { error } = await supabase.rpc("update_service_area", {
       p_area_id: area.id,
       p_gj: gj,
-      p_name: area.name ?? "Service Area",
+      p_name: (areaName?.trim() || "Service Area"),
     });
     if (error) {
       setError(error.message);
@@ -297,6 +301,15 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           <div className="border rounded-xl p-3 space-y-2">
             <div className="font-medium">Drawing new area…</div>
             <div className="text-xs text-gray-600">Click on the map to add points. You need at least 3 points. Use Undo to remove the last point.</div>
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="text"
+                value={areaName}
+                onChange={(e) => setAreaName(e.target.value)}
+                placeholder="Area name"
+                className="flex-1 border rounded-lg px-3 py-1.5 text-sm"
+              />
+            </div>
             <div className="flex gap-2 pt-1">
               <button onClick={undoVertex} className="px-3 py-1.5 border rounded-lg text-sm">Undo</button>
               <button onClick={clearDraft} className="px-3 py-1.5 border rounded-lg text-sm">Clear</button>
@@ -310,11 +323,21 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               <button onClick={() => setMode("idle")} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
             </div>
           </div>
+        )} className="px-3 py-1.5 border rounded-lg text-sm">Cancel</button>
+            </div>
+          </div>
         )}
 
         {mode === "editing" && selectedArea && (
           <div className="border rounded-xl p-3 space-y-2">
-            <div className="font-medium">Editing: {selectedArea.name ?? "Untitled area"}</div>
+            <div className="font-medium">Editing area</div>
+            <input
+              type="text"
+              value={areaName}
+              onChange={(e) => setAreaName(e.target.value)}
+              placeholder="Area name"
+              className="w-full border rounded-lg px-3 py-1.5 text-sm"
+            />
             <div className="text-xs text-gray-600">Drag vertices to adjust the shape. Add points by dragging midpoints.</div>
             <div className="flex flex-wrap gap-2 pt-1">
               <button
