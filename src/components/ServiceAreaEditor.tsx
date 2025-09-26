@@ -75,7 +75,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [editingDirty, setEditingDirty] = useState(false);
   const [nameDirty, setNameDirty] = useState(false);
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
-  const canSave = nameDirty || editingDirty;
+  const selectedPolyRef = useRef<google.maps.Polygon | null>(null);
+
+  // In editing mode, always allow saving (we'll read the live path on save as a fallback)
+  const canSave = mode === "editing" ? true : (nameDirty || editingDirty);
+
 
   const selectedArea = useMemo(
     () => (selectedId ? areas.find((a) => a.id === selectedId) ?? null : null),
