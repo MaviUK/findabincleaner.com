@@ -12,7 +12,8 @@ type Cleaner = {
   website: string | null;
   about: string | null;
   contact_email: string | null;
-  payment_methods?: string[] | null; // NEW
+  payment_methods?: string[] | null;
+  service_types?: string[] | null; // NEW
 };
 
 // emoji placeholders (easy to swap to SVG later)
@@ -23,6 +24,12 @@ const PAYMENT_METHODS: { key: string; label: string; icon: string }[] = [
   { key: "gocardless", label: "GoCardless", icon: "🔵" },
   { key: "paypal", label: "PayPal", icon: "🅿️" },
   { key: "card_machine", label: "Card Machine", icon: "💳" },
+];
+
+// NEW: service types
+const SERVICE_TYPES: { key: string; label: string; icon: string }[] = [
+  { key: "domestic", label: "Domestic", icon: "🏠" },
+  { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
 // Resize an image file to a centered, covered 300x300 PNG
@@ -97,6 +104,47 @@ function PaymentMethodsSelector({
   );
 }
 
+// NEW: Service Types selector
+function ServiceTypesSelector({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const toggle = (key: string, checked: boolean) => {
+    const set = new Set(value);
+    checked ? set.add(key) : set.delete(key);
+    onChange(Array.from(set));
+  };
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Service types</div>
+      <div className="flex flex-wrap gap-2">
+        {SERVICE_TYPES.map((s) => {
+          const checked = value.includes(s.key);
+          return (
+            <label
+              key={s.key}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition
+                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
+            >
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={checked}
+                onChange={(e) => toggle(s.key, e.target.checked)}
+              />
+              <span className="text-base leading-none">{s.icon}</span>
+              <span>{s.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
@@ -112,7 +160,8 @@ export default function Settings() {
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
-  const [paymentMethods, setPaymentMethods] = useState<string[]>([]); // NEW
+  const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
+  const [serviceTypes, setServiceTypes] = useState<string[]>([]); // NEW
 
   // logo state
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -151,6 +200,7 @@ export default function Settings() {
               about: null,
               contact_email: user.email ?? null,
               payment_methods: [],
+              service_types: [], // NEW
             },
             user.email ?? ""
           );
@@ -174,9 +224,8 @@ export default function Settings() {
     setAbout(c.about ?? "");
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
     setLogoPreview(c.logo_url ?? null);
-    setPaymentMethods(
-      Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []
-    );
+    setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
+    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []); // NEW
   }
 
   async function ensureRow(): Promise<string> {
@@ -193,6 +242,7 @@ export default function Settings() {
         about: about || null,
         contact_email: contactEmail || null,
         payment_methods: paymentMethods,
+        service_types: serviceTypes, // NEW
       })
       .select("id,*")
       .single();
@@ -221,7 +271,10 @@ export default function Settings() {
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
-      const payload: Partial<Cleaner> = {
+      const payload: Partial<Cleaner> & {
+        payment_methods?: string[];
+        service_types?: string[];
+      } = {
         business_name: businessName || null,
         address: address || null,
         phone: phone || null,
@@ -229,7 +282,8 @@ export default function Settings() {
         about: about || null,
         contact_email: contactEmail || null,
         logo_url: newLogo ?? logoPreview ?? null,
-        payment_methods: paymentMethods, // NEW
+        payment_methods: paymentMethods,
+        service_types: serviceTypes, // NEW
       };
 
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
@@ -323,10 +377,10 @@ export default function Settings() {
           </label>
 
           {/* NEW: payment methods */}
-          <PaymentMethodsSelector
-            value={paymentMethods}
-            onChange={setPaymentMethods}
-          />
+          <PaymentMethodsSelector value={paymentMethods} onChange={setPaymentMethods} />
+
+          {/* NEW: service types */}
+          <ServiceTypesSelector value={serviceTypes} onChange={setServiceTypes} />
 
           <label className="block">
             <span className="text-sm">Logo (auto-resized to 300×300 PNG)</span>
@@ -415,16 +469,12 @@ export default function Settings() {
                 </div>
               </div>
 
-              {/* NEW: show methods */}
+              {/* NEW: show payment methods */}
               {paymentMethods.length > 0 && (
                 <div className="mt-3">
-                  <div className="text-xs font-medium text-gray-600 mb-1">
-                    Accepts:
-                  </div>
+                  <div className="text-xs font-medium text-gray-600 mb-1">Accepts:</div>
                   <div className="flex flex-wrap gap-1.5">
-                    {PAYMENT_METHODS.filter((m) =>
-                      paymentMethods.includes(m.key)
-                    ).map((m) => (
+                    {PAYMENT_METHODS.filter((m) => paymentMethods.includes(m.key)).map((m) => (
                       <span
                         key={m.key}
                         className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
@@ -436,11 +486,28 @@ export default function Settings() {
                   </div>
                 </div>
               )}
+
+              {/* NEW: show service types */}
+              {serviceTypes.length > 0 && (
+                <div className="mt-3">
+                  <div className="text-xs font-medium text-gray-600 mb-1">Services:</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {SERVICE_TYPES.filter((s) => serviceTypes.includes(s.key)).map((s) => (
+                      <span
+                        key={s.key}
+                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
+                      >
+                        <span className="leading-none">{s.icon}</span>
+                        <span>{s.label}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
           <p className="text-xs text-gray-500 mt-4">
-            This is a live preview of what customers will see on your public
-            profile and quotes.
+            This is a live preview of what customers will see on your public profile and quotes.
           </p>
         </section>
       </div>
