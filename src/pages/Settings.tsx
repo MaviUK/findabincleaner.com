@@ -26,15 +26,6 @@ export default function Settings() {
         </p>
       </section>
 
-      {/* Footer (optional; keep if you want it on this page) */}
-      <footer className="border-t">
-        <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
-          <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
-          <span>
-            Built with <span className="text-rose-600">❤</span>
-          </span>
-        </div>
-      </footer>
     </main>
   );
 }
