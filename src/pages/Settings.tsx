@@ -312,21 +312,22 @@ export default function Settings() {
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
         <CleanerCard
-          preview={false}      // show the CTA column like the search results
-          showPayments={false} // flip to true when you also show payments in search
-          showChips={true}
-          postcodeHint=""      // optional
-          cleaner={{
-            id: cleaner?.id ?? "preview",
-            business_name: businessName || "Business name",
-            logo_url: logoPreview,
-            website,
-            phone,
-            distance_m: null,
-            payment_methods: paymentMethods,
-            service_types: serviceTypes,
-          }}
-        />
+  preview={false}
+  showPayments={false}
+- showChips={true}
+  postcodeHint=""
+  cleaner={{
+    id: cleaner?.id ?? "preview",
+    business_name: businessName || "Business name",
+    logo_url: logoPreview,
+    website,
+    phone,
+    distance_m: null,
+    payment_methods: paymentMethods,
+    service_types: serviceTypes,
+  }}
+/>
+
 
         <p className="text-xs text-gray-500 mt-3">
           This matches how your listing appears in search results.
