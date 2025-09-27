@@ -19,7 +19,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       {/* Page content */}
       <div className="flex-1">{children}</div>
 
-      {/* Single global footer */}
+      {/* Single global footer (keep only here) */}
       <footer className="border-t">
         <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
           <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
