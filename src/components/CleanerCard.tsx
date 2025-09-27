@@ -16,9 +16,8 @@ type Cleaner = {
   rating_avg?: number | null;
   rating_count?: number | null;
   payment_methods?: string[] | null;
-  service_types?: string[] | null;
-  // Optional: if you want to list specific bin types/sizes (e.g., “120L”, “240L”)
-  bin_types?: string[] | null;
+  service_types?: string[] | null; // <-- used for “Bins we do”
+  bin_types?: string[] | null;     // optional, ignored if absent
 };
 
 export default function CleanerCard({
@@ -26,13 +25,11 @@ export default function CleanerCard({
   postcodeHint,
   preview = false,
   showPayments = true,
-  showChips = true,
 }: {
   cleaner: Cleaner;
   postcodeHint?: string;
   preview?: boolean;
   showPayments?: boolean;
-  showChips?: boolean;
 }) {
   const [showPhone, setShowPhone] = useState(false);
   const [showLogoModal, setShowLogoModal] = useState(false);
@@ -42,17 +39,11 @@ export default function CleanerCard({
       ? (cleaner.distance_m / 1000).toFixed(1) + " km"
       : null;
 
-  const chips =
-    cleaner.service_types && cleaner.service_types.length
-      ? cleaner.service_types.map((k) =>
-          k === "domestic" ? "Domestic" : k === "commercial" ? "Commercial" : titleCase(k)
-        )
-      : ["Wheelie bin cleaning", "Eco-friendly", "Domestic & commercial"];
-
-  const binChips =
-    cleaner.bin_types && cleaner.bin_types.length
-      ? cleaner.bin_types.map(titleCase)
-      : [];
+  // ---- NEW: build "Bins we do" line from service_types only (no fallbacks)
+  const binsWeDo =
+    (cleaner.service_types ?? [])
+      .map((k) => (k === "domestic" ? "Domestic" : k === "commercial" ? "Commercial" : titleCase(k)))
+      .filter(Boolean);
 
   const payments = (cleaner.payment_methods ?? []).filter(
     (k) => (PM_ICON as Record<string, string>)[k]
@@ -71,7 +62,7 @@ export default function CleanerCard({
     <>
       <article className="rounded-2xl border bg-white p-4 shadow-sm hover:shadow-md transition-shadow">
         <div className="flex gap-4">
-          {/* Logo (larger + preview modal) */}
+          {/* Logo (click to 500x500 preview) */}
           <button
             className="shrink-0 group"
             type="button"
@@ -104,7 +95,6 @@ export default function CleanerCard({
               <h3 className="text-base sm:text-lg font-semibold truncate">
                 {cleaner.business_name}
               </h3>
-              {/* Optional rating badge */}
               {typeof cleaner.rating_avg === "number" && (
                 <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 text-blue-700 px-2 py-1 text-sm font-semibold">
                   {cleaner.rating_avg.toFixed(2)}
@@ -129,35 +119,17 @@ export default function CleanerCard({
               {km && <span>• {km} away</span>}
             </div>
 
-            {/* Chips (service types) */}
-            {showChips && (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {chips.map((txt) => (
-                  <span key={txt} className="text-xs rounded-full border px-2 py-1">
-                    {txt}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {/* Bin types (optional) */}
-            {binChips.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {binChips.map((txt) => (
-                  <span
-                    key={txt}
-                    className="text-[11px] rounded-full bg-gray-100 px-2 py-0.5"
-                    title="Bin type"
-                  >
-                    {txt}
-                  </span>
-                ))}
+            {/* ---- NEW: “Bins we do” row (only if provided) */}
+            {binsWeDo.length > 0 && (
+              <div className="mt-3 text-sm text-gray-800">
+                <span className="font-medium">Bins we do: </span>
+                <span>{binsWeDo.join(", ")}</span>
               </div>
             )}
 
             {/* Payments */}
             {showPayments && payments.length > 0 && (
-              <div className="mt-3 flex flex-wrap gap-1.5">
+              <div className="mt-2 flex flex-wrap gap-1.5">
                 {payments.map((k) => (
                   <span
                     key={k}
@@ -175,7 +147,7 @@ export default function CleanerCard({
             )}
           </div>
 
-          {/* Right CTA column — hidden in preview mode only if you pass preview=true */}
+          {/* Right actions */}
           {!preview && (
             <div className="shrink-0 flex flex-col items-end justify-between gap-2 w-[190px] md:w-[230px]">
               <Link
@@ -187,7 +159,6 @@ export default function CleanerCard({
 
               {hasContact && (
                 <div className="w-full flex flex-col gap-2">
-                  {/* Contact (email/WA/tel fallback) */}
                   {contactHref && (
                     <a
                       href={contactHref}
@@ -199,9 +170,8 @@ export default function CleanerCard({
                     </a>
                   )}
 
-                  {/* Phone reveal button */}
-                  {cleaner.phone && (
-                    showPhone ? (
+                  {cleaner.phone &&
+                    (showPhone ? (
                       <a
                         href={toTelHref(cleaner.phone) ?? "#"}
                         className="w-full inline-flex items-center justify-center rounded-full border px-4 py-2 text-sm hover:bg-gray-50"
@@ -216,10 +186,8 @@ export default function CleanerCard({
                       >
                         Show phone
                       </button>
-                    )
-                  )}
+                    ))}
 
-                  {/* Website */}
                   {cleaner.website && (
                     <a
                       href={
@@ -241,7 +209,7 @@ export default function CleanerCard({
         </div>
       </article>
 
-      {/* Simple logo preview modal @ 500×500 */}
+      {/* Logo preview modal @ 500×500 */}
       {showLogoModal && cleaner.logo_url && (
         <div
           className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
@@ -276,20 +244,16 @@ export default function CleanerCard({
 }
 
 /* ---------- helpers ---------- */
-
 function titleCase(s: string) {
   return s.replace(/\b\w/g, (m) => m.toUpperCase());
 }
-
 function toTelHref(phone?: string | null) {
   if (!phone) return undefined;
   const digits = phone.replace(/[^\d+]/g, "");
   return digits ? `tel:${digits}` : undefined;
 }
-
 function normaliseWhatsApp(value: string) {
   if (value.startsWith("http")) return value;
-  // assume raw phone; normalise UK leading 0 → +44
   let digits = value.replace(/[^\d+]/g, "");
   if (!digits) return `https://wa.me/`;
   if (!digits.startsWith("+")) {
@@ -299,12 +263,10 @@ function normaliseWhatsApp(value: string) {
   }
   return `https://wa.me/${digits}`;
 }
-
 function formatPhone(p?: string | null) {
   if (!p) return "";
   const digits = p.replace(/\s+/g, "");
   if (digits.startsWith("+44")) {
-    // +44 755 517 8484
     return digits.replace(/^\+?44/, "+44 ").replace(/(\d{3})(\d{3})(\d{4})$/, "$1 $2 $3");
   }
   return p;
