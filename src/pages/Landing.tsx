@@ -12,7 +12,7 @@ export default function Landing() {
 
   return (
     <main className="w-full">
-      <section className="container mx-auto max-w-3xl px-4 py-12">
+      <section className="container mx-auto max-w-5xl px-4 py-12">
         <div className="space-y-4">
           <h1 className="text-4xl font-extrabold tracking-tight">
             Book a trusted wheelie bin cleaner in minutes
