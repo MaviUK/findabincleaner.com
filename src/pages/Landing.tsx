@@ -1,6 +1,8 @@
 // src/pages/Landing.tsx
 import { Link } from "react-router-dom";
 import FindCleaners from "../components/FindCleaners";
+import ResultsList from "../components/ResultsList"; // adjust path if your alias differs
+
 
 export default function Landing() {
   return (
