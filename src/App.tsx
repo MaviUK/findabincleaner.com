@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
-  HashRouter as Router, // hash routing works great on Netlify
+  HashRouter as Router,
   Routes,
   Route,
   Navigate,
@@ -10,7 +10,7 @@ import {
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 
-import "./index.css";                  // Tailwind + design tokens
+import "./index.css";
 import Layout from "./components/Layout";
 
 import Landing from "./pages/Landing";
@@ -54,6 +54,13 @@ export default function App() {
   // undefined = still checking session, null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
+  // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
+  useEffect(() => {
+    if (window.location.pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, []);
+
   useEffect(() => {
     // initial check
     supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
@@ -92,7 +99,6 @@ export default function App() {
             }
           />
 
-          {/* quick sanity check route */}
           <Route
             path="/_debug"
             element={
@@ -101,12 +107,6 @@ export default function App() {
               </div>
             }
           />
-useEffect(() => {
-  // Always run the app at "/" and let HashRouter control the hash.
-  if (window.location.pathname !== "/") {
-    window.history.replaceState(null, "", "/");
-  }
-}, []);
 
           <Route path="*" element={<NotFound />} />
         </Routes>
