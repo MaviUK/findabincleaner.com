@@ -101,6 +101,12 @@ export default function App() {
               </div>
             }
           />
+useEffect(() => {
+  // Always run the app at "/" and let HashRouter control the hash.
+  if (window.location.pathname !== "/") {
+    window.history.replaceState(null, "", "/");
+  }
+}, []);
 
           <Route path="*" element={<NotFound />} />
         </Routes>
