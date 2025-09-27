@@ -21,18 +21,19 @@ export default function ResultsList({
       {cleaners.map((c) => (
         <CleanerCard
           key={c.id}
-          cleaner={{
-            id: c.id,
-            business_name: c.business_name,
-            logo_url: c.logo_url,
-            distance_m: c.distance_meters ?? c.distance_m ?? null,
-            website: c.website,
-            phone: c.phone,
-            whatsapp: c.whatsapp,
-            rating_avg: c.rating_avg ?? null,
-            rating_count: c.rating_count ?? null,
-            payment_methods: c.payment_methods ?? [],
-          }}
+         // inside ResultsList.tsx when passing to <CleanerCard />
+cleaner={{
+  id: c.id ?? c.cleaner_id,               // <-- add fallback
+  business_name: c.business_name,
+  logo_url: c.logo_url,
+  distance_m: c.distance_meters ?? c.distance_m ?? null,
+  website: c.website,
+  phone: c.phone,
+  whatsapp: c.whatsapp,
+  rating_avg: c.rating_avg ?? null,
+  rating_count: c.rating_count ?? null,
+  payment_methods: c.payment_methods ?? [],
+}}
           postcodeHint={postcode}
         />
       ))}
