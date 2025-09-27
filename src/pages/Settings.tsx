@@ -2,6 +2,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
+import {
+  PAYMENT_METHODS as PM_ALL,
+} from "../constants/paymentMethods";
 
 type Cleaner = {
   id: string;
@@ -17,17 +20,7 @@ type Cleaner = {
   service_types?: string[] | null;
 };
 
-// emoji placeholders (swap to SVGs anytime)
-const PAYMENT_METHODS: { key: string; label: string; icon: string }[] = [
-  { key: "bank_transfer", label: "Bank Transfer", icon: "🏦" },
-  { key: "cash",          label: "Cash",          icon: "💵" },
-  { key: "stripe",        label: "Stripe",        icon: "🟦" },
-  { key: "gocardless",    label: "GoCardless",    icon: "🔵" },
-  { key: "paypal",        label: "PayPal",        icon: "🅿️" },
-  { key: "card_machine",  label: "Card Machine",  icon: "💳" },
-];
-
-const SERVICE_TYPES: { key: string; label: string; icon: string }[] = [
+const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "domestic",   label: "Domestic",   icon: "🏠" },
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
@@ -64,16 +57,12 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   }
 }
 
-function Pills({
-  items,
+function PaymentPills({
   value,
   onChange,
-  title,
 }: {
-  items: { key: string; label: string; icon?: string }[];
   value: string[];
   onChange: (next: string[]) => void;
-  title: string;
 }) {
   const toggle = (key: string, checked: boolean) => {
     const set = new Set(value);
@@ -82,9 +71,49 @@ function Pills({
   };
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">{title}</div>
+      <div className="text-sm font-medium">Payment methods accepted</div>
       <div className="flex flex-wrap gap-2">
-        {items.map((m) => {
+        {PM_ALL.map((m) => {
+          const checked = value.includes(m.key);
+          return (
+            <label
+              key={m.key}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition
+                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
+            >
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={checked}
+                onChange={(e) => toggle(m.key, e.target.checked)}
+              />
+              <img src={m.iconUrl} alt="" className="h-4 w-4" />
+              <span>{m.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ServiceTypePills({
+  value,
+  onChange,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+}) {
+  const toggle = (key: string, checked: boolean) => {
+    const set = new Set(value);
+    checked ? set.add(key) : set.delete(key);
+    onChange(Array.from(set));
+  };
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Service types</div>
+      <div className="flex flex-wrap gap-2">
+        {SERVICE_TYPES.map((m) => {
           const checked = value.includes(m.key);
           return (
             <label
@@ -264,19 +293,21 @@ export default function Settings() {
   const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
 
   if (loading) {
-    return <main className="container mx-auto max-w-5xl px-4 py-8">Loading…</main>;
+    return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
   }
 
   return (
-    <main className="container mx-auto max-w-5xl px-4 py-8 space-y-6">
+    <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
       {/* TOP: Full-width preview using the actual search card */}
-      <section className="p-4 border rounded-2xl bg-white">
+      <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
         <CleanerCard
           preview
+          showPayments={false}   // match search (toggle to true if you add payments to results)
+          showChips={true}
           postcodeHint={""}
           cleaner={{
             id: cleaner?.id ?? "preview",
@@ -363,19 +394,8 @@ export default function Settings() {
 
         {/* RIGHT: Methods, services, logo, save */}
         <section className="space-y-4 p-4 border rounded-2xl bg-white">
-          <Pills
-            items={PAYMENT_METHODS}
-            value={paymentMethods}
-            onChange={setPaymentMethods}
-            title="Payment methods accepted"
-          />
-
-          <Pills
-            items={SERVICE_TYPES}
-            value={serviceTypes}
-            onChange={setServiceTypes}
-            title="Service types"
-          />
+          <PaymentPills value={paymentMethods} onChange={setPaymentMethods} />
+          <ServiceTypePills value={serviceTypes} onChange={setServiceTypes} />
 
           <div>
             <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
@@ -429,4 +449,3 @@ export default function Settings() {
     </main>
   );
 }
- 
