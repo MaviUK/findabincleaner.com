@@ -11,14 +11,13 @@ type Cleaner = {
   logo_url: string | null;
   address: string | null;
   phone: string | null;
-  whatsapp: string | null;        // <-- NEW
+  whatsapp: string | null;          // NEW
   website: string | null;
   about: string | null;
   contact_email: string | null;
   payment_methods?: string[] | null;
   service_types?: string[] | null;
 };
-
 
 const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "domestic", label: "Domestic", icon: "🏠" },
@@ -156,7 +155,7 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
-  const [whatsapp, setWhatsapp] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");     // NEW
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -188,6 +187,7 @@ export default function Settings() {
         if (error) throw error;
 
         if (!data) {
+          // New account — don’t insert yet, just pre-fill the form
           fillForm(
             {
               id: "",
@@ -196,11 +196,12 @@ export default function Settings() {
               logo_url: null,
               address: null,
               phone: null,
+              whatsapp: null,                 // NEW
               website: null,
               about: null,
               contact_email: user.email ?? null,
-              payment_methods: [],
-              service_types: [],
+              payment_methods: [] as string[],
+              service_types: [] as string[],
             },
             user.email ?? ""
           );
@@ -215,37 +216,36 @@ export default function Settings() {
     })();
   }, []);
 
- function fillForm(c: Cleaner, fallbackEmail: string) {
-  setCleaner(c);
-  setBusinessName(c.business_name ?? "");
-  setAddress(c.address ?? "");
-  setPhone(c.phone ?? "");
-  setWhatsapp(c.whatsapp ?? "");       // <-- NEW
-  setWebsite(c.website ?? "");
-  setAbout(c.about ?? "");
-  setContactEmail(c.contact_email ?? fallbackEmail ?? "");
-  setLogoPreview(c.logo_url ?? null);
-  setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
-  setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
-}
-
+  function fillForm(c: Cleaner, fallbackEmail: string) {
+    setCleaner(c);
+    setBusinessName(c.business_name ?? "");
+    setAddress(c.address ?? "");
+    setPhone(c.phone ?? "");
+    setWhatsapp(c.whatsapp ?? "");     // NEW
+    setWebsite(c.website ?? "");
+    setAbout(c.about ?? "");
+    setContactEmail(c.contact_email ?? fallbackEmail ?? "");
+    setLogoPreview(c.logo_url ?? null);
+    setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
+    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
+  }
 
   async function ensureRow(): Promise<string> {
     if (cleaner && cleaner.id) return cleaner.id;
     const { data: created, error } = await supabase
       .from("cleaners")
-.insert({
-  user_id: userId,
-  business_name: businessName || null,
-  address: address || null,
-  phone: phone || null,
-  whatsapp: whatsapp || null,         // <-- NEW
-  website: website || null,
-  about: about || null,
-  contact_email: contactEmail || null,
-  payment_methods: paymentMethods,
-  service_types: serviceTypes,
-})
+      .insert({
+        user_id: userId,
+        business_name: businessName || null,
+        address: address || null,
+        phone: phone || null,
+        whatsapp: whatsapp || null,     // NEW
+        website: website || null,
+        about: about || null,
+        contact_email: contactEmail || null,
+        payment_methods: paymentMethods,
+        service_types: serviceTypes,
+      })
       .select("id,*")
       .single();
     if (error) throw error;
@@ -273,21 +273,21 @@ export default function Settings() {
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
-     const payload: Partial<Cleaner> & {
-  payment_methods?: string[];
-  service_types?: string[];
-} = {
-  business_name: businessName || null,
-  address: address || null,
-  phone: phone || null,
-  whatsapp: whatsapp || null,          // <-- NEW
-  website: website || null,
-  about: about || null,
-  contact_email: contactEmail || null,
-  logo_url: newLogo ?? logoPreview ?? null,
-  payment_methods: paymentMethods,
-  service_types: serviceTypes,
-};
+      const payload: Partial<Cleaner> & {
+        payment_methods?: string[];
+        service_types?: string[];
+      } = {
+        business_name: businessName || null,
+        address: address || null,
+        phone: phone || null,
+        whatsapp: whatsapp || null,     // NEW
+        website: website || null,
+        about: about || null,
+        contact_email: contactEmail || null,
+        logo_url: newLogo ?? logoPreview ?? null,
+        payment_methods: paymentMethods,
+        service_types: serviceTypes,
+      };
 
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
       if (error) throw error;
@@ -314,27 +314,26 @@ export default function Settings() {
     <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
-      {/* TOP: Full-width preview using the actual search card (no extra box) */}
+      {/* TOP: Full-width preview using the actual search card */}
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
-<CleanerCard
-  preview={false}
-  showPayments={true}     // ✅ show payment badges
-  postcodeHint=""
-  cleaner={{
-    id: cleaner?.id ?? "preview",
-    business_name: businessName || "Business name",
-    logo_url: logoPreview,
-    website,
-    phone,
-    distance_m: null,
-    payment_methods: paymentMethods, // ✅ from form state
-    service_types: serviceTypes,     // ✅ from form state (drives “Bins we do”)
-  }}
-/>
-
-
+        <CleanerCard
+          preview={false}
+          showPayments={true}
+          postcodeHint=""
+          cleaner={{
+            id: cleaner?.id ?? "preview",
+            business_name: businessName || "Business name",
+            logo_url: logoPreview,
+            website,
+            phone,
+            whatsapp,                    // NEW
+            distance_m: null,
+            payment_methods: paymentMethods,
+            service_types: serviceTypes,
+          }}
+        />
 
         <p className="text-xs text-gray-500 mt-3">
           This matches how your listing appears in search results.
@@ -365,40 +364,39 @@ export default function Settings() {
             />
           </label>
 
-         <div className="grid md:grid-cols-2 gap-3">
-  <label className="block">
-    <span className="text-sm">Phone</span>
-    <input
-      className="w-full border rounded px-3 py-2"
-      value={phone}
-      onChange={(e) => setPhone(e.target.value)}
-      placeholder="+44…"
-    />
-  </label>
-  <label className="block">
-    <span className="text-sm">Website</span>
-    <input
-      className="w-full border rounded px-3 py-2"
-      value={website}
-      onChange={(e) => setWebsite(e.target.value)}
-      placeholder="https://…"
-    />
-  </label>
-</div>
+          <div className="grid md:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-sm">Phone</span>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+44…"
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm">Website</span>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={website}
+                onChange={(e) => setWebsite(e.target.value)}
+                placeholder="https://…"
+              />
+            </label>
+          </div>
 
-<label className="block mt-3">
-  <span className="text-sm">WhatsApp (optional)</span>
-  <input
-    className="w-full border rounded px-3 py-2"
-    value={whatsapp}
-    onChange={(e) => setWhatsapp(e.target.value)}
-    placeholder="+447… or full wa.me link"
-  />
-  <span className="text-xs text-gray-500">
-    Enter an international number (e.g. +447... ) or a full WhatsApp link.
-  </span>
-</label>
-
+          <label className="block">
+            <span className="text-sm">WhatsApp (optional)</span>
+            <input
+              className="w-full border rounded px-3 py-2"
+              value={whatsapp}
+              onChange={(e) => setWhatsapp(e.target.value)}
+              placeholder="+447… or full wa.me link"
+            />
+            <span className="text-xs text-gray-500">
+              Enter an international number (e.g. +447…) or a full WhatsApp link.
+            </span>
+          </label>
 
           <label className="block">
             <span className="text-sm">Contact email</span>
