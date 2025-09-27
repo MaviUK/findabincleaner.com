@@ -1,6 +1,7 @@
 // src/components/CleanerCard.tsx
 import React from "react";
 import { Link } from "react-router-dom";
+import { PM_ICON, PM_LABEL } from "../constants/paymentMethods";
 
 type Cleaner = {
   id: string;
@@ -31,6 +32,7 @@ export default function CleanerCard({
       ? (cleaner.distance_m / 1000).toFixed(1) + " km"
       : null;
 
+  // Chips: prefer service_types if provided
   const chips =
     cleaner.service_types && cleaner.service_types.length
       ? cleaner.service_types.map((k) =>
@@ -38,7 +40,9 @@ export default function CleanerCard({
         )
       : ["Wheelie bin cleaning", "Eco-friendly", "Domestic & commercial"];
 
-  const payments = (cleaner.payment_methods ?? []).filter((k) => PM_ICON[k]);
+  const payments = (cleaner.payment_methods ?? []).filter(
+    (k) => (PM_ICON as Record<string, string>)[k]
+  );
   const hasContact = cleaner.phone || cleaner.whatsapp || cleaner.website;
 
   return (
@@ -61,6 +65,17 @@ export default function CleanerCard({
             <h3 className="text-base sm:text-lg font-semibold truncate">
               {cleaner.business_name}
             </h3>
+            {/* Optional rating badge */}
+            {typeof cleaner.rating_avg === "number" && (
+              <span className="inline-flex items-center gap-1 rounded-lg bg-blue-50 text-blue-700 px-2 py-1 text-sm font-semibold">
+                {cleaner.rating_avg.toFixed(2)}
+                {typeof cleaner.rating_count === "number" && (
+                  <span className="ml-1 text-xs font-normal text-blue-600">
+                    ({cleaner.rating_count} review{cleaner.rating_count === 1 ? "" : "s"})
+                  </span>
+                )}
+              </span>
+            )}
           </div>
 
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
@@ -92,8 +107,12 @@ export default function CleanerCard({
                   key={k}
                   className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
                 >
-                  <img src={PM_ICON[k]} alt={labelFor(k)} className="h-3.5 w-3.5" />
-                  {labelFor(k)}
+                  <img
+                    src={(PM_ICON as Record<string, string>)[k]}
+                    alt={(PM_LABEL as Record<string, string>)[k]}
+                    className="h-3.5 w-3.5"
+                  />
+                  {(PM_LABEL as Record<string, string>)[k]}
                 </span>
               ))}
             </div>
@@ -157,42 +176,14 @@ export default function CleanerCard({
   );
 }
 
-/* ---------- helpers & icon map ---------- */
-
-// If you don't have these SVGs yet, add them under /public/payment-icons/
-const PM_ICON: Record<string, string> = {
-  bank_transfer: "/payment-icons/bank_transfer.svg",
-  cash: "/payment-icons/cash.svg",
-  stripe: "/payment-icons/stripe.svg",
-  gocardless: "/payment-icons/gocardless.svg",
-  paypal: "/payment-icons/paypal.svg",
-  card_machine: "/payment-icons/card_machine.svg",
-};
-
-function labelFor(key: string) {
-  switch (key) {
-    case "bank_transfer":
-      return "Bank Transfer";
-    case "cash":
-      return "Cash";
-    case "stripe":
-      return "Stripe";
-    case "gocardless":
-      return "GoCardless";
-    case "paypal":
-      return "PayPal";
-    case "card_machine":
-      return "Card Machine";
-    default:
-      return key;
-  }
-}
+/* ---------- helpers ---------- */
 
 function formatPhone(p?: string | null) {
   if (!p) return "";
   // light UK formatting
-  return p
-    .replace(/\s+/g, "")
-    .replace(/^\+?44/, "+44 ")
-    .replace(/(\d{3})(\d{3})(\d{4})$/, "$1 $2 $3");
+  const digits = p.replace(/\s+/g, "");
+  if (digits.startsWith("+44")) {
+    return digits.replace(/^\+?44/, "+44 ").replace(/(\d{3})(\d{3})(\d{4})$/, "$1 $2 $3");
+  }
+  return p;
 }
