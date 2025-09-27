@@ -1,74 +1,146 @@
 // src/pages/Dashboard.tsx
-import React from "react";
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { supabase } from "../lib/supabase";
+import CleanerOnboard from "../components/CleanerOnboard";
+import ServiceAreaEditor from "../components/ServiceAreaEditor";
+
+type Cleaner = {
+  id: string;
+  user_id: string;
+  business_name: string | null;
+  logo_url: string | null;
+  address: string | null;
+  subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
+};
 
 export default function Dashboard() {
+  const [userId, setUserId] = useState<string | null>(null);
+  const [cleaner, setCleaner] = useState<Cleaner | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data: { user }, error: userErr } = await supabase.auth.getUser();
+        if (userErr) throw userErr;
+        if (!user) {
+          window.location.hash = "#/login";
+          return;
+        }
+        setUserId(user.id);
+
+        const { data: existing, error } = await supabase
+          .from("cleaners")
+          .select("*")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        if (error) throw error;
+
+        if (!existing) {
+          const { data: created, error: insertErr } = await supabase
+            .from("cleaners")
+            .insert({
+              user_id: user.id,
+              business_name: user.email?.split("@")[0] || "My Bin Cleaning",
+              subscription_status: "active",
+            })
+            .select("*")
+            .single();
+          if (insertErr) throw insertErr;
+          setCleaner(created as Cleaner);
+        } else {
+          setCleaner(existing as Cleaner);
+        }
+      } catch (e: any) {
+        setErr(e.message || "Failed to load dashboard.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  if (loading) {
+    return (
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
+        Loading…
+      </main>
+    );
+  }
+
+  if (err) {
+    return (
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
+        <div className="card"><div className="card-pad text-red-600">{err}</div></div>
+      </main>
+    );
+  }
+
+  if (!userId || !cleaner) {
+    return (
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
+        <div className="card"><div className="card-pad">No profile found.</div></div>
+      </main>
+    );
+  }
+
+  const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
+
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
       <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
-      {/* Profile card */}
-      <section className="rounded-2xl border bg-white p-5 shadow-sm">
-        <div className="grid grid-cols-[auto_1fr_auto] items-center gap-4">
-          {/* Logo */}
-          <img
-            src="/logo-192.png" /* replace with your logo URL */
-            alt="Business logo"
-            className="h-14 w-14 rounded-lg object-cover bg-white border"
-          />
+      {needsOnboard ? (
+        <section className="card">
+          <div className="card-pad space-y-4">
+            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
+            <CleanerOnboard
+              userId={userId}
+              cleaner={cleaner}
+              onSaved={(patch) => setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))}
+            />
+          </div>
+        </section>
+      ) : (
+        <>
+          {/* Profile summary (fixed alignment) */}
+          <section className="card">
+            <div className="card-pad grid grid-cols-[auto_1fr_auto] items-center gap-4">
+              {cleaner.logo_url ? (
+                <img
+                  src={cleaner.logo_url}
+                  alt="logo"
+                  className="h-16 w-16 object-contain rounded-lg bg-white ring-1 ring-ink-100"
+                />
+              ) : (
+                <div className="h-16 w-16 rounded-lg bg-ink-100" />
+              )}
 
-          {/* Name + address */}
-          <div className="min-w-0">
-            <div className="font-semibold truncate">Ni Bin Guy</div>
-            <div className="text-sm text-gray-600 truncate">
-              78 Groomsport Rd, Bangor BT20 5NF, UK
+              <div className="min-w-0">
+                <div className="font-semibold truncate">{cleaner.business_name}</div>
+                <div className="muted truncate">{cleaner.address || "No address yet"}</div>
+              </div>
+
+              <Link to="/settings" className="btn btn-primary justify-self-end">Edit profile</Link>
             </div>
-          </div>
+          </section>
 
-          {/* Action */}
-          <button className="ml-auto inline-flex items-center px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700">
-            Edit profile
-          </button>
-        </div>
-      </section>
-
-      {/* Service areas */}
-      <section className="rounded-2xl border bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold">Your Service Areas</h2>
-          <button className="inline-flex items-center px-3 py-2 rounded-xl bg-black text-white hover:opacity-90">
-            New Area
-          </button>
-        </div>
-
-        {/* Two-column layout: fixed left, fluid right */}
-        <div className="grid grid-cols-1 lg:grid-cols-[320px_minmax(0,1fr)] gap-6 items-start">
-          {/* LEFT: Area list */}
-          <div className="space-y-3">
-            {/* Replace with your real list */}
-            <button className="w-full text-left p-4 rounded-xl border hover:bg-gray-50">
-              <div className="font-medium">Crumlin</div>
-              <div className="text-xs text-gray-500">Created 27/09/2025, 01:11:21</div>
-            </button>
-            <button className="w-full text-left p-4 rounded-xl border hover:bg-gray-50">
-              <div className="font-medium">Carryduff</div>
-              <div className="text-xs text-gray-500">Created 26/09/2025, 23:26:31</div>
-            </button>
-            <button className="w-full text-left p-4 rounded-xl border hover:bg-gray-50">
-              <div className="font-medium">All Areas</div>
-              <div className="text-xs text-gray-500">Created 26/09/2025, 22:37:21</div>
-            </button>
-          </div>
-
-          {/* RIGHT: Map/editor */}
-          <div className="rounded-xl overflow-hidden border">
-            {/* Make the map a fixed, tidy height */}
-            <div className="h-[460px]">
-              {/* Mount your Google map / ServiceAreaEditor component here */}
-              {/* <ServiceAreaEditor /> */}
+          {/* Service areas (let editor handle its internals; give it a tidy container) */}
+          <section className="card">
+            <div className="card-pad">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">Your Service Areas</h2>
+                {/* ServiceAreaEditor renders its own “New Area” UI, so no extra button here */}
+              </div>
+              <div className="rounded-xl overflow-hidden border">
+                {/* If your editor stretches to parent, this wrapper keeps edges crisp */}
+                <ServiceAreaEditor cleanerId={cleaner.id} />
+              </div>
             </div>
-          </div>
-        </div>
-      </section>
+          </section>
+        </>
+      )}
     </main>
   );
 }
