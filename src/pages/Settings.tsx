@@ -1,326 +1,284 @@
-// src/pages/Settings.tsx
-import { useEffect, useMemo, useState } from "react";
+// src/pages/Settings.jsx
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-type Cleaner = {
-  id: string;
-  user_id: string;
-  business_name: string | null;
-  logo_url: string | null;
-  address: string | null;
-  phone: string | null;
-  website: string | null;
-  about: string | null;
-  contact_email: string | null;
-};
+// Tiny emoji icons for now (easy to swap to SVG later)
+const PAYMENT_METHODS = [
+  { key: "bank_transfer", label: "Bank Transfer", icon: "🏦" },
+  { key: "cash",          label: "Cash",          icon: "💵" },
+  { key: "stripe",        label: "Stripe",        icon: "🟦" },
+  { key: "gocardless",    label: "GoCardless",    icon: "🔵" },
+  { key: "paypal",        label: "PayPal",        icon: "🅿️" },
+  { key: "card_machine",  label: "Card Machine",  icon: "💳" },
+];
 
-// Resize an image file to a centered, covered 300x300 PNG
-async function resizeTo300PNG(file: File): Promise<Blob> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = reject;
-      el.src = url;
-    });
-
-    const size = 300;
-    const canvas = document.createElement("canvas");
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext("2d")!;
-    const scale = Math.max(size / img.width, size / img.height);
-    const w = Math.round(img.width * scale);
-    const h = Math.round(img.height * scale);
-    const dx = Math.floor((size - w) / 2);
-    const dy = Math.floor((size - h) / 2);
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(img, dx, dy, w, h);
-    return await new Promise<Blob>((resolve) =>
-      canvas.toBlob((b) => resolve(b!), "image/png", 0.92)
-    );
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+function PaymentMethodsSelector({ value = [], onChange }) {
+  const setHas = (k, has) => {
+    if (!onChange) return;
+    const set = new Set(value);
+    has ? set.add(k) : set.delete(k);
+    onChange(Array.from(set));
+  };
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Payment methods accepted</div>
+      <div className="flex flex-wrap gap-2">
+        {PAYMENT_METHODS.map((m) => {
+          const checked = value.includes(m.key);
+          return (
+            <label
+              key={m.key}
+              className={`cursor-pointer select-none inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition
+                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
+            >
+              <input
+                type="checkbox"
+                className="sr-only"
+                checked={checked}
+                onChange={(e) => setHas(m.key, e.target.checked)}
+              />
+              <span className="text-base leading-none">{m.icon}</span>
+              <span>{m.label}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export default function Settings() {
-  const [userId, setUserId] = useState<string | null>(null);
-  const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+  const [userId, setUserId] = useState(null);
 
-  // form fields
+  // Form state
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
   const [website, setWebsite] = useState("");
+  const [email, setEmail] = useState("");
   const [about, setAbout] = useState("");
-  const [contactEmail, setContactEmail] = useState("");
-
-  // logo state
-  const [logoFile, setLogoFile] = useState<File | null>(null);
-  const [resizedLogo, setResizedLogo] = useState<Blob | null>(null);
-  const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoUrl, setLogoUrl] = useState("");
+  const [logoFile, setLogoFile] = useState(null);
+  const [paymentMethods, setPaymentMethods] = useState([]); // <— NEW
 
   useEffect(() => {
     (async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) {
-          window.location.hash = "#/login";
-          return;
-        }
-        setUserId(user.id);
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setLoading(false); return; }
+      setUserId(user.id);
 
-        const { data, error } = await supabase
-          .from("cleaners")
-          .select("*")
-          .eq("user_id", user.id)
-          .maybeSingle();
-        if (error) throw error;
+      // Load existing profile (adjust table/columns if yours differ)
+      const { data, error } = await supabase
+        .from("cleaners")
+        .select("business_name,address,phone,website,contact_email,about,logo_url,payment_methods")
+        .eq("user_id", user.id)
+        .single();
 
-        if (!data) {
-          const { data: created, error: insertErr } = await supabase
-            .from("cleaners")
-            .insert({
-              user_id: user.id,
-              business_name: user.email?.split("@")[0] ?? null,
-            })
-            .select("*")
-            .single();
-          if (insertErr) throw insertErr;
-          fillForm(created as Cleaner, user.email ?? "");
-        } else {
-          fillForm(data as Cleaner, user.email ?? "");
-        }
-      } catch (e: any) {
-        setErr(e.message || "Failed to load profile.");
-      } finally {
-        setLoading(false);
+      if (!error && data) {
+        setBusinessName(data.business_name || "");
+        setAddress(data.address || "");
+        setPhone(data.phone || "");
+        setWebsite(data.website || "");
+        setEmail(data.contact_email || "");
+        setAbout(data.about || "");
+        setLogoUrl(data.logo_url || "");
+        setPaymentMethods(Array.isArray(data.payment_methods) ? data.payment_methods : []);
       }
+      setLoading(false);
     })();
   }, []);
 
-  function fillForm(c: Cleaner, fallbackEmail: string) {
-    setCleaner(c);
-    setBusinessName(c.business_name ?? "");
-    setAddress(c.address ?? "");
-    setPhone(c.phone ?? "");
-    setWebsite(c.website ?? "");
-    setAbout(c.about ?? "");
-    setContactEmail(c.contact_email ?? fallbackEmail ?? "");
-    setLogoPreview(c.logo_url ?? null);
-  }
-
-  async function uploadLogoIfAny(): Promise<string | null> {
-    if (!logoFile || !userId) return logoPreview || null;
-    const png = resizedLogo ?? (await resizeTo300PNG(logoFile));
-    const path = `${userId}/logo.png`;
-    const { error: upErr } = await supabase.storage
-      .from("logos")
-      .upload(path, png, { upsert: true, cacheControl: "3600", contentType: "image/png" });
+  const uploadLogoIfNeeded = async () => {
+    if (!logoFile || !userId) return logoUrl || "";
+    const fileExt = logoFile.name.split(".").pop();
+    const path = `logos/${userId}.${fileExt}`;
+    const { error: upErr } = await supabase.storage.from("assets").upload(path, logoFile, { upsert: true });
     if (upErr) throw upErr;
-    const { data } = supabase.storage.from("logos").getPublicUrl(path);
-    return data.publicUrl;
-  }
+    const { data: publicUrl } = supabase.storage.from("assets").getPublicUrl(path);
+    return publicUrl?.publicUrl || "";
+  };
 
-  async function save() {
-    if (!cleaner) return;
+  const onSave = async () => {
     setSaving(true);
-    setMsg(null);
-    setErr(null);
     try {
-      const newLogo = await uploadLogoIfAny();
-      const payload: Partial<Cleaner> = {
-        business_name: businessName || null,
-        address: address || null,
-        phone: phone || null,
-        website: website || null,
-        about: about || null,
-        contact_email: contactEmail || null,
-        logo_url: newLogo ?? logoPreview ?? null,
+      const newLogoUrl = await uploadLogoIfNeeded();
+
+      const payload = {
+        business_name: businessName,
+        address,
+        phone,
+        website,
+        contact_email: email,
+        about,
+        logo_url: newLogoUrl,
+        payment_methods: paymentMethods, // <— NEW
+        updated_at: new Date().toISOString(),
       };
 
       const { error } = await supabase
         .from("cleaners")
-        .update(payload)
-        .eq("id", cleaner.id);
-      if (error) throw error;
+        .upsert({ user_id: userId, ...payload }, { onConflict: "user_id" });
 
-      setCleaner((prev) => (prev ? { ...prev, ...payload } as Cleaner : prev));
-      if (newLogo) setLogoPreview(newLogo);
-      setLogoFile(null);
-      setResizedLogo(null);
-      setMsg("Settings saved.");
-    } catch (e: any) {
-      setErr(e.message || "Failed to save.");
+      if (error) throw error;
+    } catch (e) {
+      alert(e.message || "Failed to save settings.");
     } finally {
       setSaving(false);
     }
-  }
+  };
 
-  const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
-
-  if (loading) return <main className="container mx-auto max-w-5xl px-4 py-8">Loading…</main>;
-  if (!cleaner) return <main className="container mx-auto max-w-5xl px-4 py-8">Could not find profile.</main>;
+  const previewLines = useMemo(() => {
+    const lines = [];
+    if (businessName) lines.push(businessName);
+    if (address) lines.push(address);
+    if (phone) lines.push(`Phone: ${phone}`);
+    if (website) lines.push(`Website: ${website}`);
+    if (email) lines.push(`Email: ${email}`);
+    return lines;
+  }, [businessName, address, phone, website, email]);
 
   return (
-    <main className="container mx-auto max-w-5xl px-4 py-8 space-y-6">
+    <div className="max-w-6xl mx-auto p-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
-      <div className="grid lg:grid-cols-2 gap-6">
-        {/* LEFT: Edit form */}
-        <section className="space-y-3 p-4 border rounded-2xl bg-white">
-          <label className="block">
-            <span className="text-sm">Business name</span>
-            <input
-              className="w-full border rounded px-3 py-2"
-              value={businessName}
-              onChange={(e) => setBusinessName(e.target.value)}
-              placeholder="e.g. NI Bin Guy"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Business address</span>
-            <input
-              className="w-full border rounded px-3 py-2"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-              placeholder="Street, Town, Postcode"
-            />
-          </label>
-
-          <div className="grid md:grid-cols-2 gap-3">
-            <label className="block">
-              <span className="text-sm">Phone</span>
+      {loading ? (
+        <div className="mt-6 text-gray-600">Loading…</div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+          {/* Left: form */}
+          <div className="rounded-xl border p-4 space-y-4">
+            <div>
+              <label className="text-sm font-medium">Business name</label>
               <input
-                className="w-full border rounded px-3 py-2"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="+44…"
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={businessName}
+                onChange={(e) => setBusinessName(e.target.value)}
               />
-            </label>
-            <label className="block">
-              <span className="text-sm">Website</span>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Business address</label>
               <input
-                className="w-full border rounded px-3 py-2"
-                value={website}
-                onChange={(e) => setWebsite(e.target.value)}
-                placeholder="https://…"
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={address}
+                onChange={(e) => setAddress(e.target.value)}
               />
-            </label>
-          </div>
+            </div>
 
-          <label className="block">
-            <span className="text-sm">Contact email</span>
-            <input
-              className="w-full border rounded px-3 py-2"
-              value={contactEmail}
-              onChange={(e) => setContactEmail(e.target.value)}
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">About</span>
-            <textarea
-              className="w-full border rounded px-3 py-2"
-              rows={4}
-              value={about}
-              onChange={(e) => setAbout(e.target.value)}
-              placeholder="Tell customers about your service…"
-            />
-          </label>
-
-          <label className="block">
-            <span className="text-sm">Logo (auto-resized to 300×300 PNG)</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={async (e) => {
-                const f = e.target.files?.[0] || null;
-                setLogoFile(f);
-                setMsg(null);
-                setErr(null);
-                try {
-                  if (f) {
-                    const blob = await resizeTo300PNG(f);
-                    setResizedLogo(blob);
-                    setLogoPreview(URL.createObjectURL(blob));
-                  } else {
-                    setResizedLogo(null);
-                    setLogoPreview(cleaner.logo_url ?? null);
-                  }
-                } catch (ex: any) {
-                  setErr(ex?.message ?? "Failed to process image.");
-                }
-              }}
-            />
-            {logoPreview && (
-              <img
-                src={logoPreview}
-                alt="Logo preview"
-                width={80}
-                height={80}
-                className="mt-2 h-20 w-20 object-contain rounded bg-white"
-              />
-            )}
-            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
-          </label>
-
-          {msg && <div className="text-green-700 text-sm">{msg}</div>}
-          {err && <div className="text-red-700 text-sm">{err}</div>}
-
-          <button
-            className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
-            disabled={!canSave || saving}
-            onClick={save}
-          >
-            {saving ? "Saving…" : "Save settings"}
-          </button>
-        </section>
-
-        {/* RIGHT: Live preview */}
-        <section className="p-4 border rounded-2xl bg-white">
-          <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
-          <div className="flex items-start gap-4">
-            {logoPreview ? (
-              <img
-                src={logoPreview}
-                alt="Business logo"
-                className="h-16 w-16 rounded bg-white object-contain border"
-              />
-            ) : (
-              <div className="h-16 w-16 rounded bg-gray-200 border" />
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="text-xl font-bold truncate">{businessName || "Business name"}</div>
-              <div className="text-gray-700 whitespace-pre-line">
-                {address || "Business address"}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium">Phone</label>
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                />
               </div>
-              <div className="mt-2 space-y-1 text-sm">
-                <div><span className="font-medium">Phone: </span>{phone || "—"}</div>
-                <div><span className="font-medium">Website: </span>{website || "—"}</div>
-                <div><span className="font-medium">Email: </span>{contactEmail || "—"}</div>
+              <div>
+                <label className="text-sm font-medium">Website</label>
+                <input
+                  className="mt-1 w-full rounded border px-3 py-2"
+                  placeholder="example.com"
+                  value={website}
+                  onChange={(e) => setWebsite(e.target.value)}
+                />
               </div>
-              {about && (
-                <div className="mt-3">
-                  <div className="font-medium">About</div>
-                  <div className="text-sm text-gray-700 whitespace-pre-line">{about}</div>
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">Contact email</label>
+              <input
+                className="mt-1 w-full rounded border px-3 py-2"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className="text-sm font-medium">About</label>
+              <textarea
+                className="mt-1 w-full rounded border px-3 py-2 min-h-[100px]"
+                placeholder="Tell customers about your service…"
+                value={about}
+                onChange={(e) => setAbout(e.target.value)}
+              />
+            </div>
+
+            {/* NEW: Payment methods */}
+            <PaymentMethodsSelector value={paymentMethods} onChange={setPaymentMethods} />
+
+            {/* Logo uploader */}
+            <div className="space-y-2">
+              <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+              />
+              {logoUrl && (
+                <div className="text-xs text-gray-600">
+                  Preview shows the resized 300×300 image.
                 </div>
               )}
+              <div>
+                <button
+                  onClick={onSave}
+                  disabled={saving}
+                  className="mt-2 rounded bg-black px-4 py-2 text-white disabled:opacity-60"
+                >
+                  {saving ? "Saving…" : "Save settings"}
+                </button>
+              </div>
             </div>
           </div>
-          <p className="text-xs text-gray-500 mt-4">
-            This is a live preview of what customers will see on your public profile and quotes.
-          </p>
-        </section>
-      </div>
-    </main>
+
+          {/* Right: preview */}
+          <div className="rounded-xl border p-4">
+            <div className="text-lg font-semibold mb-2">Business details (preview)</div>
+            <div className="flex items-start gap-3">
+              <div className="h-12 w-12 rounded bg-gray-100 overflow-hidden flex items-center justify-center">
+                {logoUrl ? (
+                  <img src={logoUrl} alt="logo" className="h-full w-full object-cover" />
+                ) : (
+                  <span className="text-xs text-gray-400">Logo</span>
+                )}
+              </div>
+              <div className="flex-1 space-y-1">
+                {previewLines.map((l, i) => (
+                  <div key={i} className={i === 0 ? "font-semibold" : "text-sm"}>{l}</div>
+                ))}
+
+                {/* NEW: Show selected payment methods */}
+                {paymentMethods.length > 0 && (
+                  <div className="pt-2">
+                    <div className="text-xs font-medium text-gray-600 mb-1">
+                      Accepts:
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {PAYMENT_METHODS.filter(m => paymentMethods.includes(m.key)).map(m => (
+                        <span
+                          key={m.key}
+                          className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
+                        >
+                          <span className="leading-none">{m.icon}</span>
+                          <span>{m.label}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <p className="mt-2 text-[11px] text-gray-500">
+                  This is a live preview of what customers will see on your public profile and quotes.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
