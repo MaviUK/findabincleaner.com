@@ -2,41 +2,17 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Base */
-@layer base {
-  /* Dark page like the screenshot */
-  body { @apply font-body text-white bg-night-900; }
-}
+/* base */
+body { @apply bg-ink-50 text-ink-900 font-body; }
 
-/* Design system */
-@layer components {
-  .btn        { @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-semibold transition; }
-  .btn-primary{ @apply bg-brand-500 text-black hover:bg-brand-600 active:bg-brand-700 shadow-soft; }
-  .btn-ghost  { @apply text-cream-100 hover:text-white hover:bg-night-700/60; }
-
-  .input, .textarea { @apply w-full rounded-lg border border-night-700 bg-night-800 px-3 py-2 text-sm text-white placeholder-white/50
-                              focus:ring-2 focus:ring-teal-500/40 focus:border-teal-500/50; }
-
-  .card      { @apply rounded-xl2 bg-night-600/90 border border-white/5 shadow-soft; }
-  .card-pad  { @apply p-5 sm:p-6; }
-
-  .section-title { @apply text-xl font-bold text-cream-100; }
-  .muted         { @apply text-sm text-white/70; }
-  .link          { @apply text-brand-400 hover:text-brand-500 underline underline-offset-2; }
-
-  /* Hero like BinWashGuyz */
-  .hero-wrap {
-    @apply relative overflow-hidden bg-gradient-to-b from-night-700 via-night-800 to-night-900;
-  }
-  .hero-glow::after {
-    content:""; @apply absolute inset-0 pointer-events-none;
-    background:
-      radial-gradient(600px 300px at 75% 25%, rgba(46,201,184,0.20), transparent 60%),
-      radial-gradient(700px 350px at 0% 80%, rgba(22,178,162,0.15), transparent 60%);
-  }
-
-  /* Heading with orange emphasis */
-  .heading-xl { @apply text-4xl md:text-6xl font-extrabold leading-tight;
-  }
-  .heading-em { @apply text-brand-500 drop-shadow; }
-}
+/* small design system */
+.btn { @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition; }
+.btn-primary { @apply bg-brand-600 text-white hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-400 shadow-soft; }
+.btn-ghost { @apply text-ink-700 hover:text-ink-900 hover:bg-ink-100; }
+.input { @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400; }
+.textarea { @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-brand-300 focus:border-brand-400; }
+.card { @apply rounded-xl2 border border-ink-100 bg-white shadow-soft; }
+.card-pad { @apply p-5 sm:p-6; }
+.section-title { @apply text-lg font-semibold text-ink-800; }
+.muted { @apply text-sm text-ink-500; }
+.link { @apply text-brand-700 hover:text-brand-800 underline underline-offset-2; }
