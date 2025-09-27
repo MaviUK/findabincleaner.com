@@ -1,24 +1,35 @@
-/** @type {import('tailwindcss').Config} */
-export default {
-  content: ["./index.html", "./src/**/*.{ts,tsx,js,jsx}"],
+// tailwind.config.js
+module.exports = {
+  content: ["./index.html","./src/**/*.{js,jsx,ts,tsx}"],
   theme: {
     extend: {
-      fontFamily: {
-        display: ['Inter', 'ui-sans-serif', 'system-ui', 'Segoe UI', 'Helvetica', 'Arial', 'sans-serif'],
-        body: ['Inter', 'ui-sans-serif', 'system-ui', 'Segoe UI', 'Helvetica', 'Arial', 'sans-serif'],
-      },
       colors: {
         brand: {
-          50:"#ecfdf5",100:"#d1fae5",200:"#a7f3d0",300:"#6ee7b7",400:"#34d399",
-          500:"#10b981",600:"#059669",700:"#047857",800:"#065f46",900:"#064e3b",
-        },
-        ink: {
-          50:"#f8fafc",100:"#f1f5f9",200:"#e2e8f0",300:"#cbd5e1",400:"#94a3b8",
-          500:"#64748b",600:"#475569",700:"#334155",800:"#1e293b",900:"#0f172a",
+          // Fresh + punchy
+          primary: "#16C172",      // lively bin green
+          primary600: "#0DAA63",
+          primary700: "#0B8C52",
+          navy: "#0B1B2A",         // deep, trustworthy base
+          navy600: "#0E2437",
+          aqua: "#37D9E6",         // soapy/aqua accent
+          lime: "#B7F399",         // soft highlight for tags/accents
+          cream: "#F5FFF9",        // clean background
+          ink: "#0D1321",          // headings/body on light
+          slate: "#6B778A",        // secondary text
+          danger: "#FF6B6B",       // error/destructive
+          amber: "#FFB703"         // CTA hover accent
         },
       },
-      boxShadow: { soft: "0 8px 30px rgba(2, 6, 23, 0.06)" },
-      borderRadius: { xl2: "1rem" },
+      boxShadow: {
+        soft: "0 8px 24px rgba(11, 27, 42, 0.08)",
+      },
+      borderRadius: {
+        xl2: "1.25rem",
+      },
+      backgroundImage: {
+        "hero-bubbles":
+          "radial-gradient(1200px 600px at 80% -10%, rgba(55,217,230,0.20), transparent 60%), radial-gradient(900px 500px at -10% 20%, rgba(22,193,114,0.18), transparent 55%)",
+      },
     },
   },
   plugins: [],
