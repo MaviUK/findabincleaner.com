@@ -312,10 +312,10 @@ export default function Settings() {
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
         <CleanerCard
-          preview
-          showPayments={false}  // flip to true when you also show payments in search
+          preview={false}      // show the CTA column like the search results
+          showPayments={false} // flip to true when you also show payments in search
           showChips={true}
-          postcodeHint=""       // optional
+          postcodeHint=""      // optional
           cleaner={{
             id: cleaner?.id ?? "preview",
             business_name: businessName || "Business name",
