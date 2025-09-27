@@ -11,12 +11,14 @@ type Cleaner = {
   logo_url: string | null;
   address: string | null;
   phone: string | null;
+  whatsapp: string | null;        // <-- NEW
   website: string | null;
   about: string | null;
   contact_email: string | null;
   payment_methods?: string[] | null;
   service_types?: string[] | null;
 };
+
 
 const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "domestic", label: "Domestic", icon: "🏠" },
@@ -154,6 +156,7 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
+  const [whatsapp, setWhatsapp] = useState("");
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -212,34 +215,37 @@ export default function Settings() {
     })();
   }, []);
 
-  function fillForm(c: Cleaner, fallbackEmail: string) {
-    setCleaner(c);
-    setBusinessName(c.business_name ?? "");
-    setAddress(c.address ?? "");
-    setPhone(c.phone ?? "");
-    setWebsite(c.website ?? "");
-    setAbout(c.about ?? "");
-    setContactEmail(c.contact_email ?? fallbackEmail ?? "");
-    setLogoPreview(c.logo_url ?? null);
-    setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
-    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
-  }
+ function fillForm(c: Cleaner, fallbackEmail: string) {
+  setCleaner(c);
+  setBusinessName(c.business_name ?? "");
+  setAddress(c.address ?? "");
+  setPhone(c.phone ?? "");
+  setWhatsapp(c.whatsapp ?? "");       // <-- NEW
+  setWebsite(c.website ?? "");
+  setAbout(c.about ?? "");
+  setContactEmail(c.contact_email ?? fallbackEmail ?? "");
+  setLogoPreview(c.logo_url ?? null);
+  setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
+  setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
+}
+
 
   async function ensureRow(): Promise<string> {
     if (cleaner && cleaner.id) return cleaner.id;
     const { data: created, error } = await supabase
       .from("cleaners")
-      .insert({
-        user_id: userId,
-        business_name: businessName || null,
-        address: address || null,
-        phone: phone || null,
-        website: website || null,
-        about: about || null,
-        contact_email: contactEmail || null,
-        payment_methods: paymentMethods,
-        service_types: serviceTypes,
-      })
+.insert({
+  user_id: userId,
+  business_name: businessName || null,
+  address: address || null,
+  phone: phone || null,
+  whatsapp: whatsapp || null,         // <-- NEW
+  website: website || null,
+  about: about || null,
+  contact_email: contactEmail || null,
+  payment_methods: paymentMethods,
+  service_types: serviceTypes,
+})
       .select("id,*")
       .single();
     if (error) throw error;
