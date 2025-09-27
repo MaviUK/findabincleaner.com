@@ -314,7 +314,6 @@ export default function Settings() {
         <CleanerCard
   preview={false}
   showPayments={false}
-- showChips={true}
   postcodeHint=""
   cleaner={{
     id: cleaner?.id ?? "preview",
