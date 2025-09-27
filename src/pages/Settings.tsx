@@ -273,20 +273,21 @@ export default function Settings() {
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
-      const payload: Partial<Cleaner> & {
-        payment_methods?: string[];
-        service_types?: string[];
-      } = {
-        business_name: businessName || null,
-        address: address || null,
-        phone: phone || null,
-        website: website || null,
-        about: about || null,
-        contact_email: contactEmail || null,
-        logo_url: newLogo ?? logoPreview ?? null,
-        payment_methods: paymentMethods,
-        service_types: serviceTypes,
-      };
+     const payload: Partial<Cleaner> & {
+  payment_methods?: string[];
+  service_types?: string[];
+} = {
+  business_name: businessName || null,
+  address: address || null,
+  phone: phone || null,
+  whatsapp: whatsapp || null,          // <-- NEW
+  website: website || null,
+  about: about || null,
+  contact_email: contactEmail || null,
+  logo_url: newLogo ?? logoPreview ?? null,
+  payment_methods: paymentMethods,
+  service_types: serviceTypes,
+};
 
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
       if (error) throw error;
@@ -364,26 +365,40 @@ export default function Settings() {
             />
           </label>
 
-          <div className="grid md:grid-cols-2 gap-3">
-            <label className="block">
-              <span className="text-sm">Phone</span>
-              <input
-                className="w-full border rounded px-3 py-2"
-                value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                placeholder="+44…"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm">Website</span>
-              <input
-                className="w-full border rounded px-3 py-2"
-                value={website}
-                onChange={(e) => setWebsite(e.target.value)}
-                placeholder="https://…"
-              />
-            </label>
-          </div>
+         <div className="grid md:grid-cols-2 gap-3">
+  <label className="block">
+    <span className="text-sm">Phone</span>
+    <input
+      className="w-full border rounded px-3 py-2"
+      value={phone}
+      onChange={(e) => setPhone(e.target.value)}
+      placeholder="+44…"
+    />
+  </label>
+  <label className="block">
+    <span className="text-sm">Website</span>
+    <input
+      className="w-full border rounded px-3 py-2"
+      value={website}
+      onChange={(e) => setWebsite(e.target.value)}
+      placeholder="https://…"
+    />
+  </label>
+</div>
+
+<label className="block mt-3">
+  <span className="text-sm">WhatsApp (optional)</span>
+  <input
+    className="w-full border rounded px-3 py-2"
+    value={whatsapp}
+    onChange={(e) => setWhatsapp(e.target.value)}
+    placeholder="+447… or full wa.me link"
+  />
+  <span className="text-xs text-gray-500">
+    Enter an international number (e.g. +447... ) or a full WhatsApp link.
+  </span>
+</label>
+
 
           <label className="block">
             <span className="text-sm">Contact email</span>
