@@ -32,13 +32,13 @@ function ensureClosedRing(ring: google.maps.LatLngLiteral[]): google.maps.LatLng
 function pathsToMultiPolygonGeoJSON(paths: google.maps.LatLngLiteral[][]): any {
   const coords = paths.map((ring) => {
     const closed = ensureClosedRing(ring).map((pt) => [pt.lng, pt.lat]);
-    return [closed]; // outer ring only
+    return [closed];
   });
   return { type: "MultiPolygon", coordinates: coords };
 }
-function norm(n: number) { return Number(n.toFixed(6)); }
-function ringToKey(ring: google.maps.LatLngLiteral[]): string {
-  return ensureClosedRing(ring).map(p => `${norm(p.lat)},${norm(p.lng)}`).join(";");
+const round = (n: number) => Number(n.toFixed(6));
+function ringKey(r: google.maps.LatLngLiteral[]) {
+  return ensureClosedRing(r).map(p => `${round(p.lat)},${round(p.lng)}`).join(";");
 }
 function getLivePath(poly: google.maps.Polygon | null): google.maps.LatLngLiteral[] | null {
   if (!poly) return null;
@@ -75,15 +75,14 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [editingDirty, setEditingDirty] = useState(false);
   const [nameDirty, setNameDirty] = useState(false);
 
-  // Geometry buffers / refs
+  // Geometry & polygon refs
   const editedPathRef = useRef<google.maps.LatLngLiteral[] | null>(null);
-
-  // Keep polygon instances by area id
+  const selectedInitialPathRef = useRef<google.maps.LatLngLiteral[] | null>(null); // stable array for selected polygon
   const polyRefs = useRef(new Map<string, google.maps.Polygon>());
   const selectedPolyRef = useRef<google.maps.Polygon | null>(null);
   const listenerRefs = useRef<google.maps.MapsEventListener[]>([]);
 
-  // A tiny "tick" to re-evaluate geometryChanged after interactions
+  // small ticker to recompute comparisons right after interactions
   const [geomTick, bumpGeomTick] = useReducer((x) => x + 1, 0);
 
   const selectedArea = useMemo(
@@ -91,24 +90,23 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     [areas, selectedId]
   );
 
-  // Compute geometryChanged by comparing LIVE polygon path vs original
+  // Compare LIVE path vs original to catch first-drag even if listeners missed
   const geometryChanged = useMemo(() => {
     if (!selectedArea) return false;
-    const originalOuter = gjToPaths(selectedArea.gj)[0] ?? [];
-    const originalKey = ringToKey(originalOuter);
-    const live = getLivePath(selectedPolyRef.current) || getLivePath(polyRefs.current.get(selectedArea.id) || null) || null;
+    const original = selectedInitialPathRef.current ?? gjToPaths(selectedArea.gj)[0] ?? [];
+    const live = getLivePath(selectedPolyRef.current) || getLivePath(polyRefs.current.get(selectedArea.id) || null);
     if (!live || live.length < 3) return false;
-    const liveKey = ringToKey(live);
-    return liveKey !== originalKey;
+    return ringKey(live) !== ringKey(original);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedArea?.id, areas.length, geomTick]);
+  }, [selectedArea?.id, geomTick]);
 
-  // Enable Save if name or geometry changed (even if first-drag listeners missed)
-  const canSave = (nameDirty || editingDirty || geometryChanged) && mode === "editing"
-    ? true
-    : mode === "drawing"
-    ? draftPath.length >= 3
-    : false;
+  // Save button logic
+  const canSave =
+    mode === "editing"
+      ? (nameDirty || editingDirty || geometryChanged)
+      : mode === "drawing"
+      ? draftPath.length >= 3
+      : false;
 
   // ---------- Load areas ----------
   const loadAreas = useCallback(async () => {
@@ -126,7 +124,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
 
   useEffect(() => { loadAreas(); }, [loadAreas]);
 
-  // ---------- Fit bounds to first area ----------
+  // ---------- Fit bounds ----------
   useEffect(() => {
     if (!isLoaded || !mapRef.current || areas.length === 0) return;
     const first = areas[0];
@@ -144,7 +142,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setDraftPath((prev) => [...prev, pt]);
   }, [mode]);
 
-  // ---------- Start / finish drawing ----------
+  // ---------- Drawing ----------
   function startNewArea() {
     setMode("drawing"); setSelectedId(null); setDraftPath([]);
     setEditingDirty(false); setNameDirty(false);
@@ -166,7 +164,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setSelectedId((data as ServiceAreaRow)?.id ?? null);
   }
 
-  // ---------- Listener attach helpers ----------
+  // ---------- Listener helpers ----------
   const clearListeners = useCallback(() => {
     listenerRefs.current.forEach((l) => l.remove());
     listenerRefs.current = [];
@@ -182,7 +180,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       for (let i = 0; i < path.getLength(); i++) pts.push(path.getAt(i).toJSON());
       editedPathRef.current = pts;
       setEditingDirty(true);
-      bumpGeomTick(); // re-evaluate geometryChanged
+      bumpGeomTick();
     };
     listenerRefs.current.push(
       google.maps.event.addListener(path, "insert_at", updateFromPath),
@@ -205,13 +203,16 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     const found = areas.find((a) => a.id === id) || null;
     setAreaName(found?.name ?? "");
 
+    // Capture the initial path ONCE into a stable array reference
+    selectedInitialPathRef.current = found ? (gjToPaths(found.gj)[0] ?? []) : [];
+
     if (found && mapRef.current) {
       const b = new google.maps.LatLngBounds();
-      gjToPaths(found.gj).flat().forEach((pt) => b.extend(pt));
+      selectedInitialPathRef.current.forEach((pt) => b.extend(pt));
       if (!b.isEmpty()) mapRef.current.fitBounds(b, 48);
     }
 
-    // Try attach immediately and on next tick
+    // Try to attach now and on next tick
     const maybe = polyRefs.current.get(id);
     if (maybe) attachEditListeners(maybe);
     setTimeout(() => {
@@ -225,6 +226,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setMode("idle"); setSelectedId(null); setAreaName("");
     setEditingDirty(false); setNameDirty(false);
     editedPathRef.current = null; selectedPolyRef.current = null;
+    selectedInitialPathRef.current = null;
   }
 
   // Reattach after reload/remount
@@ -232,7 +234,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     if (mode !== "editing" || !selectedId) return;
     const poly = polyRefs.current.get(selectedId);
     if (poly) attachEditListeners(poly);
-  }, [mode, selectedId, areas, attachEditListeners]);
+  }, [mode, selectedId, attachEditListeners]);
 
   // ---------- Save / Delete ----------
   async function saveEditing() {
@@ -243,7 +245,6 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     if (editedPathRef.current && editedPathRef.current.length >= 3) {
       gj = pathsToMultiPolygonGeoJSON([editedPathRef.current]);
     } else {
-      // read live even if listeners missed
       const poly = selectedPolyRef.current || polyRefs.current.get(selectedId) || null;
       const live = getLivePath(poly);
       if (live && live.length >= 3) gj = pathsToMultiPolygonGeoJSON([live]);
@@ -259,8 +260,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     editedPathRef.current = null;
 
     await loadAreas();
-    setSelectedId(area.id); // keep focus
-    bumpGeomTick(); // recalc geometryChanged against fresh server shape
+    setSelectedId(area.id);
+    // Refresh the “original” to the newly saved shape, and keep the same stable ref
+    const refreshed = areas.find(a => a.id === area.id);
+    selectedInitialPathRef.current = refreshed ? (gjToPaths(gj)[0] ?? []) : selectedInitialPathRef.current;
+    bumpGeomTick();
   }
 
   async function deleteSelected() {
@@ -276,9 +280,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   // ---------- Polygon lifecycle & interaction ----------
   const handlePolygonLoad = useCallback((poly: google.maps.Polygon, areaId: string) => {
     polyRefs.current.set(areaId, poly);
-    poly.setEditable(areaId === selectedId && mode === "editing");
-    // If this is the selected polygon, attach now
-    if (mode === "editing" && selectedId === areaId) attachEditListeners(poly);
+    // if this is the selected polygon, attach listeners and ensure editable
+    if (mode === "editing" && selectedId === areaId) {
+      attachEditListeners(poly);
+    } else {
+      poly.setEditable(false);
+    }
   }, [mode, selectedId, attachEditListeners]);
 
   const handlePolygonUnmount = useCallback((areaId: string) => {
@@ -288,12 +295,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     polyRefs.current.delete(areaId);
   }, [clearListeners]);
 
-  // On first interaction (mouseup after a drag), ensure listeners + mark change
+  // On first interaction, ensure listeners and mark dirty
   const handlePolygonMouseUp = useCallback((areaId: string) => {
     if (mode !== "editing" || !selectedId || selectedId !== areaId) return;
     const poly = polyRefs.current.get(areaId);
     if (!poly) return;
-    attachEditListeners(poly); // ensure attached
+    attachEditListeners(poly);
     const live = getLivePath(poly);
     if (live && live.length >= 3) {
       editedPathRef.current = live;
@@ -402,32 +409,36 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             options={{ mapTypeControl: false, streetViewControl: false, fullscreenControl: false }}
           >
             {areas.map((a) => {
-              const paths = gjToPaths(a.gj);
               const isSelected = selectedId === a.id && mode === "editing";
+              // For selected area, use the stable initial path ref to avoid React resets
+              const paths = isSelected
+                ? (selectedInitialPathRef.current ?? gjToPaths(a.gj)[0] ?? [])
+                : (gjToPaths(a.gj)[0] ?? []);
+
               return (
                 <Polygon
                   key={a.id}
-                  paths={paths[0] ?? []}
+                  paths={paths}
                   options={{
                     strokeWeight: 2,
                     strokeOpacity: 1,
                     fillOpacity: 0.1,
                     clickable: true,
-                    editable: isSelected,
+                    // NOTE: we DO NOT set `editable` here; we control it imperatively
                     draggable: false,
                     zIndex: isSelected ? 2 : 1,
                   }}
                   onClick={() => selectArea(a.id)}
                   onLoad={(poly) => handlePolygonLoad(poly, a.id)}
                   onUnmount={() => handlePolygonUnmount(a.id)}
-                  onMouseUp={() => handlePolygonMouseUp(a.id)} // catch first drag after select
+                  onMouseUp={() => handlePolygonMouseUp(a.id)} // catch first drag
                 />
               );
             })}
             {mode === "drawing" && draftPath.length > 0 && (
               <Polygon
                 paths={draftPath}
-                options={{ strokeWeight: 2, strokeOpacity: 1, fillOpacity: 0.05, clickable: false, editable: false }}
+                options={{ strokeWeight: 2, strokeOpacity: 1, fillOpacity: 0.05, clickable: false }}
               />
             )}
           </GoogleMap>
@@ -439,7 +450,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   );
 }
 
-/* TS stubs for externalized handlers */
+/* TS stubs for externalized handlers (actual handlers defined via useCallback inside component) */
 function handlePolygonLoad(_: google.maps.Polygon, __: string) {}
 function handlePolygonUnmount(_: string) {}
 function handlePolygonMouseUp(_: string) {}
