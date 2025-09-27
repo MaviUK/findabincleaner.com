@@ -13,22 +13,21 @@ type Cleaner = {
   about: string | null;
   contact_email: string | null;
   payment_methods?: string[] | null;
-  service_types?: string[] | null; // NEW
+  service_types?: string[] | null;
 };
 
-// emoji placeholders (easy to swap to SVG later)
+// emoji placeholders (swap to SVGs anytime)
 const PAYMENT_METHODS: { key: string; label: string; icon: string }[] = [
   { key: "bank_transfer", label: "Bank Transfer", icon: "🏦" },
-  { key: "cash", label: "Cash", icon: "💵" },
-  { key: "stripe", label: "Stripe", icon: "🟦" },
-  { key: "gocardless", label: "GoCardless", icon: "🔵" },
-  { key: "paypal", label: "PayPal", icon: "🅿️" },
-  { key: "card_machine", label: "Card Machine", icon: "💳" },
+  { key: "cash",          label: "Cash",          icon: "💵" },
+  { key: "stripe",        label: "Stripe",        icon: "🟦" },
+  { key: "gocardless",    label: "GoCardless",    icon: "🔵" },
+  { key: "paypal",        label: "PayPal",        icon: "🅿️" },
+  { key: "card_machine",  label: "Card Machine",  icon: "💳" },
 ];
 
-// NEW: service types
 const SERVICE_TYPES: { key: string; label: string; icon: string }[] = [
-  { key: "domestic", label: "Domestic", icon: "🏠" },
+  { key: "domestic",   label: "Domestic",   icon: "🏠" },
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
@@ -64,12 +63,16 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   }
 }
 
-function PaymentMethodsSelector({
+function Pills({
+  items,
   value,
   onChange,
+  title,
 }: {
+  items: { key: string; label: string; icon?: string }[];
   value: string[];
   onChange: (next: string[]) => void;
+  title: string;
 }) {
   const toggle = (key: string, checked: boolean) => {
     const set = new Set(value);
@@ -78,9 +81,9 @@ function PaymentMethodsSelector({
   };
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">Payment methods accepted</div>
+      <div className="text-sm font-medium">{title}</div>
       <div className="flex flex-wrap gap-2">
-        {PAYMENT_METHODS.map((m) => {
+        {items.map((m) => {
           const checked = value.includes(m.key);
           return (
             <label
@@ -94,49 +97,8 @@ function PaymentMethodsSelector({
                 checked={checked}
                 onChange={(e) => toggle(m.key, e.target.checked)}
               />
-              <span className="text-base leading-none">{m.icon}</span>
+              {m.icon && <span className="text-base leading-none">{m.icon}</span>}
               <span>{m.label}</span>
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// NEW: Service Types selector
-function ServiceTypesSelector({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const toggle = (key: string, checked: boolean) => {
-    const set = new Set(value);
-    checked ? set.add(key) : set.delete(key);
-    onChange(Array.from(set));
-  };
-  return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium">Service types</div>
-      <div className="flex flex-wrap gap-2">
-        {SERVICE_TYPES.map((s) => {
-          const checked = value.includes(s.key);
-          return (
-            <label
-              key={s.key}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition
-                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
-            >
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={checked}
-                onChange={(e) => toggle(s.key, e.target.checked)}
-              />
-              <span className="text-base leading-none">{s.icon}</span>
-              <span>{s.label}</span>
             </label>
           );
         })}
@@ -161,7 +123,7 @@ export default function Settings() {
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
-  const [serviceTypes, setServiceTypes] = useState<string[]>([]); // NEW
+  const [serviceTypes, setServiceTypes] = useState<string[]>([]);
 
   // logo state
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -178,16 +140,14 @@ export default function Settings() {
         }
         setUserId(user.id);
 
-        // load the existing cleaner row
         const { data, error } = await supabase
           .from("cleaners")
           .select("*")
           .eq("user_id", user.id)
-          .maybeSingle(); // do NOT create or change data during load
+          .maybeSingle();
         if (error) throw error;
 
         if (!data) {
-          // leave the form empty but prefill email; don't insert on load
           fillForm(
             {
               id: "",
@@ -200,7 +160,7 @@ export default function Settings() {
               about: null,
               contact_email: user.email ?? null,
               payment_methods: [],
-              service_types: [], // NEW
+              service_types: [],
             },
             user.email ?? ""
           );
@@ -225,11 +185,10 @@ export default function Settings() {
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
     setLogoPreview(c.logo_url ?? null);
     setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
-    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []); // NEW
+    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
   }
 
   async function ensureRow(): Promise<string> {
-    // create a row only when user clicks Save and none exists
     if (cleaner && cleaner.id) return cleaner.id;
     const { data: created, error } = await supabase
       .from("cleaners")
@@ -242,7 +201,7 @@ export default function Settings() {
         about: about || null,
         contact_email: contactEmail || null,
         payment_methods: paymentMethods,
-        service_types: serviceTypes, // NEW
+        service_types: serviceTypes,
       })
       .select("id,*")
       .single();
@@ -283,7 +242,7 @@ export default function Settings() {
         contact_email: contactEmail || null,
         logo_url: newLogo ?? logoPreview ?? null,
         payment_methods: paymentMethods,
-        service_types: serviceTypes, // NEW
+        service_types: serviceTypes,
       };
 
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
@@ -303,17 +262,81 @@ export default function Settings() {
 
   const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
 
-  if (loading)
-    return (
-      <main className="container mx-auto max-w-5xl px-4 py-8">Loading…</main>
-    );
+  if (loading) {
+    return <main className="container mx-auto max-w-5xl px-4 py-8">Loading…</main>;
+  }
 
   return (
     <main className="container mx-auto max-w-5xl px-4 py-8 space-y-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
+      {/* TOP: Full-width preview */}
+      <section className="p-4 border rounded-2xl bg-white">
+        <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
+        <div className="flex items-start gap-4">
+          {logoPreview ? (
+            <img
+              src={logoPreview}
+              alt="Business logo"
+              className="h-16 w-16 rounded bg-white object-contain border"
+            />
+          ) : (
+            <div className="h-16 w-16 rounded bg-gray-200 border flex items-center justify-center text-xs text-gray-500">
+              Logo
+            </div>
+          )}
+          <div className="flex-1 min-w-0">
+            <div className="text-xl font-bold truncate">
+              {businessName || "Business name"}
+            </div>
+            <div className="text-gray-700 whitespace-pre-line">
+              {address || "Business address"}
+            </div>
+            <div className="mt-2 space-y-1 text-sm">
+              <div><span className="font-medium">Phone: </span>{phone || "—"}</div>
+              <div><span className="font-medium">Website: </span>{website || "—"}</div>
+              <div><span className="font-medium">Email: </span>{contactEmail || "—"}</div>
+            </div>
+
+            {/* Payment methods */}
+            {paymentMethods.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs font-medium text-gray-600 mb-1">Accepts:</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {PAYMENT_METHODS.filter((m) => paymentMethods.includes(m.key)).map((m) => (
+                    <span key={m.key} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs">
+                      <span className="leading-none">{m.icon}</span>
+                      <span>{m.label}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Service types */}
+            {serviceTypes.length > 0 && (
+              <div className="mt-3">
+                <div className="text-xs font-medium text-gray-600 mb-1">Services:</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {SERVICE_TYPES.filter((s) => serviceTypes.includes(s.key)).map((s) => (
+                    <span key={s.key} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs">
+                      <span className="leading-none">{s.icon}</span>
+                      <span>{s.label}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+        <p className="text-xs text-gray-500 mt-4">
+          This is a live preview of what customers will see on your public profile and quotes.
+        </p>
+      </section>
+
+      {/* BELOW: Two-column form */}
       <div className="grid lg:grid-cols-2 gap-6">
-        {/* LEFT: Edit form */}
+        {/* LEFT: Core details */}
         <section className="space-y-3 p-4 border rounded-2xl bg-white">
           <label className="block">
             <span className="text-sm">Business name</span>
@@ -375,15 +398,26 @@ export default function Settings() {
               placeholder="Tell customers about your service…"
             />
           </label>
+        </section>
 
-          {/* NEW: payment methods */}
-          <PaymentMethodsSelector value={paymentMethods} onChange={setPaymentMethods} />
+        {/* RIGHT: Methods, services, logo, save */}
+        <section className="space-y-4 p-4 border rounded-2xl bg-white">
+          <Pills
+            items={PAYMENT_METHODS}
+            value={paymentMethods}
+            onChange={setPaymentMethods}
+            title="Payment methods accepted"
+          />
 
-          {/* NEW: service types */}
-          <ServiceTypesSelector value={serviceTypes} onChange={setServiceTypes} />
+          <Pills
+            items={SERVICE_TYPES}
+            value={serviceTypes}
+            onChange={setServiceTypes}
+            title="Service types"
+          />
 
-          <label className="block">
-            <span className="text-sm">Logo (auto-resized to 300×300 PNG)</span>
+          <div>
+            <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
             <input
               type="file"
               accept="image/*"
@@ -405,6 +439,7 @@ export default function Settings() {
                   setErr(ex?.message ?? "Failed to process image.");
                 }
               }}
+              className="mt-1"
             />
             {logoPreview && (
               <img
@@ -415,10 +450,8 @@ export default function Settings() {
                 className="mt-2 h-20 w-20 object-contain rounded bg-white"
               />
             )}
-            <p className="text-xs text-gray-500 mt-1">
-              Preview shows the resized 300×300 image.
-            </p>
-          </label>
+            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
+          </div>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
           {err && <div className="text-red-700 text-sm">{err}</div>}
@@ -430,85 +463,6 @@ export default function Settings() {
           >
             {saving ? "Saving…" : "Save settings"}
           </button>
-        </section>
-
-        {/* RIGHT: Live preview */}
-        <section className="p-4 border rounded-2xl bg-white">
-          <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
-          <div className="flex items-start gap-4">
-            {logoPreview ? (
-              <img
-                src={logoPreview}
-                alt="Business logo"
-                className="h-16 w-16 rounded bg-white object-contain border"
-              />
-            ) : (
-              <div className="h-16 w-16 rounded bg-gray-200 border flex items-center justify-center text-xs text-gray-500">
-                Logo
-              </div>
-            )}
-            <div className="flex-1 min-w-0">
-              <div className="text-xl font-bold truncate">
-                {businessName || "Business name"}
-              </div>
-              <div className="text-gray-700 whitespace-pre-line">
-                {address || "Business address"}
-              </div>
-              <div className="mt-2 space-y-1 text-sm">
-                <div>
-                  <span className="font-medium">Phone: </span>
-                  {phone || "—"}
-                </div>
-                <div>
-                  <span className="font-medium">Website: </span>
-                  {website || "—"}
-                </div>
-                <div>
-                  <span className="font-medium">Email: </span>
-                  {contactEmail || "—"}
-                </div>
-              </div>
-
-              {/* NEW: show payment methods */}
-              {paymentMethods.length > 0 && (
-                <div className="mt-3">
-                  <div className="text-xs font-medium text-gray-600 mb-1">Accepts:</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {PAYMENT_METHODS.filter((m) => paymentMethods.includes(m.key)).map((m) => (
-                      <span
-                        key={m.key}
-                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
-                      >
-                        <span className="leading-none">{m.icon}</span>
-                        <span>{m.label}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* NEW: show service types */}
-              {serviceTypes.length > 0 && (
-                <div className="mt-3">
-                  <div className="text-xs font-medium text-gray-600 mb-1">Services:</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {SERVICE_TYPES.filter((s) => serviceTypes.includes(s.key)).map((s) => (
-                      <span
-                        key={s.key}
-                        className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs"
-                      >
-                        <span className="leading-none">{s.icon}</span>
-                        <span>{s.label}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-          <p className="text-xs text-gray-500 mt-4">
-            This is a live preview of what customers will see on your public profile and quotes.
-          </p>
         </section>
       </div>
     </main>
