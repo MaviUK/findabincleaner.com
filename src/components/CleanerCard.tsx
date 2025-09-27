@@ -22,10 +22,14 @@ export default function CleanerCard({
   cleaner,
   postcodeHint,
   preview = false,
+  showPayments = true, // NEW
+  showChips = true,    // NEW
 }: {
   cleaner: Cleaner;
   postcodeHint?: string;
   preview?: boolean;
+  showPayments?: boolean;
+  showChips?: boolean;
 }) {
   const km =
     typeof cleaner.distance_m === "number"
@@ -81,7 +85,7 @@ export default function CleanerCard({
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-gray-600">
             {postcodeHint && (
               <span className="inline-flex items-center gap-1">
-                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M12 2a7 7 0 0 0-7 7c0 5.25 7 13 7 13s7-7.75 7-13a7 7 0 0 0-7-7zm0 9.5a2.5 2.5 0 1 1 0-5 2.5 2.5 0 0 1 0 5z" />
                 </svg>
                 Operates in {postcodeHint.toUpperCase()}
@@ -91,16 +95,18 @@ export default function CleanerCard({
           </div>
 
           {/* Chips */}
-          <div className="mt-3 flex flex-wrap gap-2">
-            {chips.map((txt) => (
-              <span key={txt} className="text-xs rounded-full border px-2 py-1">
-                {txt}
-              </span>
-            ))}
-          </div>
+          {showChips && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {chips.map((txt) => (
+                <span key={txt} className="text-xs rounded-full border px-2 py-1">
+                  {txt}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Payments */}
-          {payments.length > 0 && (
+          {showPayments && payments.length > 0 && (
             <div className="mt-3 flex flex-wrap gap-1.5">
               {payments.map((k) => (
                 <span
