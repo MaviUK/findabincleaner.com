@@ -1,15 +1,8 @@
-// src/components/FindCleaners.tsx
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-type RpcMatch = {
+type Match = {
   cleaner_id: string;
-  business_name: string;
-  distance_m?: number;
-};
-
-type CleanerCard = {
-  id: string;
   business_name: string | null;
   logo_url: string | null;
   website: string | null;
@@ -22,26 +15,19 @@ function formatDistance(m?: number) {
   if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
   return `${Math.round(m)} m`;
 }
-
 function toTelHref(phone?: string | null) {
   if (!phone) return null;
   const digits = phone.replace(/[^\d+]/g, "");
   return digits ? `tel:${digits}` : null;
 }
-
 function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
-  // UK-friendly normalization:
-  // - keep digits only
-  // - leading 0 -> +44
-  // - if already has +cc, keep that
   let digits = phone.replace(/[^\d]/g, "");
   if (!digits) return null;
   if (phone.trim().startsWith("+")) {
-    // already includes country code
     digits = phone.replace(/[^\d]/g, "");
   } else if (digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`;
+    digits = `44${digits.slice(1)}`; // UK normalize 0xxxx -> +44xxxx
   }
   return `https://wa.me/${digits}`;
 }
@@ -49,7 +35,7 @@ function toWhatsAppHref(phone?: string | null) {
 export default function FindCleaners() {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<CleanerCard[]>([]);
+  const [results, setResults] = useState<Match[]>([]);
   const [error, setError] = useState<string | null>(null);
   const submitCount = useRef(0);
 
@@ -59,19 +45,15 @@ export default function FindCleaners() {
     setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
-    if (!pc) {
-      setError("Please enter a postcode.");
-      return;
-    }
+    if (!pc) return setError("Please enter a postcode.");
 
     try {
       setLoading(true);
       submitCount.current += 1;
       console.log(`[FindCleaners] submit #${submitCount.current}`, { pc });
 
-      // 1) Geocode with postcodes.io
-      const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`;
-      const res = await fetch(url);
+      // 1) Geocode
+      const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`);
       if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
@@ -82,61 +64,18 @@ export default function FindCleaners() {
       const lng = Number(data.result.longitude);
       console.log("[FindCleaners] geocode ok", { lat, lng });
 
-      // 2) RPC (no generics -> cast safely after)
-      const rpcRes = await supabase.rpc(
+      // 2) Single RPC that already includes logo/phone/website
+      const { data: matches, error: rpcError } = await supabase.rpc(
         "find_cleaners_for_point_sorted",
         { lat, lng }
       );
-
-      if (rpcRes.error) {
-        console.error("[FindCleaners] RPC error", rpcRes.error);
-        setError(rpcRes.error.message);
+      if (rpcError) {
+        console.error("[FindCleaners] RPC error", rpcError);
+        setError(rpcError.message);
         return;
       }
 
-      const base = (rpcRes.data as RpcMatch[]) || [];
-      if (base.length === 0) {
-        setResults([]);
-        return;
-      }
-
-      // 3) Enrich with logo, phone, website
-      const ids = base.map((m) => m.cleaner_id);
-      const { data: cleaners, error: qErr } = await supabase
-        .from("cleaners")
-        .select("id,business_name,logo_url,website,phone")
-        .in("id", ids);
-
-      if (qErr) {
-        console.error("[FindCleaners] details query error", qErr);
-        // fall back to bare results
-        setResults(
-          base.map((m) => ({
-            id: m.cleaner_id,
-            business_name: m.business_name,
-            logo_url: null,
-            website: null,
-            phone: null,
-            distance_m: m.distance_m,
-          }))
-        );
-        return;
-      }
-
-      const byId = new Map((cleaners || []).map((c) => [c.id, c]));
-      const enriched: CleanerCard[] = base.map((m) => {
-        const c = byId.get(m.cleaner_id) as Partial<CleanerCard> | undefined;
-        return {
-          id: m.cleaner_id,
-          business_name: (c?.business_name ?? m.business_name) || m.business_name,
-          logo_url: c?.logo_url ?? null,
-          website: c?.website ?? null,
-          phone: c?.phone ?? null,
-          distance_m: m.distance_m,
-        };
-      });
-
-      setResults(enriched);
+      setResults((matches || []) as Match[]);
     } catch (e: any) {
       console.error("[FindCleaners] catch", e);
       setError(e?.message || "Something went wrong.");
@@ -175,7 +114,7 @@ export default function FindCleaners() {
           const wa = toWhatsAppHref(r.phone);
           return (
             <li
-              key={r.id}
+              key={r.cleaner_id}
               className="p-4 rounded-xl border flex items-center justify-between gap-4"
             >
               <div className="flex items-center gap-3 min-w-0">
@@ -188,8 +127,12 @@ export default function FindCleaners() {
                 ) : (
                   <div className="h-10 w-10 rounded bg-gray-200 border" />
                 )}
+
                 <div className="min-w-0">
-                  <div className="font-medium truncate">{r.business_name}</div>
+                  <div className="font-medium truncate">
+                    {r.business_name ?? "Cleaner"}
+                  </div>
+
                   <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
                     {r.website && (
                       <a
@@ -219,6 +162,7 @@ export default function FindCleaners() {
                   </div>
                 </div>
               </div>
+
               <div className="text-sm text-gray-700 whitespace-nowrap">
                 {formatDistance(r.distance_m)}
               </div>
