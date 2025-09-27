@@ -1,5 +1,10 @@
+// src/components/FindCleaners.tsx
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
+
+export type FindCleanersProps = {
+  onSearchComplete?: (results: Match[], postcode: string) => void;
+};
 
 type Match = {
   cleaner_id: string;
@@ -7,6 +12,8 @@ type Match = {
   logo_url: string | null;
   website: string | null;
   phone: string | null;
+  whatsapp?: string | null;     // if your RPC returns it
+  payment_methods?: string[];   // if your RPC returns it
   distance_m?: number;
 };
 
@@ -32,7 +39,7 @@ function toWhatsAppHref(phone?: string | null) {
   return `https://wa.me/${digits}`;
 }
 
-export default function FindCleaners() {
+export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<Match[]>([]);
@@ -42,7 +49,8 @@ export default function FindCleaners() {
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
-    setResults([]);
+    // Only clear local results if we're showing them locally
+    if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
     if (!pc) return setError("Please enter a postcode.");
@@ -50,10 +58,11 @@ export default function FindCleaners() {
     try {
       setLoading(true);
       submitCount.current += 1;
-      console.log(`[FindCleaners] submit #${submitCount.current}`, { pc });
 
       // 1) Geocode
-      const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`);
+      const res = await fetch(
+        `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
+      );
       if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
@@ -62,22 +71,25 @@ export default function FindCleaners() {
       }
       const lat = Number(data.result.latitude);
       const lng = Number(data.result.longitude);
-      console.log("[FindCleaners] geocode ok", { lat, lng });
 
-      // 2) Single RPC that already includes logo/phone/website
+      // 2) RPC
       const { data: matches, error: rpcError } = await supabase.rpc(
         "find_cleaners_for_point_sorted",
         { lat, lng }
       );
       if (rpcError) {
-        console.error("[FindCleaners] RPC error", rpcError);
         setError(rpcError.message);
         return;
       }
 
-      setResults((matches || []) as Match[]);
+      const list = (matches || []) as Match[];
+
+      // Update local list if we're rendering locally
+      if (!onSearchComplete) setResults(list);
+
+      // Notify parent (Landing) so it can render ResultsList
+      onSearchComplete?.(list, pc);
     } catch (e: any) {
-      console.error("[FindCleaners] catch", e);
       setError(e?.message || "Something went wrong.");
     } finally {
       setLoading(false);
@@ -108,72 +120,75 @@ export default function FindCleaners() {
         </div>
       )}
 
-      <ul className="space-y-2">
-        {results.map((r) => {
-          const tel = toTelHref(r.phone);
-          const wa = toWhatsAppHref(r.phone);
-          return (
-            <li
-              key={r.cleaner_id}
-              className="p-4 rounded-xl border flex items-center justify-between gap-4"
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                {r.logo_url ? (
-                  <img
-                    src={r.logo_url}
-                    alt={`${r.business_name ?? "Cleaner"} logo`}
-                    className="h-10 w-10 rounded bg-white object-contain border"
-                  />
-                ) : (
-                  <div className="h-10 w-10 rounded bg-gray-200 border" />
-                )}
+      {/* If parent is handling results via onSearchComplete, hide the internal list */}
+      {!onSearchComplete && (
+        <ul className="space-y-2">
+          {results.map((r) => {
+            const tel = toTelHref(r.phone);
+            const wa = toWhatsAppHref(r.phone);
+            return (
+              <li
+                key={r.cleaner_id}
+                className="p-4 rounded-xl border flex items-center justify-between gap-4"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {r.logo_url ? (
+                    <img
+                      src={r.logo_url}
+                      alt={`${r.business_name ?? "Cleaner"} logo`}
+                      className="h-10 w-10 rounded bg-white object-contain border"
+                    />
+                  ) : (
+                    <div className="h-10 w-10 rounded bg-gray-200 border" />
+                  )}
 
-                <div className="min-w-0">
-                  <div className="font-medium truncate">
-                    {r.business_name ?? "Cleaner"}
-                  </div>
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {r.business_name ?? "Cleaner"}
+                    </div>
 
-                  <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
-                    {r.website && (
-                      <a
-                        href={r.website}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline"
-                      >
-                        Website
-                      </a>
-                    )}
-                    {tel && (
-                      <a href={tel} className="underline">
-                        Call
-                      </a>
-                    )}
-                    {wa && (
-                      <a
-                        href={wa}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="underline"
-                      >
-                        WhatsApp
-                      </a>
-                    )}
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                      {r.website && (
+                        <a
+                          href={r.website}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                        >
+                          Website
+                        </a>
+                      )}
+                      {tel && (
+                        <a href={tel} className="underline">
+                          Call
+                        </a>
+                      )}
+                      {wa && (
+                        <a
+                          href={wa}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                        >
+                          WhatsApp
+                        </a>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              <div className="text-sm text-gray-700 whitespace-nowrap">
-                {formatDistance(r.distance_m)}
-              </div>
-            </li>
-          );
-        })}
+                <div className="text-sm text-gray-700 whitespace-nowrap">
+                  {formatDistance(r.distance_m)}
+                </div>
+              </li>
+            );
+          })}
 
-        {!loading && !error && results.length === 0 && (
-          <li className="text-gray-500">No cleaners found yet.</li>
-        )}
-      </ul>
+          {!loading && !error && results.length === 0 && (
+            <li className="text-gray-500">No cleaners found yet.</li>
+          )}
+        </ul>
+      )}
     </div>
   );
 }
