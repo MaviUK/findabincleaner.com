@@ -4,29 +4,38 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        night: {
+          900: "#070E0F", // nearly black
+          800: "#0B1B1C",
+          700: "#0F2426",
+          600: "#123032", // hero/card base
+        },
+        teal: {
+          300: "#55E1CF",
+          400: "#2EC9B8",
+          500: "#16B2A2", // accents
+        },
         brand: {
-          50:"#EDFFF6",100:"#D6FFE9",200:"#B8F7D5",300:"#7FEAB5",400:"#2FD28B",
-          500:"#16C172",600:"#0DAA63",700:"#0B8C52",800:"#0A7345",900:"#075737",
+          100: "#FFF4E5",
+          200: "#FFE2BF",
+          400: "#F4A646",
+          500: "#EC8C2D", // primary orange
+          600: "#D9761D",
+          700: "#B95F12",
         },
-        ink: {
-          50:"#F5FFF9",100:"#EAF7F3",200:"#D8EAE8",300:"#C5D6D8",400:"#A2B6C1",
-          500:"#6B778A",600:"#465469",700:"#243145",800:"#142233",900:"#0B1B2A",
-        },
-        aqua: {
-          50:"#ECFEFF",100:"#CFFAFE",200:"#A5F3FC",300:"#67E8F9",400:"#37D9E6",
-          500:"#22CCDB",600:"#14B3C2",700:"#0F8E9B",800:"#0D717C",900:"#0B5862",
+        cream: {
+          50: "#FEFDF9",
+          100: "#FBF6EB", // heading highlight
         },
       },
       boxShadow: {
-        soft: "0 8px 24px rgba(11,27,42,0.08)",
-      },
-      borderRadius: {
-        xl2: "1.25rem",
+        soft: "0 10px 30px rgba(0,0,0,0.25)",
+        glow: "0 0 80px rgba(46,201,184,0.25)",
       },
       fontFamily: {
-        // define the utility `font-body`
-        body: ['"Plus Jakarta Sans"', "ui-sans-serif","system-ui","-apple-system","Segoe UI","Roboto","Inter","Arial","sans-serif"],
+        body: ['"Plus Jakarta Sans"', "ui-sans-serif", "system-ui", "Arial", "sans-serif"],
       },
+      borderRadius: { xl2: "1.25rem" },
     },
   },
   plugins: [],
