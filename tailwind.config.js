@@ -5,19 +5,40 @@ module.exports = {
     extend: {
       colors: {
         brand: {
-          // Fresh + punchy
-          primary: "#16C172",      // lively bin green
-          primary600: "#0DAA63",
-          primary700: "#0B8C52",
-          navy: "#0B1B2A",         // deep, trustworthy base
-          navy600: "#0E2437",
-          aqua: "#37D9E6",         // soapy/aqua accent
-          lime: "#B7F399",         // soft highlight for tags/accents
-          cream: "#F5FFF9",        // clean background
-          ink: "#0D1321",          // headings/body on light
-          slate: "#6B778A",        // secondary text
-          danger: "#FF6B6B",       // error/destructive
-          amber: "#FFB703"         // CTA hover accent
+          50:  "#EDFFF6",
+          100: "#D6FFE9",
+          200: "#B8F7D5",
+          300: "#7FEAB5",
+          400: "#2FD28B",
+          500: "#16C172", // primary
+          600: "#0DAA63",
+          700: "#0B8C52",
+          800: "#0A7345",
+          900: "#075737",
+        },
+        ink: {
+          50:  "#F5FFF9", // clean “cream”
+          100: "#EAF7F3",
+          200: "#D8EAE8",
+          300: "#C5D6D8",
+          400: "#A2B6C1",
+          500: "#6B778A", // secondary text
+          600: "#465469",
+          700: "#243145",
+          800: "#142233",
+          900: "#0B1B2A", // deep navy body text on light
+        },
+        aqua: {
+          50:  "#ECFEFF",
+          100: "#CFFAFE",
+          200: "#A5F3FC",
+          300: "#67E8F9",
+          400: "#37D9E6",
+          500: "#22CCDB",
+          600: "#14B3C2",
+          700: "#0F8E9B",
+          800: "#0D717C",
+          900: "#0B5862",
         },
       },
       boxShadow: {
@@ -25,10 +46,6 @@ module.exports = {
       },
       borderRadius: {
         xl2: "1.25rem",
-      },
-      backgroundImage: {
-        "hero-bubbles":
-          "radial-gradient(1200px 600px at 80% -10%, rgba(55,217,230,0.20), transparent 60%), radial-gradient(900px 500px at -10% 20%, rgba(22,193,114,0.18), transparent 55%)",
       },
     },
   },
