@@ -1,6 +1,7 @@
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
+import CleanerCard from "../components/CleanerCard";
 
 type Cleaner = {
   id: string;
@@ -270,67 +271,27 @@ export default function Settings() {
     <main className="container mx-auto max-w-5xl px-4 py-8 space-y-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
-      {/* TOP: Full-width preview */}
+      {/* TOP: Full-width preview using the actual search card */}
       <section className="p-4 border rounded-2xl bg-white">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
-        <div className="flex items-start gap-4">
-          {logoPreview ? (
-            <img
-              src={logoPreview}
-              alt="Business logo"
-              className="h-16 w-16 rounded bg-white object-contain border"
-            />
-          ) : (
-            <div className="h-16 w-16 rounded bg-gray-200 border flex items-center justify-center text-xs text-gray-500">
-              Logo
-            </div>
-          )}
-          <div className="flex-1 min-w-0">
-            <div className="text-xl font-bold truncate">
-              {businessName || "Business name"}
-            </div>
-            <div className="text-gray-700 whitespace-pre-line">
-              {address || "Business address"}
-            </div>
-            <div className="mt-2 space-y-1 text-sm">
-              <div><span className="font-medium">Phone: </span>{phone || "—"}</div>
-              <div><span className="font-medium">Website: </span>{website || "—"}</div>
-              <div><span className="font-medium">Email: </span>{contactEmail || "—"}</div>
-            </div>
 
-            {/* Payment methods */}
-            {paymentMethods.length > 0 && (
-              <div className="mt-3">
-                <div className="text-xs font-medium text-gray-600 mb-1">Accepts:</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {PAYMENT_METHODS.filter((m) => paymentMethods.includes(m.key)).map((m) => (
-                    <span key={m.key} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs">
-                      <span className="leading-none">{m.icon}</span>
-                      <span>{m.label}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
+        <CleanerCard
+          preview
+          postcodeHint={""}
+          cleaner={{
+            id: cleaner?.id ?? "preview",
+            business_name: businessName || "Business name",
+            logo_url: logoPreview,
+            website,
+            phone,
+            distance_m: null,
+            payment_methods: paymentMethods,
+            service_types: serviceTypes,
+          }}
+        />
 
-            {/* Service types */}
-            {serviceTypes.length > 0 && (
-              <div className="mt-3">
-                <div className="text-xs font-medium text-gray-600 mb-1">Services:</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {SERVICE_TYPES.filter((s) => serviceTypes.includes(s.key)).map((s) => (
-                    <span key={s.key} className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-xs">
-                      <span className="leading-none">{s.icon}</span>
-                      <span>{s.label}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-        <p className="text-xs text-gray-500 mt-4">
-          This is a live preview of what customers will see on your public profile and quotes.
+        <p className="text-xs text-gray-500 mt-3">
+          This matches how your listing appears in search results.
         </p>
       </section>
 
