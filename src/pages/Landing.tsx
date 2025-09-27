@@ -1,36 +1,56 @@
+// src/pages/Landing.tsx
+import React from "react";
+import FindCleaners from "../components/FindCleaners";
+
 export default function Landing() {
   return (
-    <section className="grid md:grid-cols-2 gap-8 items-center">
-      <div className="space-y-4">
-        <h1 className="text-3xl sm:text-4xl font-bold text-ink-900">
-          Book a trusted wheelie bin cleaner in minutes
-        </h1>
-        <p className="text-ink-600">
-          Compare local cleaners, check service areas and book online. Clean bins, happy homes.
+    <main className="w-full">
+      {/* Hero */}
+      <section className="container mx-auto max-w-3xl px-4 py-12">
+        <div className="space-y-4">
+          <h1 className="text-4xl font-extrabold tracking-tight">
+            Book a trusted wheelie bin cleaner in minutes
+          </h1>
+          <p className="text-gray-600">
+            Compare local cleaners, check service areas and book online. Clean bins, happy homes.
+          </p>
+
+          {/* CTA buttons under heading (matches your screenshot) */}
+          <div className="flex gap-3">
+            <a
+              href="#/login"
+              className="bg-emerald-700 text-white px-4 py-2 rounded"
+            >
+              I’m a cleaner
+            </a>
+            <a
+              href="#/"
+              className="border px-4 py-2 rounded"
+            >
+              Find cleaners
+            </a>
+          </div>
+        </div>
+
+        {/* Postcode search widget */}
+        <div className="mt-6">
+          <FindCleaners />
+        </div>
+
+        <p className="mt-4 text-sm text-gray-500">
+          Free listing for cleaners • No signup fees
         </p>
+      </section>
 
-        <div className="flex gap-2">
-          <a href="#/dashboard" className="btn btn-primary">I’m a cleaner</a>
-          <a href="#/" className="btn btn-ghost">Find cleaners</a>
+      {/* Footer */}
+      <footer className="border-t">
+        <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
+          <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
+          <span>
+            Built with <span className="text-rose-600">❤</span>
+          </span>
         </div>
-
-        <p className="muted">Free listing for cleaners • No signup fees</p>
-      </div>
-
-      <div className="card">
-        <div className="card-pad">
-          <form
-            onSubmit={(e) => { e.preventDefault(); window.location.hash = "#/"; }}
-            className="space-y-3"
-          >
-            <label className="block">
-              <span className="muted">Enter postcode</span>
-              <input className="input mt-1" placeholder="e.g. BT20 5NF" />
-            </label>
-            <button className="btn btn-primary w-full">Find cleaners</button>
-          </form>
-        </div>
-      </div>
-    </section>
+      </footer>
+    </main>
   );
 }
