@@ -2,9 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
-import {
-  PAYMENT_METHODS as PM_ALL,
-} from "../constants/paymentMethods";
+import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
 
 type Cleaner = {
   id: string;
@@ -21,7 +19,7 @@ type Cleaner = {
 };
 
 const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
-  { key: "domestic",   label: "Domestic",   icon: "🏠" },
+  { key: "domestic", label: "Domestic", icon: "🏠" },
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
@@ -35,7 +33,6 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
       el.onerror = reject;
       el.src = url;
     });
-
     const size = 300;
     const canvas = document.createElement("canvas");
     canvas.width = size;
@@ -57,6 +54,7 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   }
 }
 
+/* ---------- little UI helpers (pills) ---------- */
 function PaymentPills({
   value,
   onChange,
@@ -78,8 +76,11 @@ function PaymentPills({
           return (
             <label
               key={m.key}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition
-                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition ${
+                checked
+                  ? "bg-black text-white border-black"
+                  : "bg-white hover:bg-gray-50 border-gray-300"
+              }`}
             >
               <input
                 type="checkbox"
@@ -118,8 +119,11 @@ function ServiceTypePills({
           return (
             <label
               key={m.key}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition
-                ${checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"}`}
+              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition ${
+                checked
+                  ? "bg-black text-white border-black"
+                  : "bg-white hover:bg-gray-50 border-gray-300"
+              }`}
             >
               <input
                 type="checkbox"
@@ -137,6 +141,7 @@ function ServiceTypePills({
   );
 }
 
+/* ---------- page ---------- */
 export default function Settings() {
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
@@ -163,7 +168,9 @@ export default function Settings() {
   useEffect(() => {
     (async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         if (!user) {
           window.location.hash = "#/login";
           return;
@@ -300,15 +307,15 @@ export default function Settings() {
     <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
       <h1 className="text-2xl font-bold">Profile</h1>
 
-      {/* TOP: Full-width preview using the actual search card */}
+      {/* TOP: Full-width preview using the actual search card (no extra box) */}
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
         <CleanerCard
           preview
-          showPayments={false}   // match search (toggle to true if you add payments to results)
+          showPayments={false}  // flip to true when you also show payments in search
           showChips={true}
-          postcodeHint={""}
+          postcodeHint=""       // optional
           cleaner={{
             id: cleaner?.id ?? "preview",
             business_name: businessName || "Business name",
@@ -431,7 +438,9 @@ export default function Settings() {
                 className="mt-2 h-20 w-20 object-contain rounded bg-white"
               />
             )}
-            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Preview shows the resized 300×300 image.
+            </p>
           </div>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
