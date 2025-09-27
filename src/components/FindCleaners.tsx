@@ -27,13 +27,12 @@ function toTelHref(phone?: string | null) {
 
 function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
-  // UK-friendly normalization: keep digits, convert leading 0 → +44
   let digits = phone.replace(/[^\d]/g, "");
   if (!digits) return null;
-  if (digits.startsWith("0")) digits = `44${digits.slice(1)}`;
-  // If it already included country code like +44, strip + and keep
   if (phone.trim().startsWith("+")) {
     digits = phone.replace(/[^\d]/g, "");
+  } else if (digits.startsWith("0")) {
+    digits = `44${digits.slice(1)}`;
   }
   return `https://wa.me/${digits}`;
 }
@@ -74,11 +73,12 @@ export default function FindCleaners() {
       const lng = Number(data.result.longitude);
       console.log("[FindCleaners] geocode ok", { lat, lng });
 
-      // 2) Which cleaners cover (or nearest)
-      const { data: matches, error: rpcError } = await supabase.rpc<RpcMatch[]>(
-        "find_cleaners_for_point_sorted",
-        { lat, lng }
-      );
+      // 2) Covering / nearest cleaners
+      const { data: matches, error: rpcError } = await supabase.rpc<
+        RpcMatch[],
+        { lat: number; lng: number }
+      >("find_cleaners_for_point_sorted", { lat, lng });
+
       if (rpcError) {
         console.error("[FindCleaners] RPC error", rpcError);
         setError(rpcError.message);
@@ -99,7 +99,6 @@ export default function FindCleaners() {
 
       if (qErr) {
         console.error("[FindCleaners] details query error", qErr);
-        // fall back to showing bare results
         setResults(
           base.map((m) => ({
             id: m.cleaner_id,
@@ -215,7 +214,6 @@ export default function FindCleaners() {
             </li>
           );
         })}
-
         {!loading && !error && results.length === 0 && (
           <li className="text-gray-500">No cleaners found yet.</li>
         )}
