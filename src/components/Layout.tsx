@@ -5,7 +5,6 @@ import { Link, NavLink } from "react-router-dom";
 export default function Layout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <Link to="/" className="font-bold">Find a Bin Cleaner</Link>
@@ -16,16 +15,12 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      {/* Page content */}
       <div className="flex-1">{children}</div>
 
-      {/* Single global footer (keep only here) */}
       <footer className="border-t">
         <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
           <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
-          <span>
-            Built with <span className="text-rose-600">❤</span>
-          </span>
+          <span>Built with <span className="text-rose-600">❤</span></span>
         </div>
       </footer>
     </div>
