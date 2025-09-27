@@ -1,5 +1,4 @@
 // src/pages/Landing.tsx
-import React from "react";
 import { Link } from "react-router-dom";
 import FindCleaners from "../components/FindCleaners";
 
@@ -15,6 +14,7 @@ export default function Landing() {
             Compare local cleaners, check service areas and book online. Clean bins, happy homes.
           </p>
 
+        {/* CTA buttons (router-safe) */}
           <div className="flex gap-3">
             <Link to="/login" className="bg-emerald-700 text-white px-4 py-2 rounded">
               I’m a cleaner
