@@ -1,4 +1,5 @@
-import CleanerCard from "@/components/CleanerCard";
+import CleanerCard from "./CleanerCard"; // <-- ResultsList.tsx is in the same folder as CleanerCard.tsx
+// If your CleanerCard is actually at ../components/CleanerCard, adjust accordingly.
 
 export default function ResultsList({
   cleaners,
