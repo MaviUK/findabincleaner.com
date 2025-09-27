@@ -2,7 +2,11 @@
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-type RpcMatch = { cleaner_id: string; business_name: string; distance_m?: number };
+type RpcMatch = {
+  cleaner_id: string;
+  business_name: string;
+  distance_m?: number;
+};
 
 type CleanerCard = {
   id: string;
@@ -22,14 +26,19 @@ function formatDistance(m?: number) {
 function toTelHref(phone?: string | null) {
   if (!phone) return null;
   const digits = phone.replace(/[^\d+]/g, "");
-  return `tel:${digits}`;
+  return digits ? `tel:${digits}` : null;
 }
 
 function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
+  // UK-friendly normalization:
+  // - keep digits only
+  // - leading 0 -> +44
+  // - if already has +cc, keep that
   let digits = phone.replace(/[^\d]/g, "");
   if (!digits) return null;
   if (phone.trim().startsWith("+")) {
+    // already includes country code
     digits = phone.replace(/[^\d]/g, "");
   } else if (digits.startsWith("0")) {
     digits = `44${digits.slice(1)}`;
@@ -60,7 +69,7 @@ export default function FindCleaners() {
       submitCount.current += 1;
       console.log(`[FindCleaners] submit #${submitCount.current}`, { pc });
 
-      // 1) Geocode
+      // 1) Geocode with postcodes.io
       const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
@@ -73,18 +82,19 @@ export default function FindCleaners() {
       const lng = Number(data.result.longitude);
       console.log("[FindCleaners] geocode ok", { lat, lng });
 
-      // 2) Covering / nearest cleaners
-      const { data: matches, error: rpcError } = await supabase.rpc<
-        RpcMatch[],
-        { lat: number; lng: number }
-      >("find_cleaners_for_point_sorted", { lat, lng });
+      // 2) RPC (no generics -> cast safely after)
+      const rpcRes = await supabase.rpc(
+        "find_cleaners_for_point_sorted",
+        { lat, lng }
+      );
 
-      if (rpcError) {
-        console.error("[FindCleaners] RPC error", rpcError);
-        setError(rpcError.message);
+      if (rpcRes.error) {
+        console.error("[FindCleaners] RPC error", rpcRes.error);
+        setError(rpcRes.error.message);
         return;
       }
-      const base = (matches || []) as RpcMatch[];
+
+      const base = (rpcRes.data as RpcMatch[]) || [];
       if (base.length === 0) {
         setResults([]);
         return;
@@ -99,6 +109,7 @@ export default function FindCleaners() {
 
       if (qErr) {
         console.error("[FindCleaners] details query error", qErr);
+        // fall back to bare results
         setResults(
           base.map((m) => ({
             id: m.cleaner_id,
@@ -114,7 +125,7 @@ export default function FindCleaners() {
 
       const byId = new Map((cleaners || []).map((c) => [c.id, c]));
       const enriched: CleanerCard[] = base.map((m) => {
-        const c = byId.get(m.cleaner_id);
+        const c = byId.get(m.cleaner_id) as Partial<CleanerCard> | undefined;
         return {
           id: m.cleaner_id,
           business_name: (c?.business_name ?? m.business_name) || m.business_name,
@@ -214,6 +225,7 @@ export default function FindCleaners() {
             </li>
           );
         })}
+
         {!loading && !error && results.length === 0 && (
           <li className="text-gray-500">No cleaners found yet.</li>
         )}
