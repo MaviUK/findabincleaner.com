@@ -311,9 +311,9 @@ export default function Settings() {
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
-        <CleanerCard
+<CleanerCard
   preview={false}
-  showPayments={false}
+  showPayments={true}     // ✅ show payment badges
   postcodeHint=""
   cleaner={{
     id: cleaner?.id ?? "preview",
@@ -322,10 +322,11 @@ export default function Settings() {
     website,
     phone,
     distance_m: null,
-    payment_methods: paymentMethods,
-    service_types: serviceTypes,
+    payment_methods: paymentMethods, // ✅ from form state
+    service_types: serviceTypes,     // ✅ from form state (drives “Bins we do”)
   }}
 />
+
 
 
         <p className="text-xs text-gray-500 mt-3">
