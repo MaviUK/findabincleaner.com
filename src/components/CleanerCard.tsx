@@ -1,6 +1,7 @@
+// src/components/CleanerCard.tsx
 import { useMemo, useState } from "react";
 
-/** Types kept broad to satisfy Settings/ResultsList */
+/** Broad type to match Settings/ResultsList usage */
 type Cleaner = {
   id: string;
   business_name: string;
@@ -17,11 +18,12 @@ type Cleaner = {
   payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
   service_types?: string[] | null;   // ["domestic","commercial"]
 };
+
 type Props = {
   cleaner: Cleaner;
-  postcodeHint?: string; // kept for compatibility, but not shown per request
-  preview?: boolean;
-  showPayments?: boolean;
+  postcodeHint?: string;  // kept for compatibility (not shown per request)
+  preview?: boolean;      // kept for compatibility
+  showPayments?: boolean; // default true
 };
 
 export default function CleanerCard({ cleaner, showPayments }: Props) {
@@ -101,57 +103,61 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
           </div>
         </div>
 
-        {/* Right: actions stacked, right-aligned */}
-<div className="flex flex-col items-end gap-2 sm:gap-3 shrink-0">
-  {contactUrl && (
-    <a
-      href={contactUrl}
-      target={contactUrl.startsWith("http") ? "_blank" : undefined}
-      rel="noreferrer"
-      className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] w-full sm:w-auto"
-    >
-      Message
-    </a>
-  )}
+        {/* Right: actions STACKED, right-aligned */}
+        <div className="flex flex-col items-end gap-2 sm:gap-3 shrink-0">
+          {contactUrl && (
+            <a
+              href={contactUrl}
+              target={contactUrl.startsWith("http") ? "_blank" : undefined}
+              rel="noreferrer"
+              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] w-full sm:w-auto"
+            >
+              Message
+            </a>
+          )}
 
-  {cleaner.phone && (
-    <>
-      <button
-        type="button"
-        className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50 w-full sm:w-auto"
-        onClick={() => setShowPhone(s => !s)}
-        aria-expanded={showPhone}
-        aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-      >
-        {showPhone ? "Hide phone" : "Show phone number"}
-      </button>
+          {cleaner.phone && (
+            <>
+              <button
+                type="button"
+                className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50 w-full sm:w-auto"
+                onClick={() => setShowPhone(s => !s)}
+                aria-expanded={showPhone}
+                aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
+              >
+                {showPhone ? "Hide phone" : "Show phone number"}
+              </button>
 
-      {showPhone && (
-        <div
-          id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-          className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-full sm:w-auto"
-        >
-          <span className="font-medium tracking-wide">{prettyPhone(cleaner.phone)}</span>
-          <a className="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]" href={`tel:${digitsOnly(cleaner.phone)}`}>
-            Call
-          </a>
+              {showPhone && (
+                <div
+                  id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
+                  className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-full sm:w-auto"
+                >
+                  <span className="font-medium tracking-wide">{prettyPhone(cleaner.phone)}</span>
+                  <a
+                    className="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]"
+                    href={`tel:${digitsOnly(cleaner.phone)}`}
+                  >
+                    Call
+                  </a>
+                </div>
+              )}
+            </>
+          )}
+
+          {cleaner.website && (
+            <a
+              href={cleaner.website}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20 w-full sm:w-auto"
+            >
+              Website
+            </a>
+          )}
         </div>
-      )}
-    </>
-  )}
-
-  {cleaner.website && (
-    <a
-      href={cleaner.website}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20 w-full sm:w-auto"
-    >
-      Website
-    </a>
-  )}
-</div>
-
+      </div>
+    </div>
   );
 }
 
@@ -171,62 +177,86 @@ function PaymentIcon({ kind }: { kind?: string }) {
     case "stripe":
       return (
         <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
-          <path fill="#635BFF" d="M8 10h32v28H8z"/><path fill="#fff" d="M31.2 26.6c0-2.5-2.1-3.3-5.6-3.7-3-.4-3.6-.8-3.6-1.6 0-.8.8-1.3 2.3-1.3 1.5 0 3 .5 4.4 1.3l.9-3.5c-1.5-.8-3.3-1.2-5.1-1.2-3.6 0-6.1 1.9-6.1 4.8 0 2.6 2.3 3.5 5.7 3.9 2.9.4 3.5.8 3.5 1.6 0 .9-.9 1.4-2.6 1.4-1.8 0-3.6-.6-5.2-1.6l-1 3.6c1.7 1 3.9 1.6 6.1 1.6 3.9 0 6.3-1.9 6.3-4.7z"/>
+          <path fill="#635BFF" d="M8 10h32v28H8z" />
+          <path
+            fill="#fff"
+            d="M31.2 26.6c0-2.5-2.1-3.3-5.6-3.7-3-.4-3.6-.8-3.6-1.6 0-.8.8-1.3 2.3-1.3 1.5 0 3 .5 4.4 1.3l.9-3.5c-1.5-.8-3.3-1.2-5.1-1.2-3.6 0-6.1 1.9-6.1 4.8 0 2.6 2.3 3.5 5.7 3.9 2.9.4 3.5.8 3.5 1.6 0 .9-.9 1.4-2.6 1.4-1.8 0-3.6-.6-5.2-1.6l-1 3.6c1.7 1 3.9 1.6 6.1 1.6 3.9 0 6.3-1.9 6.3-4.7z"
+          />
         </svg>
       );
     case "paypal":
       return (
         <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
-          <path fill="#003087" d="M8 8h32v32H8z"/><path fill="#fff" d="M30 16c-1.7-1.2-4.1-1.7-6.9-1.7h-7.6l-3 19.3h5.2l.8-5h2.4c5.3 0 9.2-2.5 10.1-7.5.4-2.1.1-3.5-1-5.1z"/>
+          <path fill="#003087" d="M8 8h32v32H8z" />
+          <path
+            fill="#fff"
+            d="M30 16c-1.7-1.2-4.1-1.7-6.9-1.7h-7.6l-3 19.3h5.2l.8-5h2.4c5.3 0 9.2-2.5 10.1-7.5.4-2.1.1-3.5-1-5.1z"
+          />
         </svg>
       );
     case "gocardless":
       return (
         <svg width="16" height="16" viewBox="0 0 48 48" aria-hidden="true">
-          <rect x="8" y="10" width="32" height="28" rx="4" fill="#0E4D92"/><path fill="#fff" d="M24 30c-3.3 0-6-2.7-6-6s2.7-6 6-6h12v4H24a2 2 0 100 4h12v4H24z"/>
+          <rect x="8" y="10" width="32" height="28" rx="4" fill="#0E4D92" />
+          <path fill="#fff" d="M24 30c-3.3 0-6-2.7-6-6s2.7-6 6-6h12v4H24a2 2 0 100 4h12v4H24z" />
         </svg>
       );
     case "bank_transfer":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-          <path fill="#0B1B2A" d="M12 3l9 5v2H3V8l9-5zM4 11h16v9H4z"/><path fill="#fff" d="M7 13h3v5H7zm7 0h3v5h-3z"/>
+          <path fill="#0B1B2A" d="M12 3l9 5v2H3V8l9-5zM4 11h16v9H4z" />
+          <path fill="#fff" d="M7 13h3v5H7zm7 0h3v5h-3z" />
         </svg>
       );
     case "card_machine":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="5" y="3" width="14" height="18" rx="2" fill="#0B1B2A"/><rect x="7" y="6" width="10" height="2" fill="#fff"/><rect x="7" y="10" width="10" height="6" fill="#37D9E6"/>
+        <rect x="5" y="3" width="14" height="18" rx="2" fill="#0B1B2A" />
+        <rect x="7" y="6" width="10" height="2" fill="#fff" />
+        <rect x="7" y="10" width="10" height="6" fill="#37D9E6" />
         </svg>
       );
     case "cash":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-          <rect x="3" y="6" width="18" height="12" rx="2" fill="#16C172"/><circle cx="12" cy="12" r="3" fill="#fff"/>
+          <rect x="3" y="6" width="18" height="12" rx="2" fill="#16C172" />
+          <circle cx="12" cy="12" r="3" fill="#fff" />
         </svg>
       );
     default:
-      return <svg width="12" height="12" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" className="text-black/30" /></svg>;
+      return (
+        <svg width="12" height="12" viewBox="0 0 20 20" aria-hidden="true">
+          <circle cx="10" cy="10" r="10" fill="currentColor" className="text-black/30" />
+        </svg>
+      );
   }
 }
 
-const SERVICE_LABELS: Record<string, string> = { domestic: "Domestic", commercial: "Commercial" };
+const SERVICE_LABELS: Record<string, string> = {
+  domestic: "Domestic",
+  commercial: "Commercial",
+};
 
 function ServiceIcon({ kind }: { kind?: string }) {
   if (kind === "domestic") {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M3 12l9-7 9 7v8a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-8z" fill="#0B1B2A"/>
+        <path d="M3 12l9-7 9 7v8a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1v-8z" fill="#0B1B2A" />
       </svg>
     );
   }
   if (kind === "commercial") {
     return (
       <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M3 21h18V8H3v13zm3-2v-4h4v4H6zm6 0v-7h4v7h-4zM6 9h12V6H6v3z" fill="#0B1B2A"/>
+        <path d="M3 21h18V8H3v13zm3-2v-4h4v4H6zm6 0v-7h4v7h-4zM6 9h12V6H6v3z" fill="#0B1B2A" />
       </svg>
     );
   }
-  return <svg width="12" height="12" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="10" fill="currentColor" className="text-black/30" /></svg>;
+  return (
+    <svg width="12" height="12" viewBox="0 0 20 20" aria-hidden="true">
+      <circle cx="10" cy="10" r="10" fill="currentColor" className="text-black/30" />
+    </svg>
+  );
 }
 
 /* ---------- helpers ---------- */
