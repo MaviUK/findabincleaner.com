@@ -1,160 +1,54 @@
-// src/pages/Login.tsx
-import { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, Link } from "react-router-dom";
+// src/components/Layout.tsx
+import React, { useEffect, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-export default function Login() {
-  const navigate = useNavigate();
+const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
+  const [authed, setAuthed] = useState(false);
   const location = useLocation();
-  const params = new URLSearchParams(location.search);
-  const defaultTab = params.get("mode") === "signup" ? "signup" : "login";
-
-  const [tab, setTab] = useState<"login" | "signup">(defaultTab as any);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
-    // if already authed, send to settings
+    let mounted = true;
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) navigate("/settings", { replace: true });
+      if (mounted) setAuthed(!!session);
     })();
-  }, [navigate]);
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setAuthed(!!s);
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
 
-  const title = useMemo(() => (tab === "signup" ? "Create a business account" : "Log in"), [tab]);
-
-  const handleLogin = async () => {
-    setLoading(true); setErr(null); setMsg(null);
-    try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      if (data.session) navigate("/settings", { replace: true });
-    } catch (e: any) {
-      setErr(e.message || "Login failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSignup = async () => {
-    setLoading(true); setErr(null); setMsg(null);
-    try {
-      const { data, error } = await supabase.auth.signUp({ email, password });
-      if (error) throw error;
-
-      // If email confirmation is ON, they'll need to check their inbox.
-      if (!data.session) {
-        setMsg("Check your email to confirm your account, then come back to log in.");
-      } else {
-        navigate("/settings", { replace: true });
-      }
-    } catch (e: any) {
-      setErr(e.message || "Signup failed.");
-    } finally {
-      setLoading(false);
-    }
-  };
+  const ctaHref = authed ? "/settings" : "/login?mode=signup";
+  const hideCta = location.pathname === "/login";
 
   return (
-    <main className="container mx-auto max-w-md px-4 py-10">
-      <h1 className="text-2xl font-bold mb-4">{title}</h1>
+    <div className="min-h-screen flex flex-col">
+      <header className="border-b">
+        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+          <Link to="/" className="font-bold">Find a Bin Cleaner</Link>
 
-      <div className="mb-4 inline-flex rounded-lg border overflow-hidden">
-        <button
-          className={`px-4 py-2 text-sm ${tab === "login" ? "bg-black text-white" : "bg-white"}`}
-          onClick={() => setTab("login")}
-        >
-          Log in
-        </button>
-        <button
-          className={`px-4 py-2 text-sm ${tab === "signup" ? "bg-black text-white" : "bg-white"}`}
-          onClick={() => setTab("signup")}
-        >
-          Create account
-        </button>
-      </div>
-
-      <div className="space-y-3">
-        <label className="block">
-          <span className="text-sm">Email</span>
-          <input
-            type="email"
-            className="mt-1 w-full border rounded px-3 py-2"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@business.com"
-          />
-        </label>
-
-        <label className="block">
-          <span className="text-sm">Password</span>
-          <input
-            type="password"
-            className="mt-1 w-full border rounded px-3 py-2"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="••••••••"
-          />
-        </label>
-
-        {err && <div className="text-sm text-red-700">{err}</div>}
-        {msg && <div className="text-sm text-emerald-700">{msg}</div>}
-
-        {tab === "login" ? (
-          <button
-            onClick={handleLogin}
-            disabled={loading}
-            className="w-full rounded-lg bg-emerald-700 text-white py-2 disabled:opacity-60"
-          >
-            {loading ? "Logging in…" : "Log in"}
-          </button>
-        ) : (
-          <button
-            onClick={handleSignup}
-            disabled={loading}
-            className="w-full rounded-lg bg-emerald-700 text-white py-2 disabled:opacity-60"
-          >
-            {loading ? "Creating account…" : "Create account"}
-          </button>
-        )}
-
-        <p className="text-sm text-gray-600 text-center">
-          {tab === "login" ? (
-            <>
-              New here?{" "}
-              <button
-                className="text-emerald-700 hover:underline"
-                onClick={() => setTab("signup")}
-              >
-                Create a free business account
-              </button>
-            </>
-          ) : (
-            <>
-              Already have an account?{" "}
-              <button
-                className="text-emerald-700 hover:underline"
-                onClick={() => setTab("login")}
-              >
-                Log in
-              </button>
-            </>
+          {!hideCta && (
+            <Link
+              to={ctaHref}
+              className="inline-flex items-center rounded-lg px-3 py-2 bg-emerald-700 text-white hover:bg-emerald-800"
+            >
+              Register a Business
+            </Link>
           )}
-        </p>
-      </div>
+        </div>
+      </header>
 
-      {/* Optional: add OAuth */}
-      {/* <button
-        onClick={async () => {
-          await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: window.location.origin + "/#/settings" } });
-        }}
-        className="mt-4 w-full rounded-lg border py-2 hover:bg-gray-50"
-      >
-        Continue with Google
-      </button> */}
-    </main>
+      <div className="flex-1">{children}</div>
+
+      <footer className="border-t">
+        <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
+          <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
+          <span>Built with <span className="text-rose-600">❤</span></span>
+        </div>
+      </footer>
+    </div>
   );
-}
+};
+
+export default Layout;
