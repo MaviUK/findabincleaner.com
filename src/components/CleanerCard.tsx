@@ -3,18 +3,22 @@ import { useMemo, useState } from "react";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
 
+// Broad type to match Settings/ResultsList usage
 export type Cleaner = {
   id: string;
   business_name: string;
   logo_url?: string | null;
   distance_m?: number | null;
+
   website?: string | null;
   phone?: string | null;
   whatsapp?: string | null;
+
   rating_avg?: number | null;
   rating_count?: number | null;
-  payment_methods?: string[] | null;
-  service_types?: string[] | null;
+
+  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
+  service_types?: string[] | null;   // ["domestic","commercial"]
 };
 
 export type CleanerCardProps = {
@@ -35,46 +39,49 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
+      {/* Full-height row so logo + content + buttons align top/bottom */}
       <div className="flex items-stretch gap-5">
         {/* Left: logo panel + content */}
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
-          {/* Logo stretches full card height */}
-          <div className="bg-black/5 rounded-3xl overflow-hidden self-stretch w-[164px] sm:w-[184px] flex items-center justify-center">
+          {/* Logo fills container completely */}
+          <div className="self-stretch w-[164px] sm:w-[184px] rounded-3xl overflow-hidden">
             {cleaner.logo_url ? (
               <img
                 src={cleaner.logo_url}
                 alt={`${cleaner.business_name} logo`}
-                className="max-h-full max-w-full object-contain p-2 rounded-3xl"
+                className="h-full w-full object-cover rounded-3xl"
               />
             ) : (
-              <span className="text-2xl font-semibold">
-                {cleaner.business_name?.charAt(0) ?? "C"}
-              </span>
+              <div className="h-full w-full bg-black/5 grid place-items-center rounded-3xl">
+                <span className="text-2xl font-semibold">
+                  {cleaner.business_name?.charAt(0) ?? "C"}
+                </span>
+              </div>
             )}
           </div>
 
-          {/* Content column */}
-          <div className="min-w-0 flex flex-col">
-            {/* Name + rating */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="truncate text-xl md:text-2xl font-bold">
-                {cleaner.business_name}
+          {/* Content column: top = name+services, bottom = payments */}
+          <div className="min-w-0 flex flex-col justify-between">
+            {/* TOP: Business name + rating (flush with top of logo) */}
+            <div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <div className="truncate text-xl md:text-2xl font-bold">
+                  {cleaner.business_name}
+                </div>
+                {isFiniteNumber(cleaner.rating_avg) && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
+                    <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
+                    {isFiniteNumber(cleaner.rating_count) && (
+                      <span className="opacity-70">({cleaner.rating_count} reviews)</span>
+                    )}
+                  </span>
+                )}
               </div>
-              {isFiniteNumber(cleaner.rating_avg) && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
-                  <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
-                  {isFiniteNumber(cleaner.rating_count) && (
-                    <span className="opacity-70">({cleaner.rating_count} reviews)</span>
-                  )}
-                </span>
-              )}
-            </div>
 
-            {/* Bottom cluster: Services + Payments together with tight spacing */}
-            <div className="mt-auto pt-3 border-t border-black/5 space-y-2">
+              {/* Services */}
               {cleaner.service_types?.length ? (
-                <div>
-                  <div className="text-sm font-medium text-night-800 mb-1">Services</div>
+                <div className="pt-3">
+                  <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
                   <div className="flex flex-wrap gap-1.5">
                     {cleaner.service_types.map((s, i) => (
                       <ServicePill key={`svc-${i}`} kind={s} />
@@ -82,18 +89,21 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
                   </div>
                 </div>
               ) : null}
-
-              {(showPayments ?? true) && cleaner.payment_methods?.length ? (
-                <div>
-                  <div className="text-sm font-medium text-night-800 mb-1">Payments Accepted</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {cleaner.payment_methods.map((m, i) => (
-                      <PaymentPill key={`pay-${i}`} kind={m} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
             </div>
+
+            {/* BOTTOM: Payments (flush with bottom of logo) */}
+            {(showPayments ?? true) && cleaner.payment_methods?.length ? (
+              <div className="pt-3 border-t border-black/5">
+                <div className="text-sm font-medium text-night-800 mb-1.5">
+                  Payments Accepted
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {cleaner.payment_methods.map((m, i) => (
+                    <PaymentPill key={`pay-${i}`} kind={m} />
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
 
