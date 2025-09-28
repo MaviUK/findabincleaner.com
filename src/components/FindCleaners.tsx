@@ -3,22 +3,56 @@ import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 export type FindCleanersProps = {
-  onSearchComplete?: (results: Match[], postcode: string) => void;
+  onSearchComplete?: (results: MatchOut[], postcode: string) => void;
 };
 
-type Match = {
+// Shape coming from RPC (wide to be safe; adjust if you know exact keys)
+type MatchIn = {
   cleaner_id: string;
   business_name: string | null;
   logo_url: string | null;
   website: string | null;
   phone: string | null;
-  whatsapp?: string | null;     // if your RPC returns it
-  payment_methods?: string[];   // if your RPC returns it
-  distance_m?: number;
+  whatsapp?: string | null;
+  payment_methods?: unknown;  // could be json/str/csv/null
+  service_types?: unknown;    // could be json/str/csv/null
+  rating_avg?: number | null;
+  rating_count?: number | null;
+  distance_m?: number | null; // or distance_meters depending on RPC
 };
 
-function formatDistance(m?: number) {
-  if (typeof m !== "number") return "";
+type MatchOut = {
+  cleaner_id: string;
+  business_name: string | null;
+  logo_url: string | null;
+  website: string | null;
+  phone: string | null;
+  whatsapp: string | null;
+  payment_methods: string[];
+  service_types: string[];
+  rating_avg: number | null;
+  rating_count: number | null;
+  distance_m: number | null;
+};
+
+function toArray(v: unknown): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) return v as string[];
+  if (typeof v === "string") {
+    // try JSON array first
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed as string[];
+    } catch {}
+    // fallback CSV
+    return v.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  // last-resort: unknown object -> []
+  return [];
+}
+
+function formatDistance(m?: number | null) {
+  if (typeof m !== "number" || !isFinite(m)) return "";
   if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
   return `${Math.round(m)} m`;
 }
@@ -42,14 +76,13 @@ function toWhatsAppHref(phone?: string | null) {
 export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<Match[]>([]);
+  const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
-    // Only clear local results if we're showing them locally
     if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
@@ -72,22 +105,35 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       const lat = Number(data.result.latitude);
       const lng = Number(data.result.longitude);
 
-      // 2) RPC
+      // 2) RPC – ensure your RPC returns the fields below or equivalent
       const { data: matches, error: rpcError } = await supabase.rpc(
         "find_cleaners_for_point_sorted",
         { lat, lng }
       );
+
       if (rpcError) {
         setError(rpcError.message);
         return;
       }
 
-      const list = (matches || []) as Match[];
+      // 3) Normalize to arrays + consistent keys for the rest of the app
+      const list: MatchOut[] = (matches as MatchIn[] | null ?? []).map((m) => ({
+        cleaner_id: m.cleaner_id,
+        business_name: m.business_name ?? null,
+        logo_url: m.logo_url ?? null,
+        website: m.website ?? null,
+        phone: m.phone ?? null,
+        whatsapp: m.whatsapp ?? null,
+        payment_methods: toArray(m.payment_methods),
+        service_types: toArray(m.service_types),
+        rating_avg: m.rating_avg ?? null,
+        rating_count: m.rating_count ?? null,
+        // handle RPCs that return distance_meters instead of distance_m
+        distance_m:
+          (m as any).distance_meters ?? (m.distance_m ?? null),
+      }));
 
-      // Update local list if we're rendering locally
       if (!onSearchComplete) setResults(list);
-
-      // Notify parent (Landing) so it can render ResultsList
       onSearchComplete?.(list, pc);
     } catch (e: any) {
       setError(e?.message || "Something went wrong.");
@@ -120,7 +166,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         </div>
       )}
 
-      {/* If parent is handling results via onSearchComplete, hide the internal list */}
+      {/* Local inline list only renders when parent didn't pass onSearchComplete */}
       {!onSearchComplete && (
         <ul className="space-y-2">
           {results.map((r) => {
@@ -178,7 +224,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                 </div>
 
                 <div className="text-sm text-gray-700 whitespace-nowrap">
-                  {formatDistance(r.distance_m)}
+                  {formatDistance(r.distance_m ?? undefined)}
                 </div>
               </li>
             );
