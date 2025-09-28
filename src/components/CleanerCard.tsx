@@ -44,7 +44,7 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
         {/* Left: logo panel + content */}
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
           {/* Logo stretches full card height */}
-          <div className="bg-black/5 rounded-2xl overflow-hidden self-stretch w-[164px] sm:w-[184px] flex items-center justify-center">
+          <div className="bg-black/5 rounded-[28px] overflow-hidden self-stretch w-[164px] sm:w-[184px] flex items-center justify-center">
             {cleaner.logo_url ? (
               <img
                 src={cleaner.logo_url}
