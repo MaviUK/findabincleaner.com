@@ -1,24 +1,43 @@
-import { useState, useMemo } from "react";
+import { useMemo, useState } from "react";
 
+/** ---- Types kept broad so Settings.tsx object literals pass ---- */
 type Cleaner = {
   id: string;
   business_name: string;
   logo_url?: string | null;
   distance_m?: number | null;
+
   website?: string | null;
   phone?: string | null;
   whatsapp?: string | null;
+
   rating_avg?: number | null;
   rating_count?: number | null;
-  payment_methods?: string[] | null;
-  service_types?: string[] | null; // ✅ added to satisfy Settings.tsx
+
+  payment_methods?: string[] | null; // e.g. ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
+  service_types?: string[] | null;   // e.g. ["domestic","commercial"]
 };
 
 type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   preview?: boolean;
-  showPayments?: boolean;
+  showPayments?: boolean; // keep existing prop from Settings
+};
+
+/** ---- label helpers (icons optional) ---- */
+const PAYMENT_LABELS: Record<string, string> = {
+  bank_transfer: "Bank Transfer",
+  gocardless: "GoCardless",
+  paypal: "PayPal",
+  cash: "Cash",
+  stripe: "Stripe",
+  card_machine: "Card Machine",
+};
+
+const SERVICE_LABELS: Record<string, string> = {
+  domestic: "Domestic",
+  commercial: "Commercial",
 };
 
 export default function CleanerCard({ cleaner, postcodeHint, preview, showPayments }: Props) {
@@ -30,10 +49,9 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
     return undefined;
   }, [cleaner.whatsapp, cleaner.phone]);
 
-  const hasWebsite = !!cleaner.website;
-
   return (
     <div className="card card-pad flex flex-col gap-4">
+      {/* Header row */}
       <div className="flex items-center gap-4">
         {cleaner.logo_url ? (
           <img
@@ -46,8 +64,11 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
             {cleaner.business_name?.charAt(0) ?? "C"}
           </div>
         )}
+
         <div className="flex-1 min-w-0">
-          <div className="text-lg font-semibold text-cream-100 truncate">{cleaner.business_name}</div>
+          <div className="text-lg font-semibold text-cream-100 truncate">
+            {cleaner.business_name}
+          </div>
           <div className="text-sm text-white/70 truncate">
             {!preview && isFiniteNumber(cleaner.distance_m)
               ? `${(Number(cleaner.distance_m) / 1000).toFixed(1)} km away`
@@ -63,7 +84,8 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         )}
       </div>
 
-      <div className="flex flex-wrap gap-3 pt-2">
+      {/* Actions aligned to right */}
+      <div className="flex flex-wrap gap-3 pt-2 justify-end">
         {contactUrl && (
           <a
             href={contactUrl}
@@ -87,9 +109,9 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
           </button>
         )}
 
-        {hasWebsite && (
+        {cleaner.website && (
           <a
-            href={cleaner.website!}
+            href={cleaner.website}
             target="_blank"
             rel="noreferrer"
             className="btn btn-ghost border border-white/10 hover:border-white/20"
@@ -99,6 +121,7 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         )}
       </div>
 
+      {/* Revealed phone strip */}
       {showPhone && cleaner.phone && (
         <div
           id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
@@ -109,13 +132,38 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         </div>
       )}
 
-      {showPayments && cleaner.payment_methods && cleaner.payment_methods.length > 0 && (
-        <div className="flex flex-wrap gap-2 pt-1">
-          {cleaner.payment_methods.map((m, i) => (
-            <span key={i} className="badge-aqua">{m}</span>
+      {/* Service Types (pills) */}
+      {cleaner.service_types && cleaner.service_types.length > 0 && (
+        <div className="flex flex-wrap gap-2 pt-2">
+          {cleaner.service_types.map((s, i) => (
+            <span
+              key={`svc-${i}`}
+              className="inline-flex items-center gap-2 rounded-full bg-black text-white px-3 py-1 text-xs ring-1 ring-white/10"
+            >
+              {/* simple glyph; replace with SVG if you have icons */}
+              <span className="i">🧼</span>
+              {SERVICE_LABELS[s] ?? s}
+            </span>
           ))}
         </div>
       )}
+
+      {/* Payment methods (pills) */}
+      {(showPayments ?? true) &&
+        cleaner.payment_methods &&
+        cleaner.payment_methods.length > 0 && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            {cleaner.payment_methods.map((m, i) => (
+              <span
+                key={`pay-${i}`}
+                className="inline-flex items-center gap-2 rounded-full bg-black text-white px-3 py-1 text-xs ring-1 ring-white/10"
+              >
+                <span className="i">💳</span>
+                {PAYMENT_LABELS[m] ?? m}
+              </span>
+            ))}
+          </div>
+        )}
     </div>
   );
 }
@@ -128,10 +176,9 @@ function digitsOnly(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
 function normalizeWhatsApp(input: string) {
-  // accept either a wa.me link or a raw number
-  if (input.startsWith("http")) return input;
-  const digits = digitsOnly(input);
-  const noPlus = digits.startsWith("+") ? digits.slice(1) : digits;
+  if (input.startsWith("http")) return input;           // already a wa.me link
+  const d = digitsOnly(input);
+  const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
 }
 function prettyPhone(p?: string) {
