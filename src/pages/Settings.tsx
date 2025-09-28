@@ -1,7 +1,7 @@
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
-import CleanerCard from "@/components/CleanerCard";
+import CleanerCard from "../components/CleanerCard";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
 
 type Cleaner = {
