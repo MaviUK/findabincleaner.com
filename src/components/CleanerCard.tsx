@@ -65,7 +65,7 @@ export default function CleanerCard({
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Device detection (mobile only for WhatsApp)
+  // Device detection (WhatsApp only on mobile)
   const [isMobile, setIsMobile] = useState(false);
   useEffect(() => {
     const check = () => setIsMobile(detectIsMobile());
@@ -74,7 +74,7 @@ export default function CleanerCard({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Autocomplete
+  // Autocomplete (guard if Places not loaded)
   const autocompleteRef = useRef<any>(null);
   const hasPlaces =
     typeof window !== "undefined" &&
@@ -88,21 +88,21 @@ export default function CleanerCard({
   }, [cleaner.website]);
 
   return (
-    <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
-      {/* Full-height row so logo + content + buttons align top/bottom */}
-      <div className="flex items-stretch gap-5">
+    <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-3 sm:p-5">
+      {/* Mobile: vertical; Desktop: two columns */}
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5">
         {/* Left: logo panel + content */}
-        <div className="flex items-stretch gap-5 flex-1 min-w-0">
-          {/* Logo fills container completely */}
-          <div className="self-stretch w-[164px] sm:w-[184px] rounded-3xl overflow-hidden">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5 flex-1 min-w-0">
+          {/* Logo: mobile banner, desktop fixed panel */}
+          <div className="w-full h-36 sm:h-auto sm:self-stretch sm:w-[184px] rounded-2xl sm:rounded-3xl overflow-hidden">
             {cleaner.logo_url ? (
               <img
                 src={cleaner.logo_url}
                 alt={`${cleaner.business_name} logo`}
-                className="h-full w-full object-cover rounded-3xl"
+                className="h-full w-full object-cover"
               />
             ) : (
-              <div className="h-full w-full bg-black/5 grid place-items-center rounded-3xl">
+              <div className="h-full w-full bg-black/5 grid place-items-center">
                 <span className="text-2xl font-semibold">
                   {cleaner.business_name?.charAt(0) ?? "C"}
                 </span>
@@ -115,11 +115,11 @@ export default function CleanerCard({
             {/* TOP: Business name + rating */}
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <div className="truncate text-xl md:text-2xl font-bold">
+                <div className="truncate text-lg sm:text-xl md:text-2xl font-bold">
                   {cleaner.business_name}
                 </div>
                 {isFiniteNumber(cleaner.rating_avg) && (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
+                  <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-xs sm:px-2.5 sm:py-1 sm:text-sm ring-1 ring-blue-200">
                     <span className="font-semibold">
                       {Number(cleaner.rating_avg).toFixed(2)}
                     </span>
@@ -134,7 +134,7 @@ export default function CleanerCard({
 
               {/* Services */}
               {cleaner.service_types?.length ? (
-                <div className="pt-3">
+                <div className="pt-2 sm:pt-3">
                   <div className="text-sm font-medium text-night-800 mb-1.5">
                     Services
                   </div>
@@ -149,7 +149,7 @@ export default function CleanerCard({
 
             {/* BOTTOM: Payments */}
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
-              <div className="pt-3 border-t border-black/5">
+              <div className="pt-3 mt-1 border-t border-black/5">
                 <div className="text-sm font-medium text-night-800 mb-1.5">
                   Payments Accepted
                 </div>
@@ -163,12 +163,12 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Right: stacked actions */}
-        <div className="self-stretch flex flex-col items-end justify-center gap-1 sm:gap-2 shrink-0">
+        {/* Actions: mobile full-width, desktop right column */}
+        <div className="sm:self-stretch flex flex-col items-stretch sm:items-end justify-center gap-2 sm:gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setShowEnquiry(true)}
-            className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
+            className="inline-flex items-center justify-center rounded-full h-11 w-full sm:h-10 sm:w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
           </button>
@@ -179,7 +179,7 @@ export default function CleanerCard({
               {!showPhone ? (
                 <button
                   type="button"
-                  className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
+                  className="inline-flex items-center justify-center rounded-full h-11 w-full sm:h-10 sm:w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
                   onClick={() => setShowPhone(true)}
                   aria-expanded={showPhone}
                 >
@@ -188,7 +188,7 @@ export default function CleanerCard({
               ) : (
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
-                  className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
+                  className="inline-flex items-center justify-center rounded-full h-11 w-full sm:h-10 sm:w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
                   onClick={() => setShowPhone(false)}
                   title="Tap to call"
                 >
@@ -203,7 +203,7 @@ export default function CleanerCard({
               href={websiteHref}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
+              className="inline-flex items-center justify-center rounded-full h-11 w-full sm:h-10 sm:w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
             </a>
@@ -229,16 +229,7 @@ export default function CleanerCard({
               - mobile: full height sheet (bottom), scrollable
               - desktop: centered dialog */}
           <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
-            <div
-              className="
-                relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10
-                sm:rounded-2xl sm:max-h-[calc(100vh-4rem)]
-                h-[100dvh] sm:h-auto
-                rounded-none sm:rounded-2xl
-                flex flex-col
-                overflow-hidden
-              "
-            >
+            <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
               {/* Sticky header */}
               <div className="sticky top-0 z-10 bg-white border-b border-black/5">
                 <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
@@ -357,13 +348,7 @@ export default function CleanerCard({
               </form>
 
               {/* Sticky footer (buttons) */}
-              <div
-                className="
-                  sticky bottom-0 z-10 bg-white border-t border-black/5
-                  px-4 sm:px-6 py-3
-                  pb-[calc(env(safe-area-inset-bottom,0)+12px)]
-                "
-              >
+              <div className="sticky bottom-0 z-10 bg-white border-t border-black/5 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom,0)+12px)]">
                 <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
                   {isMobile && cleaner.whatsapp && (
                     <a
