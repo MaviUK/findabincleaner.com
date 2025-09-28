@@ -37,6 +37,8 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
     return undefined;
   }, [cleaner.whatsapp, cleaner.phone]);
 
+  const websiteUrl = useMemo(() => normalizeWebsite(cleaner.website), [cleaner.website]);
+
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
       {/* Full-height row so logo + content + buttons align top/bottom */}
@@ -151,11 +153,11 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
             </>
           )}
 
-          {cleaner.website && (
+          {websiteUrl && (
             <a
-              href={cleaner.website}
+              href={websiteUrl}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
@@ -179,6 +181,12 @@ function normalizeWhatsApp(input: string) {
   const d = digitsOnly(input);
   const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
+}
+function normalizeWebsite(u?: string | null): string | undefined {
+  if (!u) return undefined;
+  const trimmed = u.trim();
+  if (!trimmed) return undefined;
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 function prettyPhone(p?: string) {
   if (!p) return "";
