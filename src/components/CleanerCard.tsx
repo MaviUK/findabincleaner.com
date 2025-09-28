@@ -37,7 +37,10 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
     return undefined;
   }, [cleaner.whatsapp, cleaner.phone]);
 
-  const websiteUrl = useMemo(() => normalizeWebsite(cleaner.website), [cleaner.website]);
+  const websiteHref = useMemo(() => {
+    if (!cleaner.website) return null;
+    return normalizeWebsite(cleaner.website);
+  }, [cleaner.website]);
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
@@ -122,42 +125,36 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
             </a>
           )}
 
+          {/* Phone button: toggles to show number inside the same control */}
           {cleaner.phone && (
             <>
-              <button
-                type="button"
-                className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
-                onClick={() => setShowPhone((s) => !s)}
-                aria-expanded={showPhone}
-                aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-              >
-                {showPhone ? "Hide phone" : "Show phone number"}
-              </button>
-
-              {showPhone && (
-                <div
-                  id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-                  className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-40"
+              {!showPhone ? (
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
+                  onClick={() => setShowPhone(true)}
+                  aria-expanded={showPhone}
                 >
-                  <span className="font-medium tracking-wide truncate">
-                    {prettyPhone(cleaner.phone)}
-                  </span>
-                  <a
-                    className="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]"
-                    href={`tel:${digitsOnly(cleaner.phone)}`}
-                  >
-                    Call
-                  </a>
-                </div>
+                  Phone
+                </button>
+              ) : (
+                <a
+                  href={`tel:${digitsOnly(cleaner.phone)}`}
+                  className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
+                  onClick={() => setShowPhone(false)}
+                  title="Tap to call"
+                >
+                  {prettyPhone(cleaner.phone)}
+                </a>
               )}
             </>
           )}
 
-          {websiteUrl && (
+          {websiteHref && (
             <a
-              href={websiteUrl}
+              href={websiteHref}
               target="_blank"
-              rel="noopener noreferrer"
+              rel="noreferrer"
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
@@ -182,11 +179,10 @@ function normalizeWhatsApp(input: string) {
   const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
 }
-function normalizeWebsite(u?: string | null): string | undefined {
-  if (!u) return undefined;
-  const trimmed = u.trim();
-  if (!trimmed) return undefined;
-  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+function normalizeWebsite(raw: string) {
+  let url = raw.trim();
+  if (!/^https?:\/\//i.test(url)) url = "https://" + url;
+  return url;
 }
 function prettyPhone(p?: string) {
   if (!p) return "";
