@@ -1,4 +1,3 @@
-// src/components/CleanerCard.tsx
 import { useState, useMemo } from "react";
 
 type Cleaner = {
@@ -12,6 +11,7 @@ type Cleaner = {
   rating_avg?: number | null;
   rating_count?: number | null;
   payment_methods?: string[] | null;
+  service_types?: string[] | null; // ✅ added to satisfy Settings.tsx
 };
 
 type Props = {
@@ -26,7 +26,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
 
   const contactUrl = useMemo(() => {
     if (cleaner.whatsapp) return normalizeWhatsApp(cleaner.whatsapp);
-    // fallback to tel if no WhatsApp but phone exists
     if (cleaner.phone) return `tel:${digitsOnly(cleaner.phone)}`;
     return undefined;
   }, [cleaner.whatsapp, cleaner.phone]);
@@ -35,7 +34,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
 
   return (
     <div className="card card-pad flex flex-col gap-4">
-      {/* Header */}
       <div className="flex items-center gap-4">
         {cleaner.logo_url ? (
           <img
@@ -50,8 +48,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         )}
         <div className="flex-1 min-w-0">
           <div className="text-lg font-semibold text-cream-100 truncate">{cleaner.business_name}</div>
-
-          {/* Optional subline: distance or postcode hint */}
           <div className="text-sm text-white/70 truncate">
             {!preview && isFiniteNumber(cleaner.distance_m)
               ? `${(Number(cleaner.distance_m) / 1000).toFixed(1)} km away`
@@ -59,7 +55,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
           </div>
         </div>
 
-        {/* Ratings (optional, if you want to keep space) */}
         {isFiniteNumber(cleaner.rating_avg) && (
           <div className="text-sm text-white/70 shrink-0">
             ★ {Number(cleaner.rating_avg).toFixed(1)}
@@ -68,7 +63,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         )}
       </div>
 
-      {/* Actions */}
       <div className="flex flex-wrap gap-3 pt-2">
         {contactUrl && (
           <a
@@ -105,7 +99,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         )}
       </div>
 
-      {/* Revealed phone row */}
       {showPhone && cleaner.phone && (
         <div
           id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
@@ -116,7 +109,6 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
         </div>
       )}
 
-      {/* Payment methods (optional) */}
       {showPayments && cleaner.payment_methods && cleaner.payment_methods.length > 0 && (
         <div className="flex flex-wrap gap-2 pt-1">
           {cleaner.payment_methods.map((m, i) => (
@@ -136,9 +128,11 @@ function digitsOnly(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
 function normalizeWhatsApp(input: string) {
+  // accept either a wa.me link or a raw number
+  if (input.startsWith("http")) return input;
   const digits = digitsOnly(input);
-  // accepts raw number or full wa.me link
-  return digits.startsWith("http") ? input : `https://wa.me/${digits.startsWith("+") ? digits.slice(1) : digits}`;
+  const noPlus = digits.startsWith("+") ? digits.slice(1) : digits;
+  return `https://wa.me/${noPlus}`;
 }
 function prettyPhone(p?: string) {
   if (!p) return "";
