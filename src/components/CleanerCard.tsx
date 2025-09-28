@@ -23,9 +23,9 @@ export type Cleaner = {
 
 export type CleanerCardProps = {
   cleaner: Cleaner;
-  postcodeHint?: string;  // kept for compatibility
-  preview?: boolean;      // kept for compatibility
-  showPayments?: boolean; // default true
+  postcodeHint?: string;
+  preview?: boolean;
+  showPayments?: boolean;
 };
 
 export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps) {
@@ -40,11 +40,11 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
       {/* Top row */}
-      <div className="flex items-start gap-5">
-        {/* Left: BIG logo + content column */}
-        <div className="flex items-start gap-5 flex-1 min-w-0">
-          {/* Logo box — height matches the 3 stacked buttons */}
-          <div className="bg-black/5 rounded-2xl overflow-hidden grid place-items-center h-[128px] w-[128px] sm:h-[136px] sm:w-[136px]">
+      <div className="flex items-stretch gap-5">
+        {/* Left: LOGO panel + content column */}
+        <div className="flex items-stretch gap-5 flex-1 min-w-0">
+          {/* Logo panel stretches full card height */}
+          <div className="bg-black/5 rounded-2xl overflow-hidden self-stretch w-[128px] sm:w-[136px] flex items-center justify-center">
             {cleaner.logo_url ? (
               <img
                 src={cleaner.logo_url}
@@ -58,8 +58,8 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
             )}
           </div>
 
-          {/* Content column: name, rating, services, and payments pinned to bottom */}
-          <div className="min-w-0 flex flex-col min-h-[128px] sm:min-h-[136px]">
+          {/* Content column: name/rating + services; payments pinned to bottom */}
+          <div className="min-w-0 flex flex-col">
             {/* Name + rating */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="truncate text-xl md:text-2xl font-bold">
@@ -78,15 +78,10 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
 
             {/* Services (above payments) */}
             {cleaner.service_types?.length ? (
-            <div className="mt-auto pt-3 border-t border-black/5">
-                <div className="text-sm font-medium text-night-800 mb-1.5">
-                  Services
-                </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {cleaner.service_types.map((s, i) => (
                   <ServicePill key={`svc-${i}`} kind={s} />
                 ))}
-              </div>
               </div>
             ) : null}
 
@@ -106,9 +101,8 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
           </div>
         </div>
 
-        {/* Right: actions STACKED, same width, right-aligned
-            mobile: gap-1 -> total≈128px; sm+: gap-2 -> total≈136px */}
-        <div className="flex flex-col items-end gap-1 sm:gap-2 shrink-0">
+        {/* Right: actions STACKED, same width, vertically centered & right-aligned */}
+        <div className="self-stretch flex flex-col items-end justify-center gap-1 sm:gap-2 shrink-0">
           {contactUrl && (
             <a
               href={contactUrl}
