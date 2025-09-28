@@ -18,10 +18,8 @@ export type Cleaner = {
   rating_avg?: number | null;
   rating_count?: number | null;
 
-  // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  payment_methods?: string[] | null;
-  // ["domestic","commercial"]
-  service_types?: string[] | null;
+  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
+  service_types?: string[] | null;   // ["domestic","commercial"]
 };
 
 export type CleanerCardProps = {
@@ -30,9 +28,7 @@ export type CleanerCardProps = {
   preview?: boolean;
   showPayments?: boolean;
 
-  /** Optional custom handler to send the enquiry (email side). */
   onSendEnquiry?: (payload: EnquiryPayload) => Promise<void>;
-  /** Optional endpoint for sending email if you’re not passing onSendEnquiry. Defaults to '/.netlify/functions/sendEnquiry'. */
   emailEndpoint?: string;
 };
 
@@ -65,8 +61,12 @@ export default function CleanerCard({
   const [message, setMessage] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  // Autocomplete ref (avoid typing google maps types to keep TS happy on CI)
   const autocompleteRef = useRef<any>(null);
+  const hasPlaces =
+    typeof window !== "undefined" &&
+    (window as any).google &&
+    (window as any).google.maps &&
+    (window as any).google.maps.places;
 
   const websiteHref = useMemo(() => {
     if (!cleaner.website) return null;
@@ -75,11 +75,8 @@ export default function CleanerCard({
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
-      {/* Full-height row so logo + content + buttons align top/bottom */}
       <div className="flex items-stretch gap-5">
-        {/* Left: logo panel + content */}
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
-          {/* Logo fills container completely */}
           <div className="self-stretch w-[164px] sm:w-[184px] rounded-3xl overflow-hidden">
             {cleaner.logo_url ? (
               <img
@@ -96,9 +93,7 @@ export default function CleanerCard({
             )}
           </div>
 
-          {/* Content column: top = name+services, bottom = payments */}
           <div className="min-w-0 flex flex-col justify-between">
-            {/* TOP: Business name + rating (flush with top of logo) */}
             <div>
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="truncate text-xl md:text-2xl font-bold">
@@ -106,24 +101,17 @@ export default function CleanerCard({
                 </div>
                 {isFiniteNumber(cleaner.rating_avg) && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
-                    <span className="font-semibold">
-                      {Number(cleaner.rating_avg).toFixed(2)}
-                    </span>
+                    <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
                     {isFiniteNumber(cleaner.rating_count) && (
-                      <span className="opacity-70">
-                        ({cleaner.rating_count} reviews)
-                      </span>
+                      <span className="opacity-70">({cleaner.rating_count} reviews)</span>
                     )}
                   </span>
                 )}
               </div>
 
-              {/* Services */}
               {cleaner.service_types?.length ? (
                 <div className="pt-3">
-                  <div className="text-sm font-medium text-night-800 mb-1.5">
-                    Services
-                  </div>
+                  <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
                   <div className="flex flex-wrap gap-1.5">
                     {cleaner.service_types.map((s, i) => (
                       <ServicePill key={`svc-${i}`} kind={s} />
@@ -133,12 +121,9 @@ export default function CleanerCard({
               ) : null}
             </div>
 
-            {/* BOTTOM: Payments (flush with bottom of logo) */}
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
               <div className="pt-3 border-t border-black/5">
-                <div className="text-sm font-medium text-night-800 mb-1.5">
-                  Payments Accepted
-                </div>
+                <div className="text-sm font-medium text-night-800 mb-1.5">Payments Accepted</div>
                 <div className="flex flex-wrap gap-1.5">
                   {cleaner.payment_methods.map((m, i) => (
                     <PaymentPill key={`pay-${i}`} kind={m} />
@@ -149,7 +134,6 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Right: stacked actions, centered vertically & right-aligned */}
         <div className="self-stretch flex flex-col items-end justify-center gap-1 sm:gap-2 shrink-0">
           <button
             type="button"
@@ -159,7 +143,6 @@ export default function CleanerCard({
             Message
           </button>
 
-          {/* Phone button: toggles to show number inside the same control */}
           {cleaner.phone && (
             <>
               {!showPhone ? (
@@ -199,16 +182,8 @@ export default function CleanerCard({
 
       {/* Enquiry Modal */}
       {showEnquiry && (
-        <div
-          className="fixed inset-0 z-40"
-          aria-labelledby="enquiry-title"
-          role="dialog"
-          aria-modal="true"
-        >
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setShowEnquiry(false)}
-          />
+        <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-labelledby="enquiry-title">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowEnquiry(false)} />
           <div className="absolute inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
             <div className="w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-black/10">
               <div className="p-4 sm:p-6 border-b border-black/5">
@@ -217,9 +192,7 @@ export default function CleanerCard({
                     <h2 id="enquiry-title" className="text-lg sm:text-xl font-bold">
                       Message {cleaner.business_name}
                     </h2>
-                    <p className="text-sm text-night-700 mt-1">
-                      Fill in your details and choose how to send your enquiry.
-                    </p>
+                    <p className="text-sm text-night-700 mt-1">Fill in your details and choose how to send your enquiry.</p>
                   </div>
                   <button
                     type="button"
@@ -232,10 +205,7 @@ export default function CleanerCard({
                 </div>
               </div>
 
-              <form
-                className="p-4 sm:p-6 space-y-4"
-                onSubmit={(e) => e.preventDefault()}
-              >
+              <form className="p-4 sm:p-6 space-y-4" onSubmit={(e) => e.preventDefault()}>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium">Name</label>
@@ -258,26 +228,45 @@ export default function CleanerCard({
                       placeholder="07… or +44…"
                     />
                   </div>
+
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <label className="text-sm font-medium">Address</label>
-                    <Autocomplete
-                      onLoad={(ac) => (autocompleteRef.current = ac)}
-                      onPlaceChanged={() => {
-                        const p = autocompleteRef.current?.getPlace?.();
-                        const value = p?.formatted_address || p?.name || "";
-                        if (value) setAddress(value);
-                      }}
-                    >
+
+                    {/* Only use Autocomplete if Maps + Places is actually loaded */}
+                    {hasPlaces ? (
+                      <Autocomplete
+                        onLoad={(ac) => (autocompleteRef.current = ac)}
+                        onPlaceChanged={() => {
+                          try {
+                            const p = autocompleteRef.current?.getPlace?.();
+                            const value = p?.formatted_address || p?.name || "";
+                            if (value) setAddress(value);
+                          } catch {
+                            /* noop */
+                          }
+                        }}
+                      >
+                        <input
+                          type="text"
+                          value={address}
+                          onChange={(e) => setAddress(e.target.value)}
+                          className="h-11 rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/50"
+                          placeholder="Start typing your address…"
+                          autoComplete="street-address"
+                        />
+                      </Autocomplete>
+                    ) : (
                       <input
                         type="text"
                         value={address}
                         onChange={(e) => setAddress(e.target.value)}
                         className="h-11 rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/50"
-                        placeholder="Start typing your address…"
+                        placeholder="House no., street, town, postcode"
                         autoComplete="street-address"
                       />
-                    </Autocomplete>
+                    )}
                   </div>
+
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium">Email</label>
                     <input
@@ -288,6 +277,7 @@ export default function CleanerCard({
                       placeholder="you@example.com"
                     />
                   </div>
+
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <label className="text-sm font-medium">Enquiry</label>
                     <textarea
@@ -313,8 +303,8 @@ export default function CleanerCard({
                         business: cleaner.business_name,
                         name,
                         address,
-                        email,
                         phone: userPhone,
+                        email,
                         message,
                       })}
                       target="_blank"
@@ -330,14 +320,8 @@ export default function CleanerCard({
                     disabled={!!submitting}
                     onClick={async () => {
                       setError(null);
-                      if (!name.trim()) {
-                        setError("Please add your name.");
-                        return;
-                      }
-                      if (!message.trim()) {
-                        setError("Please add a short message.");
-                        return;
-                      }
+                      if (!name.trim()) return setError("Please add your name.");
+                      if (!message.trim()) return setError("Please add a short message.");
                       try {
                         setSubmitting("email");
                         const payload: EnquiryPayload = {
@@ -350,16 +334,11 @@ export default function CleanerCard({
                           email,
                           message,
                         };
-                        if (onSendEnquiry) {
-                          await onSendEnquiry(payload);
-                        } else {
-                          await defaultSendEmail(payload, emailEndpoint);
-                        }
+                        if (onSendEnquiry) await onSendEnquiry(payload);
+                        else await defaultSendEmail(payload, emailEndpoint);
                         setShowEnquiry(false);
                       } catch (e: any) {
-                        setError(
-                          e?.message || "Sorry, sending failed. Please try again."
-                        );
+                        setError(e?.message || "Sorry, sending failed. Please try again.");
                       } finally {
                         setSubmitting(null);
                       }
@@ -368,20 +347,15 @@ export default function CleanerCard({
                   >
                     {submitting === "email" ? "Sending…" : "Send via Email"}
                   </button>
+
                   {cleaner.whatsapp && (
                     <button
                       type="button"
                       disabled={!!submitting}
                       onClick={async () => {
                         setError(null);
-                        if (!name.trim()) {
-                          setError("Please add your name.");
-                          return;
-                        }
-                        if (!message.trim()) {
-                          setError("Please add a short message.");
-                          return;
-                        }
+                        if (!name.trim()) return setError("Please add your name.");
+                        if (!message.trim()) return setError("Please add a short message.");
                         try {
                           setSubmitting("both");
                           const payload: EnquiryPayload = {
@@ -394,25 +368,20 @@ export default function CleanerCard({
                             email,
                             message,
                           };
-                          if (onSendEnquiry) {
-                            await onSendEnquiry(payload);
-                          } else {
-                            await defaultSendEmail(payload, emailEndpoint);
-                          }
+                          if (onSendEnquiry) await onSendEnquiry(payload);
+                          else await defaultSendEmail(payload, emailEndpoint);
                           const href = buildWhatsAppUrl(cleaner.whatsapp!, {
                             business: cleaner.business_name,
                             name,
                             address,
-                            email,
                             phone: userPhone,
+                            email,
                             message,
                           });
                           window.open(href, "_blank", "noopener,noreferrer");
                           setShowEnquiry(false);
                         } catch (e: any) {
-                          setError(
-                            e?.message || "Sorry, sending failed. Please try again."
-                          );
+                          setError(e?.message || "Sorry, sending failed. Please try again.");
                         } finally {
                           setSubmitting(null);
                         }
@@ -423,6 +392,7 @@ export default function CleanerCard({
                     </button>
                   )}
                 </div>
+
                 <p className="text-xs text-night-600 pt-1">
                   We’ll include your details in the message so {cleaner.business_name} can reply.
                 </p>
@@ -453,10 +423,8 @@ function normalizeWebsite(raw: string) {
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44"))
-    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
-  if (d.length === 11 && d.startsWith("0"))
-    return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
 function isFiniteNumber(x: unknown): x is number {
@@ -465,14 +433,7 @@ function isFiniteNumber(x: unknown): x is number {
 
 function buildWhatsAppUrl(
   wa: string,
-  data: {
-    business: string;
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    message: string;
-  }
+  data: { business: string; name: string; address: string; phone: string; email: string; message: string }
 ) {
   const base = normalizeWhatsApp(wa);
   const text =
@@ -482,9 +443,9 @@ function buildWhatsAppUrl(
     `Phone: ${data.phone || "-"}\n` +
     `Email: ${data.email || "-"}\n\n` +
     `${data.message || ""}`;
-  const url = new URL(base);
-  url.searchParams.set("text", text);
-  return url.toString();
+  // wa.me supports ?text=
+  const encoded = encodeURIComponent(text);
+  return `${base}?text=${encoded}`;
 }
 
 async function defaultSendEmail(payload: EnquiryPayload, endpoint?: string) {
