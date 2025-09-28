@@ -1,14 +1,14 @@
-// src/pages/Landing.tsx
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import FindCleaners from "../components/FindCleaners";
 import ResultsList from "../components/ResultsList";
 
-type Cleaner = any; // use your real type if you have one
+type Cleaner = any;
 
 export default function Landing() {
   const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
+  const [locality, setLocality] = useState<string>("");
 
   return (
     <main className="w-full">
@@ -20,32 +20,29 @@ export default function Landing() {
           <p className="text-gray-600">
             Compare local cleaners, check service areas and book online. Clean bins, happy homes.
           </p>
-
-          {/* CTA buttons (router-safe) */}
           <div className="flex gap-3">
             <Link to="/login" className="bg-emerald-700 text-white px-4 py-2 rounded">
               I’m a cleaner
             </Link>
-            <a href="#find" className="border px-4 py-2 rounded">
-              Find cleaners
-            </a>
+            <a href="#find" className="border px-4 py-2 rounded">Find cleaners</a>
           </div>
         </div>
 
-        {/* Search */}
         <div id="find" className="mt-6">
+          {/* NOTE the 3rd param (locality) */}
           <FindCleaners
-            onSearchComplete={(results: Cleaner[], pc: string) => {
+            onSearchComplete={(results, pc, town) => {
               setCleaners(results || []);
               setPostcode(pc || "");
+              setLocality(town || "");   // <- capture locality
             }}
           />
         </div>
 
-        {/* Results */}
         {Array.isArray(cleaners) && (
           <div className="mt-6">
-            <ResultsList cleaners={cleaners} postcode={postcode} />
+            {/* pass locality to ResultsList */}
+            <ResultsList cleaners={cleaners} postcode={postcode} locality={locality} />
           </div>
         )}
 
