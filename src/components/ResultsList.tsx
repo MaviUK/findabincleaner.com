@@ -1,22 +1,23 @@
 // src/components/ResultsList.tsx
 import CleanerCard, { Cleaner } from "./CleanerCard";
 
+type Props = { cleaners: any[]; postcode: string };
+
+// Normalise unknown -> string[]
 function toArr(v: unknown): string[] {
   if (!v) return [];
   if (Array.isArray(v)) return v as string[];
   if (typeof v === "string") {
-    // try JSON first: '["cash","stripe"]'
+    // Try JSON array first: '["cash","stripe"]'
     try {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    // fallback CSV: "cash,stripe"
+    // Fallback CSV: "cash,stripe"
     return v.split(",").map(s => s.trim()).filter(Boolean);
   }
   return [];
 }
-
-type Props = { cleaners: any[]; postcode: string };
 
 export default function ResultsList({ cleaners, postcode }: Props) {
   if (!cleaners?.length) {
@@ -33,14 +34,14 @@ export default function ResultsList({ cleaners, postcode }: Props) {
         const cleaner: Cleaner = {
           id: c.id ?? c.cleaner_id,
           business_name: c.business_name,
-          logo_url: c.logo_url,
+          logo_url: c.logo_url ?? null,
           distance_m: c.distance_meters ?? c.distance_m ?? null,
-          website: c.website,
-          phone: c.phone,
-          whatsapp: c.whatsapp,
+          website: c.website ?? null,
+          phone: c.phone ?? null,
+          whatsapp: c.whatsapp ?? null,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          // 🔽 normalize multiple possible field names + formats
+          // Ensure arrays so CleanerCard renders Services + Payments like the Profile preview
           payment_methods: toArr(
             c.payment_methods ??
             c.payment_methods_accepted ??
