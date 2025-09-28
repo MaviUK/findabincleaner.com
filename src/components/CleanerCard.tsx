@@ -30,7 +30,7 @@ export type CleanerCardProps = {
   preview?: boolean;
   showPayments?: boolean;
 
-  /** Optional custom handler to send the enquiry (email side). */
+  /** Optional custom handler to send the enquiry (email). */
   onSendEnquiry?: (payload: EnquiryPayload) => Promise<void>;
   /** Optional endpoint for sending email if you’re not passing onSendEnquiry. Defaults to '/.netlify/functions/sendEnquiry'. */
   emailEndpoint?: string;
@@ -74,7 +74,7 @@ export default function CleanerCard({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Autocomplete ref
+  // Autocomplete
   const autocompleteRef = useRef<any>(null);
   const hasPlaces =
     typeof window !== "undefined" &&
@@ -112,7 +112,7 @@ export default function CleanerCard({
 
           {/* Content column: top = name+services, bottom = payments */}
           <div className="min-w-0 flex flex-col justify-between">
-            {/* TOP: Business name + rating (flush with top of logo) */}
+            {/* TOP: Business name + rating */}
             <div>
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="truncate text-xl md:text-2xl font-bold">
@@ -147,7 +147,7 @@ export default function CleanerCard({
               ) : null}
             </div>
 
-            {/* BOTTOM: Payments (flush with bottom of logo) */}
+            {/* BOTTOM: Payments */}
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
               <div className="pt-3 border-t border-black/5">
                 <div className="text-sm font-medium text-night-800 mb-1.5">
@@ -163,7 +163,7 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Right: stacked actions, centered vertically & right-aligned */}
+        {/* Right: stacked actions */}
         <div className="self-stretch flex flex-col items-end justify-center gap-1 sm:gap-2 shrink-0">
           <button
             type="button"
@@ -219,14 +219,29 @@ export default function CleanerCard({
           role="dialog"
           aria-modal="true"
         >
+          {/* Dim background */}
           <div
             className="absolute inset-0 bg-black/40"
             onClick={() => setShowEnquiry(false)}
           />
-          <div className="absolute inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-            <div className="w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-black/10">
-              <div className="p-4 sm:p-6 border-b border-black/5">
-                <div className="flex items-start justify-between gap-4">
+
+          {/* Panel wrapper:
+              - mobile: full height sheet (bottom), scrollable
+              - desktop: centered dialog */}
+          <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
+            <div
+              className="
+                relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10
+                sm:rounded-2xl sm:max-h-[calc(100vh-4rem)]
+                h-[100dvh] sm:h-auto
+                rounded-none sm:rounded-2xl
+                flex flex-col
+                overflow-hidden
+              "
+            >
+              {/* Sticky header */}
+              <div className="sticky top-0 z-10 bg-white border-b border-black/5">
+                <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
                   <div>
                     <h2 id="enquiry-title" className="text-lg sm:text-xl font-bold">
                       Message {cleaner.business_name}
@@ -246,8 +261,9 @@ export default function CleanerCard({
                 </div>
               </div>
 
+              {/* Scrollable content */}
               <form
-                className="p-4 sm:p-6 space-y-4"
+                className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
                 onSubmit={(e) => e.preventDefault()}
               >
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -262,6 +278,7 @@ export default function CleanerCard({
                       required
                     />
                   </div>
+
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium">Phone</label>
                     <input
@@ -272,9 +289,9 @@ export default function CleanerCard({
                       placeholder="07… or +44…"
                     />
                   </div>
+
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <label className="text-sm font-medium">Address</label>
-
                     {hasPlaces ? (
                       <Autocomplete
                         onLoad={(ac) => (autocompleteRef.current = ac)}
@@ -308,6 +325,7 @@ export default function CleanerCard({
                       />
                     )}
                   </div>
+
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium">Email</label>
                     <input
@@ -318,6 +336,7 @@ export default function CleanerCard({
                       placeholder="you@example.com"
                     />
                   </div>
+
                   <div className="flex flex-col gap-1.5 sm:col-span-2">
                     <label className="text-sm font-medium">Enquiry</label>
                     <textarea
@@ -335,9 +354,17 @@ export default function CleanerCard({
                     {error}
                   </div>
                 )}
+              </form>
 
-                <div className="pt-1 flex flex-col sm:flex-row gap-2 sm:gap-3">
-                  {/* WhatsApp only rendered on mobile devices */}
+              {/* Sticky footer (buttons) */}
+              <div
+                className="
+                  sticky bottom-0 z-10 bg-white border-t border-black/5
+                  px-4 sm:px-6 py-3
+                  pb-[calc(env(safe-area-inset-bottom,0)+12px)]
+                "
+              >
+                <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
                   {isMobile && cleaner.whatsapp && (
                     <a
                       href={buildWhatsAppUrl(cleaner.whatsapp, {
@@ -362,14 +389,9 @@ export default function CleanerCard({
                     disabled={!!submitting}
                     onClick={async () => {
                       setError(null);
-                      if (!name.trim()) {
-                        setError("Please add your name.");
-                        return;
-                      }
-                      if (!message.trim()) {
-                        setError("Please add a short message.");
-                        return;
-                      }
+                      if (!name.trim()) return setError("Please add your name.");
+                      if (!message.trim())
+                        return setError("Please add a short message.");
                       try {
                         setSubmitting("email");
                         const payload: EnquiryPayload = {
@@ -382,11 +404,8 @@ export default function CleanerCard({
                           email,
                           message,
                         };
-                        if (onSendEnquiry) {
-                          await onSendEnquiry(payload);
-                        } else {
-                          await defaultSendEmail(payload, emailEndpoint);
-                        }
+                        if (onSendEnquiry) await onSendEnquiry(payload);
+                        else await defaultSendEmail(payload, emailEndpoint);
                         setShowEnquiry(false);
                       } catch (e: any) {
                         setError(
@@ -401,11 +420,11 @@ export default function CleanerCard({
                     {submitting === "email" ? "Sending…" : "Send via Email"}
                   </button>
                 </div>
-
-                <p className="text-xs text-night-600 pt-1">
-                  We’ll include your details in the message so {cleaner.business_name} can reply.
+                <p className="text-xs text-night-600 pt-2">
+                  We’ll include your details in the message so{" "}
+                  {cleaner.business_name} can reply.
                 </p>
-              </form>
+              </div>
             </div>
           </div>
         </div>
@@ -419,7 +438,9 @@ function detectIsMobile() {
   if (typeof window === "undefined" || typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
   const touchPoints = (navigator as any).maxTouchPoints || 0;
-  const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+  const coarse =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
   const iPadOS = /Macintosh/.test(ua) && touchPoints > 1; // iPadOS 13+ Safari
   return mobileUA || iPadOS || coarse;
