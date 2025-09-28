@@ -1,7 +1,9 @@
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
+import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
 
 type Cleaner = {
@@ -11,7 +13,7 @@ type Cleaner = {
   logo_url: string | null;
   address: string | null;
   phone: string | null;
-  whatsapp: string | null;          // NEW
+  whatsapp: string | null;
   website: string | null;
   about: string | null;
   contact_email: string | null;
@@ -166,7 +168,10 @@ const toArr = (v: any): string[] => {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed;
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 };
@@ -176,6 +181,7 @@ export default function Settings() {
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
+  const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -184,7 +190,7 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
-  const [whatsapp, setWhatsapp] = useState("");     // NEW
+  const [whatsapp, setWhatsapp] = useState(""); // NEW
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -196,61 +202,77 @@ export default function Settings() {
   const [resizedLogo, setResizedLogo] = useState<Blob | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
+  const navigate = useNavigate();
+
   useEffect(() => {
+    let mounted = true;
+
     (async () => {
       try {
-        const {
-          data: { user },
-        } = await supabase.auth.getUser();
-        if (!user) {
-          window.location.hash = "#/login";
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!mounted) return;
+
+        if (!session?.user) {
+          navigate("/login", { replace: true });
           return;
         }
-        setUserId(user.id);
+
+        setUserId(session.user.id);
 
         const { data, error } = await supabase
           .from("cleaners")
           .select("*")
-          .eq("user_id", user.id)
+          .eq("user_id", session.user.id)
           .maybeSingle();
         if (error) throw error;
 
         if (!data) {
-          // New account — don’t insert yet, just pre-fill the form
           fillForm(
             {
               id: "",
-              user_id: user.id,
+              user_id: session.user.id,
               business_name: null,
               logo_url: null,
               address: null,
               phone: null,
-              whatsapp: null,                 // NEW
+              whatsapp: null,
               website: null,
               about: null,
-              contact_email: user.email ?? null,
+              contact_email: session.user.email ?? null,
               payment_methods: [] as string[],
               service_types: [] as string[],
             },
-            user.email ?? ""
+            session.user.email ?? ""
           );
         } else {
-          fillForm(data as Cleaner, user.email ?? "");
+          fillForm(data as Cleaner, session.user.email ?? "");
         }
       } catch (e: any) {
         setErr(e.message || "Failed to load profile.");
       } finally {
-        setLoading(false);
+        if (mounted) {
+          setLoading(false);
+          setReady(true);
+        }
       }
     })();
-  }, []);
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
+      if (!session) navigate("/login", { replace: true });
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, [navigate]);
 
   function fillForm(c: Cleaner, fallbackEmail: string) {
     setCleaner(c);
     setBusinessName(c.business_name ?? "");
     setAddress(c.address ?? "");
     setPhone(c.phone ?? "");
-    setWhatsapp(c.whatsapp ?? "");     // NEW
+    setWhatsapp(c.whatsapp ?? ""); // NEW
     setWebsite(c.website ?? "");
     setAbout(c.about ?? "");
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
@@ -268,7 +290,7 @@ export default function Settings() {
         business_name: businessName || null,
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null,     // NEW
+        whatsapp: whatsapp || null, // NEW
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -309,7 +331,7 @@ export default function Settings() {
         business_name: businessName || null,
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null,     // NEW
+        whatsapp: whatsapp || null, // NEW
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -321,7 +343,7 @@ export default function Settings() {
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
       if (error) throw error;
 
-      setCleaner((prev) => (prev ? { ...prev, ...payload, id } as Cleaner : prev));
+      setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
       setResizedLogo(null);
@@ -353,13 +375,16 @@ export default function Settings() {
     [cleaner?.id, businessName, logoPreview, website, phone, whatsapp, paymentMethods, serviceTypes]
   );
 
-  if (loading) {
+  if (loading || !ready) {
     return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
   }
 
   return (
     <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
-      <h1 className="text-2xl font-bold">Profile</h1>
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Settings</h1>
+        <LogoutButton />
+      </header>
 
       {/* TOP: Full-width preview using the actual search card */}
       <section className="p-0 bg-transparent border-0">
@@ -492,9 +517,7 @@ export default function Settings() {
                 className="mt-2 h-20 w-20 object-contain rounded bg-white"
               />
             )}
-            <p className="text-xs text-gray-500 mt-1">
-              Preview shows the resized 300×300 image.
-            </p>
+            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
           </div>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
