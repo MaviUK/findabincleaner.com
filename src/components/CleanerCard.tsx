@@ -1,21 +1,18 @@
 import { useMemo, useState } from "react";
 
-/** Types stay broad to match Settings.tsx usage */
+/** Types */
 type Cleaner = {
   id: string;
   business_name: string;
   logo_url?: string | null;
   distance_m?: number | null;
-
   website?: string | null;
   phone?: string | null;
   whatsapp?: string | null;
-
   rating_avg?: number | null;
   rating_count?: number | null;
-
-  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  service_types?: string[] | null;   // ["domestic","commercial"]
+  payment_methods?: string[] | null;
+  service_types?: string[] | null;
 };
 
 type Props = {
@@ -33,7 +30,6 @@ const PAYMENT_LABELS: Record<string, string> = {
   stripe: "Stripe",
   card_machine: "Card Machine",
 };
-
 const SERVICE_LABELS: Record<string, string> = {
   domestic: "Domestic",
   commercial: "Commercial",
@@ -53,24 +49,28 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
       {/* Top row: left info + right actions */}
       <div className="flex items-start gap-4">
         {/* Left: logo + name + rating + operates-in */}
-        <div className="flex items-start gap-4 flex-1 min-w-0">
+        <div className="flex items-start gap-5 flex-1 min-w-0">
           {cleaner.logo_url ? (
             <img
               src={cleaner.logo_url}
               alt={`${cleaner.business_name} logo`}
-              className="h-14 w-14 rounded-lg object-contain bg-black/5 p-1"
+              className="h-16 w-16 md:h-20 md:w-20 rounded-xl object-contain bg-black/5 p-1.5"
             />
           ) : (
-            <div className="h-14 w-14 rounded-lg bg-black/5 grid place-items-center">
-              <span className="font-semibold">{cleaner.business_name?.charAt(0) ?? "C"}</span>
+            <div className="h-16 w-16 md:h-20 md:w-20 rounded-xl bg-black/5 grid place-items-center">
+              <span className="text-xl md:text-2xl font-semibold">
+                {cleaner.business_name?.charAt(0) ?? "C"}
+              </span>
             </div>
           )}
 
           <div className="min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
-              <div className="font-semibold truncate">{cleaner.business_name}</div>
+              <div className="truncate text-xl md:text-2xl font-bold">
+                {cleaner.business_name}
+              </div>
               {isFiniteNumber(cleaner.rating_avg) && (
-                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs ring-1 ring-blue-200">
+                <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
                   <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
                   {isFiniteNumber(cleaner.rating_count) && (
                     <span className="opacity-70">({cleaner.rating_count} reviews)</span>
@@ -111,7 +111,7 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
               rel="noreferrer"
               className="btn btn-cta"
             >
-              {/* ➜ */} Message
+              Message
             </a>
           )}
 
@@ -161,7 +161,7 @@ export default function CleanerCard({ cleaner, postcodeHint, preview, showPaymen
   );
 }
 
-/* Icons */
+/* Icons & helpers unchanged */
 function TickIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -170,8 +170,6 @@ function TickIcon() {
     </svg>
   );
 }
-
-/* helpers */
 function slugify(s?: string) {
   return (s || "").toLowerCase().replace(/\s+/g, "_").replace(/[^\w-]/g, "");
 }
