@@ -101,57 +101,57 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
           </div>
         </div>
 
-        {/* Right: actions in a single horizontal row */}
-        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-          {contactUrl && (
-            <a
-              href={contactUrl}
-              target={contactUrl.startsWith("http") ? "_blank" : undefined}
-              rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]"
-            >
-              Message
-            </a>
-          )}
+        {/* Right: actions stacked, right-aligned */}
+<div className="flex flex-col items-end gap-2 sm:gap-3 shrink-0">
+  {contactUrl && (
+    <a
+      href={contactUrl}
+      target={contactUrl.startsWith("http") ? "_blank" : undefined}
+      rel="noreferrer"
+      className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] w-full sm:w-auto"
+    >
+      Message
+    </a>
+  )}
 
-          {cleaner.phone && (
-            <button
-              type="button"
-              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
-              onClick={() => setShowPhone(s => !s)}
-              aria-expanded={showPhone}
-              aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-            >
-              Show phone number
-            </button>
-          )}
+  {cleaner.phone && (
+    <>
+      <button
+        type="button"
+        className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50 w-full sm:w-auto"
+        onClick={() => setShowPhone(s => !s)}
+        aria-expanded={showPhone}
+        aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
+      >
+        {showPhone ? "Hide phone" : "Show phone number"}
+      </button>
 
-          {cleaner.website && (
-            <a
-              href={cleaner.website}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
-            >
-              Website
-            </a>
-          )}
-        </div>
-      </div>
-
-      {/* Reveal phone row */}
-      {showPhone && cleaner.phone && (
+      {showPhone && (
         <div
           id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-          className="mt-3 rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between"
+          className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-full sm:w-auto"
         >
           <span className="font-medium tracking-wide">{prettyPhone(cleaner.phone)}</span>
-          <a className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]" href={`tel:${digitsOnly(cleaner.phone)}`}>
+          <a className="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]" href={`tel:${digitsOnly(cleaner.phone)}`}>
             Call
           </a>
         </div>
       )}
-    </div>
+    </>
+  )}
+
+  {cleaner.website && (
+    <a
+      href={cleaner.website}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20 w-full sm:w-auto"
+    >
+      Website
+    </a>
+  )}
+</div>
+
   );
 }
 
