@@ -1,10 +1,22 @@
 // src/components/ResultsList.tsx
 import CleanerCard, { Cleaner } from "./CleanerCard";
 
-type Props = {
-  cleaners: any[];
-  postcode: string;
-};
+function toArr(v: unknown): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) return v as string[];
+  if (typeof v === "string") {
+    // try JSON first: '["cash","stripe"]'
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed as string[];
+    } catch {}
+    // fallback CSV: "cash,stripe"
+    return v.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+type Props = { cleaners: any[]; postcode: string };
 
 export default function ResultsList({ cleaners, postcode }: Props) {
   if (!cleaners?.length) {
@@ -28,9 +40,17 @@ export default function ResultsList({ cleaners, postcode }: Props) {
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          // ✅ ensure these arrays are present so the card renders Services + Payments
-          payment_methods: c.payment_methods ?? [],
-          service_types: c.service_types ?? [],    // <-- add this
+          // 🔽 normalize multiple possible field names + formats
+          payment_methods: toArr(
+            c.payment_methods ??
+            c.payment_methods_accepted ??
+            c.payments
+          ),
+          service_types: toArr(
+            c.service_types ??
+            c.services ??
+            c.service_types_supported
+          ),
         };
 
         return (
@@ -38,7 +58,7 @@ export default function ResultsList({ cleaners, postcode }: Props) {
             key={cleaner.id}
             cleaner={cleaner}
             postcodeHint={postcode}
-            showPayments={true}
+            showPayments
           />
         );
       })}
