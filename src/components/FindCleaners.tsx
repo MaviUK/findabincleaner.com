@@ -6,7 +6,7 @@ export type FindCleanersProps = {
   onSearchComplete?: (results: MatchOut[], postcode: string) => void;
 };
 
-// Shape coming from RPC (wide to be safe; adjust if you know exact keys)
+// ---- RPC shapes (wide to be safe) ----
 type MatchIn = {
   cleaner_id: string;
   business_name: string | null;
@@ -14,14 +14,15 @@ type MatchIn = {
   website: string | null;
   phone: string | null;
   whatsapp?: string | null;
-  payment_methods?: unknown;  // could be json/str/csv/null
-  service_types?: unknown;    // could be json/str/csv/null
+  payment_methods?: unknown;  // json/array/csv/string/null
+  service_types?: unknown;    // json/array/csv/string/null
   rating_avg?: number | null;
   rating_count?: number | null;
-  distance_m?: number | null; // or distance_meters depending on RPC
+  distance_m?: number | null;       // distance RPC returns this
+  distance_meters?: number | null;  // alternate name, just in case
 };
 
-type MatchOut = {
+export type MatchOut = {
   cleaner_id: string;
   business_name: string | null;
   logo_url: string | null;
@@ -45,9 +46,8 @@ function toArray(v: unknown): string[] {
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
     // fallback CSV
-    return v.split(",").map(s => s.trim()).filter(Boolean);
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
   }
-  // last-resort: unknown object -> []
   return [];
 }
 
@@ -92,7 +92,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode
+      // 1) Geocode postcode -> lat/lng
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -105,19 +105,39 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       const lat = Number(data.result.latitude);
       const lng = Number(data.result.longitude);
 
-      // 2) RPC – ensure your RPC returns the fields below or equivalent
-      const { data: matches, error: rpcError } = await supabase.rpc(
-        "find_cleaners_for_point_sorted",
-        { lat, lng }
-      );
-
-      if (rpcError) {
-        setError(rpcError.message);
-        return;
+      // 2) Try polygon-based RPC first (point-in-service-area)
+      let list: MatchIn[] = [];
+      {
+        const { data: coverMatches, error: coverErr } = await supabase.rpc(
+          "find_cleaners_covering_point",
+          { lat, lng }
+        );
+        if (coverErr) {
+          console.error("RPC find_cleaners_covering_point error:", coverErr);
+        } else {
+          list = (coverMatches || []) as MatchIn[];
+        }
       }
 
-      // 3) Normalize to arrays + consistent keys for the rest of the app
-      const list: MatchOut[] = (matches as MatchIn[] | null ?? []).map((m) => ({
+      // 3) Fallback to distance-based RPC if polygon search found nothing
+      if (!list.length) {
+        const { data: distMatches, error: distErr } = await supabase.rpc(
+          "find_cleaners_for_point_sorted",
+          { lat, lng, max_km: 50, lim: 50 }
+        );
+        if (distErr) {
+          console.error("RPC find_cleaners_for_point_sorted error:", distErr);
+          if (!list.length) {
+            setError(distErr.message);
+            return;
+          }
+        } else {
+          list = (distMatches || []) as MatchIn[];
+        }
+      }
+
+      // 4) Normalize to MatchOut
+      const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
         logo_url: m.logo_url ?? null,
@@ -128,14 +148,15 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         service_types: toArray(m.service_types),
         rating_avg: m.rating_avg ?? null,
         rating_count: m.rating_count ?? null,
-        // handle RPCs that return distance_meters instead of distance_m
         distance_m:
-          (m as any).distance_meters ?? (m.distance_m ?? null),
+          (m.distance_meters as number | null | undefined) ??
+          (m.distance_m ?? null),
       }));
 
-      if (!onSearchComplete) setResults(list);
-      onSearchComplete?.(list, pc);
+      if (!onSearchComplete) setResults(normalized);
+      onSearchComplete?.(normalized, pc);
     } catch (e: any) {
+      console.error("FindCleaners lookup error:", e);
       setError(e?.message || "Something went wrong.");
     } finally {
       setLoading(false);
@@ -166,7 +187,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         </div>
       )}
 
-      {/* Local inline list only renders when parent didn't pass onSearchComplete */}
+      {/* Inline list only when parent didn't pass onSearchComplete */}
       {!onSearchComplete && (
         <ul className="space-y-2">
           {results.map((r) => {
@@ -224,7 +245,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                 </div>
 
                 <div className="text-sm text-gray-700 whitespace-nowrap">
-                  {formatDistance(r.distance_m ?? undefined)}
+                  {formatDistance(r.distance_m)}
                 </div>
               </li>
             );
