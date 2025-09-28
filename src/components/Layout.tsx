@@ -1,4 +1,3 @@
-// src/components/Layout.tsx
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
@@ -18,15 +17,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  const ctaHref = authed ? "/settings" : "/signup";
+  // If logged out -> /login (they can log in OR sign up there)
+  // If logged in  -> /settings
+  const ctaHref = authed ? "/settings" : "/login";
 
   return (
     <div className="min-h-screen flex flex-col">
       <header className="border-b">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <Link to="/" className="font-bold">Find a Bin Cleaner</Link>
-
-          {/* Single CTA replaces Dashboard/Profile */}
           <Link
             to={ctaHref}
             className="inline-flex items-center rounded-lg px-3 py-2 bg-emerald-700 text-white hover:bg-emerald-800"
@@ -41,9 +40,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <footer className="border-t">
         <div className="container mx-auto px-4 py-6 flex items-center justify-between text-sm text-gray-500">
           <span>© {new Date().getFullYear()} Find a Bin Cleaner</span>
-          <span>
-            Built with <span className="text-rose-600">❤</span>
-          </span>
+          <span>Built with <span className="text-rose-600">❤</span></span>
         </div>
       </footer>
     </div>
