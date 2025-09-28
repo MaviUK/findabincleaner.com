@@ -21,7 +21,7 @@ type Cleaner = {
 
 type Props = {
   cleaner: Cleaner;
-  postcodeHint?: string;  // kept for compatibility (not shown per request)
+  postcodeHint?: string;  // kept for compatibility
   preview?: boolean;      // kept for compatibility
   showPayments?: boolean; // default true
 };
@@ -39,19 +39,20 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
       {/* Top row */}
       <div className="flex items-start gap-5">
-        {/* Left: BIG logo + name (no subtext under logo) */}
+        {/* Left: BIG logo + name (logo same height as 3 stacked buttons) */}
         <div className="flex items-start gap-5 flex-1 min-w-0">
-          {cleaner.logo_url ? (
-            <img
-              src={cleaner.logo_url}
-              alt={`${cleaner.business_name} logo`}
-              className="h-20 w-20 md:h-24 md:w-24 rounded-2xl object-contain bg-black/5 p-2"
-            />
-          ) : (
-            <div className="h-20 w-20 md:h-24 md:w-24 rounded-2xl bg-black/5 grid place-items-center">
+          <div className="bg-black/5 rounded-2xl overflow-hidden grid place-items-center
+                          h-[128px] w-[128px] sm:h-[136px] sm:w-[136px]">
+            {cleaner.logo_url ? (
+              <img
+                src={cleaner.logo_url}
+                alt={`${cleaner.business_name} logo`}
+                className="max-h-full max-w-full object-contain p-2"
+              />
+            ) : (
               <span className="text-2xl font-semibold">{cleaner.business_name?.charAt(0) ?? "C"}</span>
-            </div>
-          )}
+            )}
+          </div>
 
           <div className="min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
@@ -103,14 +104,18 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
           </div>
         </div>
 
-        {/* Right: actions STACKED, right-aligned */}
-        <div className="flex flex-col items-end gap-2 sm:gap-3 shrink-0">
+        {/* Right: actions STACKED, same width, right-aligned
+            - mobile: gap-1 -> total height 128px (3*40 + 8)
+            - sm+: gap-2 -> total height 136px (3*40 + 16)
+        */}
+        <div className="flex flex-col items-end gap-1 sm:gap-2 shrink-0">
+          {/* Fixed width & height so all buttons match */}
           {contactUrl && (
             <a
               href={contactUrl}
               target={contactUrl.startsWith("http") ? "_blank" : undefined}
               rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] w-full sm:w-auto"
+              className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]"
             >
               Message
             </a>
@@ -120,7 +125,7 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
             <>
               <button
                 type="button"
-                className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50 w-full sm:w-auto"
+                className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
                 onClick={() => setShowPhone(s => !s)}
                 aria-expanded={showPhone}
                 aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
@@ -131,9 +136,9 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
               {showPhone && (
                 <div
                   id={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
-                  className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-full sm:w-auto"
+                  className="rounded-lg bg-black/5 border border-black/10 p-3 text-night-900 flex items-center justify-between gap-3 w-40"
                 >
-                  <span className="font-medium tracking-wide">{prettyPhone(cleaner.phone)}</span>
+                  <span className="font-medium tracking-wide truncate">{prettyPhone(cleaner.phone)}</span>
                   <a
                     className="inline-flex items-center justify-center rounded-full px-3 py-1.5 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]"
                     href={`tel:${digitsOnly(cleaner.phone)}`}
@@ -150,7 +155,7 @@ export default function CleanerCard({ cleaner, showPayments }: Props) {
               href={cleaner.website}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20 w-full sm:w-auto"
+              className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
             </a>
@@ -211,9 +216,9 @@ function PaymentIcon({ kind }: { kind?: string }) {
     case "card_machine":
       return (
         <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-        <rect x="5" y="3" width="14" height="18" rx="2" fill="#0B1B2A" />
-        <rect x="7" y="6" width="10" height="2" fill="#fff" />
-        <rect x="7" y="10" width="10" height="6" fill="#37D9E6" />
+          <rect x="5" y="3" width="14" height="18" rx="2" fill="#0B1B2A" />
+          <rect x="7" y="6" width="10" height="2" fill="#fff" />
+          <rect x="7" y="10" width="10" height="6" fill="#37D9E6" />
         </svg>
       );
     case "cash":
