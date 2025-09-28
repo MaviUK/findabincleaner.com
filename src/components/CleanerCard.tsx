@@ -41,9 +41,9 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
       {/* Top row */}
       <div className="flex items-stretch gap-5">
-        {/* Left: LOGO panel + content column */}
+        {/* Left: logo panel + content */}
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
-          {/* Logo panel stretches full card height */}
+          {/* Logo stretches full card height */}
           <div className="bg-black/5 rounded-2xl overflow-hidden self-stretch w-[128px] sm:w-[136px] flex items-center justify-center">
             {cleaner.logo_url ? (
               <img
@@ -58,14 +58,13 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
             )}
           </div>
 
-          {/* Content column: name/rating + services; payments pinned to bottom */}
+          {/* Content column */}
           <div className="min-w-0 flex flex-col">
             {/* Name + rating */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="truncate text-xl md:text-2xl font-bold">
                 {cleaner.business_name}
               </div>
-
               {isFiniteNumber(cleaner.rating_avg) && (
                 <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-xs md:text-sm ring-1 ring-blue-200">
                   <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
@@ -76,16 +75,19 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
               )}
             </div>
 
-            {/* Services (above payments) */}
+            {/* Services — with title (NOT pinned to bottom) */}
             {cleaner.service_types?.length ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {cleaner.service_types.map((s, i) => (
-                  <ServicePill key={`svc-${i}`} kind={s} />
-                ))}
+              <div className="pt-3">
+                <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {cleaner.service_types.map((s, i) => (
+                    <ServicePill key={`svc-${i}`} kind={s} />
+                  ))}
+                </div>
               </div>
             ) : null}
 
-            {/* Payments — title + pills, aligned to bottom via mt-auto */}
+            {/* Payments — title + pills, pinned to bottom */}
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
               <div className="mt-auto pt-3 border-t border-black/5">
                 <div className="text-sm font-medium text-night-800 mb-1.5">
@@ -101,7 +103,7 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
           </div>
         </div>
 
-        {/* Right: actions STACKED, same width, vertically centered & right-aligned */}
+        {/* Right: stacked actions, centered vertically & right-aligned */}
         <div className="self-stretch flex flex-col items-end justify-center gap-1 sm:gap-2 shrink-0">
           {contactUrl && (
             <a
