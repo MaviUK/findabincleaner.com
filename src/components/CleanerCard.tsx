@@ -49,7 +49,7 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
               <img
                 src={cleaner.logo_url}
                 alt={`${cleaner.business_name} logo`}
-                className="max-h-full max-w-full object-contain p-2 rounded-x3"
+                className="max-h-full max-w-full object-contain p-2 rounded-2xl"
               />
             ) : (
               <span className="text-2xl font-semibold">
