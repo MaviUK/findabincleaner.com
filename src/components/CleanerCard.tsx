@@ -3,7 +3,6 @@ import { useMemo, useState } from "react";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
 
-
 // Broad type to match Settings/ResultsList usage
 export type Cleaner = {
   id: string;
@@ -42,8 +41,9 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
       {/* Top row */}
       <div className="flex items-start gap-5">
-        {/* Left: BIG logo + name (logo height matches 3 stacked buttons) */}
+        {/* Left: BIG logo + content column */}
         <div className="flex items-start gap-5 flex-1 min-w-0">
+          {/* Logo box — height matches the 3 stacked buttons */}
           <div className="bg-black/5 rounded-2xl overflow-hidden grid place-items-center h-[128px] w-[128px] sm:h-[136px] sm:w-[136px]">
             {cleaner.logo_url ? (
               <img
@@ -58,7 +58,9 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
             )}
           </div>
 
-          <div className="min-w-0">
+          {/* Content column: name, rating, services, and payments pinned to bottom */}
+          <div className="min-w-0 flex flex-col min-h-[128px] sm:min-h-[136px]">
+            {/* Name + rating */}
             <div className="flex items-center gap-3 flex-wrap">
               <div className="truncate text-xl md:text-2xl font-bold">
                 {cleaner.business_name}
@@ -74,21 +76,26 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
               )}
             </div>
 
-            {/* Payment chips — reusing shared PaymentPill that points to /public/payment-icons */}
-            {(showPayments ?? true) && cleaner.payment_methods?.length ? (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {cleaner.payment_methods.map((m, i) => (
-                  <PaymentPill key={`pay-${i}`} kind={m} />
-                ))}
-              </div>
-            ) : null}
-
-            {/* Service chips */}
+            {/* Services (above payments) */}
             {cleaner.service_types?.length ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {cleaner.service_types.map((s, i) => (
                   <ServicePill key={`svc-${i}`} kind={s} />
                 ))}
+              </div>
+            ) : null}
+
+            {/* Payments — title + pills, aligned to bottom via mt-auto */}
+            {(showPayments ?? true) && cleaner.payment_methods?.length ? (
+              <div className="mt-auto pt-3 border-t border-black/5">
+                <div className="text-sm font-medium text-night-800 mb-1.5">
+                  Payments Accepted
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {cleaner.payment_methods.map((m, i) => (
+                    <PaymentPill key={`pay-${i}`} kind={m} />
+                  ))}
+                </div>
               </div>
             ) : null}
           </div>
