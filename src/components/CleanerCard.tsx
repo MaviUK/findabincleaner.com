@@ -3,22 +3,18 @@ import { useMemo, useState } from "react";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
 
-// Broad type to match Settings/ResultsList usage
 export type Cleaner = {
   id: string;
   business_name: string;
   logo_url?: string | null;
   distance_m?: number | null;
-
   website?: string | null;
   phone?: string | null;
   whatsapp?: string | null;
-
   rating_avg?: number | null;
   rating_count?: number | null;
-
-  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  service_types?: string[] | null;   // ["domestic","commercial"]
+  payment_methods?: string[] | null;
+  service_types?: string[] | null;
 };
 
 export type CleanerCardProps = {
@@ -39,17 +35,16 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-4 sm:p-5">
-      {/* Top row */}
       <div className="flex items-stretch gap-5">
         {/* Left: logo panel + content */}
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
           {/* Logo stretches full card height */}
-          <div className="bg-black/5 rounded-[28px] overflow-hidden self-stretch w-[164px] sm:w-[184px] flex items-center justify-center">
+          <div className="bg-black/5 rounded-3xl overflow-hidden self-stretch w-[164px] sm:w-[184px] flex items-center justify-center">
             {cleaner.logo_url ? (
               <img
                 src={cleaner.logo_url}
                 alt={`${cleaner.business_name} logo`}
-                className="max-h-full max-w-full object-contain p-2 rounded-[28px]"
+                className="max-h-full max-w-full object-contain p-2 rounded-3xl"
               />
             ) : (
               <span className="text-2xl font-semibold">
@@ -75,31 +70,30 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
               )}
             </div>
 
-            {/* Services — with title (NOT pinned to bottom) */}
-            {cleaner.service_types?.length ? (
-              <div className="pt-3">
-                <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {cleaner.service_types.map((s, i) => (
-                    <ServicePill key={`svc-${i}`} kind={s} />
-                  ))}
+            {/* Bottom cluster: Services + Payments together with tight spacing */}
+            <div className="mt-auto pt-3 border-t border-black/5 space-y-2">
+              {cleaner.service_types?.length ? (
+                <div>
+                  <div className="text-sm font-medium text-night-800 mb-1">Services</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {cleaner.service_types.map((s, i) => (
+                      <ServicePill key={`svc-${i}`} kind={s} />
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
 
-            {/* Payments — title + pills, pinned to bottom */}
-            {(showPayments ?? true) && cleaner.payment_methods?.length ? (
-              <div className="mt-auto pt-3 border-t border-black/5">
-                <div className="text-sm font-medium text-night-800 mb-1.5">
-                  Payments Accepted
+              {(showPayments ?? true) && cleaner.payment_methods?.length ? (
+                <div>
+                  <div className="text-sm font-medium text-night-800 mb-1">Payments Accepted</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {cleaner.payment_methods.map((m, i) => (
+                      <PaymentPill key={`pay-${i}`} kind={m} />
+                    ))}
+                  </div>
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {cleaner.payment_methods.map((m, i) => (
-                    <PaymentPill key={`pay-${i}`} kind={m} />
-                  ))}
-                </div>
-              </div>
-            ) : null}
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -121,7 +115,7 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
               <button
                 type="button"
                 className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
-                onClick={() => setShowPhone(s => !s)}
+                onClick={() => setShowPhone((s) => !s)}
                 aria-expanded={showPhone}
                 aria-controls={`phone_${slugify(cleaner.id || cleaner.business_name)}`}
               >
