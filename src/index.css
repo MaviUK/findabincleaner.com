@@ -16,3 +16,13 @@ body { @apply bg-ink-50 text-ink-900 font-body; }
 .section-title { @apply text-lg font-semibold text-ink-800; }
 .muted { @apply text-sm text-ink-500; }
 .link { @apply text-brand-700 hover:text-brand-800 underline underline-offset-2; }
+
+@layer components {
+  /* Bold, rounded red CTA like Checkatrade */
+  .btn-cta { @apply inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935]; }
+
+  /* White, rounded outline button with blue border */
+  .btn-outline { @apply inline-flex items-center justify-center rounded-full px-4 py-2 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50; }
+}
+
+
