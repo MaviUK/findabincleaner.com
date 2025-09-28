@@ -18,10 +18,8 @@ export type Cleaner = {
   rating_avg?: number | null;
   rating_count?: number | null;
 
-  // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  payment_methods?: string[] | null;
-  // ["domestic","commercial"]
-  service_types?: string[] | null;
+  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
+  service_types?: string[] | null;   // ["domestic","commercial"]
 };
 
 export type CleanerCardProps = {
@@ -30,9 +28,7 @@ export type CleanerCardProps = {
   preview?: boolean;
   showPayments?: boolean;
 
-  /** Optional custom handler to send the enquiry (email). */
   onSendEnquiry?: (payload: EnquiryPayload) => Promise<void>;
-  /** Optional endpoint for sending email if you’re not passing onSendEnquiry. Defaults to '/.netlify/functions/sendEnquiry'. */
   emailEndpoint?: string;
 };
 
@@ -74,7 +70,7 @@ export default function CleanerCard({
     return () => window.removeEventListener("resize", check);
   }, []);
 
-  // Autocomplete (guard if Places not loaded)
+  // Places Autocomplete (guard if script not loaded)
   const autocompleteRef = useRef<any>(null);
   const hasPlaces =
     typeof window !== "undefined" &&
@@ -89,11 +85,11 @@ export default function CleanerCard({
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-3 sm:p-5">
-      {/* Mobile: vertical; Desktop: two columns */}
+      {/* Mobile: stack vertically; Desktop: two columns */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5">
-        {/* Left: logo panel + content */}
+        {/* Left block: Logo + content */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-stretch sm:gap-5 flex-1 min-w-0">
-          {/* Logo: mobile banner, desktop fixed panel */}
+          {/* Logo: banner on mobile; fixed panel on desktop */}
           <div className="w-full h-36 sm:h-auto sm:self-stretch sm:w-[184px] rounded-2xl sm:rounded-3xl overflow-hidden">
             {cleaner.logo_url ? (
               <img
@@ -110,9 +106,9 @@ export default function CleanerCard({
             )}
           </div>
 
-          {/* Content column: top = name+services, bottom = payments */}
-          <div className="min-w-0 flex flex-col justify-between">
-            {/* TOP: Business name + rating */}
+          {/* Content: don't force equal height on mobile */}
+          <div className="min-w-0 flex flex-col gap-3 sm:gap-0 sm:justify-between">
+            {/* TOP: name + rating */}
             <div>
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="truncate text-lg sm:text-xl md:text-2xl font-bold">
@@ -147,9 +143,9 @@ export default function CleanerCard({
               ) : null}
             </div>
 
-            {/* BOTTOM: Payments */}
+            {/* Payments (now just follows content on mobile, no bottom pin) */}
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
-              <div className="pt-3 mt-1 border-t border-black/5">
+              <div className="pt-2 sm:pt-3 border-t border-black/5">
                 <div className="text-sm font-medium text-night-800 mb-1.5">
                   Payments Accepted
                 </div>
@@ -163,8 +159,8 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Actions: mobile full-width, desktop right column */}
-        <div className="sm:self-stretch flex flex-col items-stretch sm:items-end justify-center gap-2 sm:gap-2 shrink-0">
+        {/* Actions: full-width on mobile; right column on desktop */}
+        <div className="sm:self-stretch flex flex-col items-stretch sm:items-end justify-start sm:justify-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => setShowEnquiry(true)}
@@ -173,7 +169,6 @@ export default function CleanerCard({
             Message
           </button>
 
-          {/* Phone button: toggles to show number inside the same control */}
           {cleaner.phone && (
             <>
               {!showPhone ? (
@@ -211,23 +206,10 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* Enquiry Modal */}
+      {/* Enquiry Modal (mobile sheet with scrollable body) */}
       {showEnquiry && (
-        <div
-          className="fixed inset-0 z-40"
-          aria-labelledby="enquiry-title"
-          role="dialog"
-          aria-modal="true"
-        >
-          {/* Dim background */}
-          <div
-            className="absolute inset-0 bg-black/40"
-            onClick={() => setShowEnquiry(false)}
-          />
-
-          {/* Panel wrapper:
-              - mobile: full height sheet (bottom), scrollable
-              - desktop: centered dialog */}
+        <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-labelledby="enquiry-title">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setShowEnquiry(false)} />
           <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
             <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
               {/* Sticky header */}
@@ -253,10 +235,7 @@ export default function CleanerCard({
               </div>
 
               {/* Scrollable content */}
-              <form
-                className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
-                onSubmit={(e) => e.preventDefault()}
-              >
+              <form className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4" onSubmit={(e) => e.preventDefault()}>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="flex flex-col gap-1.5">
                     <label className="text-sm font-medium">Name</label>
@@ -347,7 +326,7 @@ export default function CleanerCard({
                 )}
               </form>
 
-              {/* Sticky footer (buttons) */}
+              {/* Sticky footer */}
               <div className="sticky bottom-0 z-10 bg-white border-t border-black/5 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom,0)+12px)]">
                 <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
                   {isMobile && cleaner.whatsapp && (
@@ -375,8 +354,7 @@ export default function CleanerCard({
                     onClick={async () => {
                       setError(null);
                       if (!name.trim()) return setError("Please add your name.");
-                      if (!message.trim())
-                        return setError("Please add a short message.");
+                      if (!message.trim()) return setError("Please add a short message.");
                       try {
                         setSubmitting("email");
                         const payload: EnquiryPayload = {
@@ -393,9 +371,7 @@ export default function CleanerCard({
                         else await defaultSendEmail(payload, emailEndpoint);
                         setShowEnquiry(false);
                       } catch (e: any) {
-                        setError(
-                          e?.message || "Sorry, sending failed. Please try again."
-                        );
+                        setError(e?.message || "Sorry, sending failed. Please try again.");
                       } finally {
                         setSubmitting(null);
                       }
@@ -406,8 +382,7 @@ export default function CleanerCard({
                   </button>
                 </div>
                 <p className="text-xs text-night-600 pt-2">
-                  We’ll include your details in the message so{" "}
-                  {cleaner.business_name} can reply.
+                  We’ll include your details in the message so {cleaner.business_name} can reply.
                 </p>
               </div>
             </div>
@@ -423,9 +398,7 @@ function detectIsMobile() {
   if (typeof window === "undefined" || typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
   const touchPoints = (navigator as any).maxTouchPoints || 0;
-  const coarse =
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches;
+  const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
   const iPadOS = /Macintosh/.test(ua) && touchPoints > 1; // iPadOS 13+ Safari
   return mobileUA || iPadOS || coarse;
@@ -448,10 +421,8 @@ function normalizeWebsite(raw: string) {
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44"))
-    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
-  if (d.length === 11 && d.startsWith("0"))
-    return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
 function isFiniteNumber(x: unknown): x is number {
@@ -460,14 +431,7 @@ function isFiniteNumber(x: unknown): x is number {
 
 function buildWhatsAppUrl(
   wa: string,
-  data: {
-    business: string;
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    message: string;
-  }
+  data: { business: string; name: string; address: string; phone: string; email: string; message: string }
 ) {
   const base = normalizeWhatsApp(wa);
   const text =
