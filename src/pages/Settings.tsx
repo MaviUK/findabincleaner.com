@@ -1,7 +1,7 @@
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
-import CleanerCard from "../components/CleanerCard";
+import CleanerCard from "@/components/CleanerCard";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
 
 type Cleaner = {
@@ -318,22 +318,22 @@ export default function Settings() {
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
-        <CleanerCard
-          preview={false}
-          showPayments={true}
-          postcodeHint=""
-          cleaner={{
-            id: cleaner?.id ?? "preview",
-            business_name: businessName || "Business name",
-            logo_url: logoPreview,
-            website,
-            phone,
-            whatsapp,                    // NEW
-            distance_m: null,
-            payment_methods: paymentMethods,
-            service_types: serviceTypes,
-          }}
-        />
+       <CleanerCard
+  preview
+  showPayments
+  cleaner={{
+    id: form.id,
+    business_name: form.business_name,
+    logo_url: form.logo_url,
+    website: form.website,
+    phone: form.phone,
+    whatsapp: form.whatsapp,
+    payment_methods: form.payment_methods,   // array from the pills
+    service_types: form.service_types,       // ["domestic","commercial"]
+    rating_avg: form.rating_avg ?? null,
+    rating_count: form.rating_count ?? null,
+  }}
+/>
 
         <p className="text-xs text-gray-500 mt-3">
           This matches how your listing appears in search results.
