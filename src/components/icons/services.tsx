@@ -5,8 +5,8 @@ export const SERVICE_LABELS: Record<string, string> = {
 };
 
 const FILES: Record<string, string> = {
-  domestic: "/service-icons/house.svg",       // change if different
-  commercial: "/service-icons/briefcase.svg", // change if different
+  domestic: "/service-icons/domestic.svg",       // change if different
+  commercial: "/service-icons/commercial.svg", // change if different
 };
 
 export function ServicePill({ kind }: { kind: string }) {
