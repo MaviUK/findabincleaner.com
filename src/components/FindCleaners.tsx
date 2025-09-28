@@ -3,7 +3,8 @@ import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 export type FindCleanersProps = {
-  onSearchComplete?: (results: MatchOut[], postcode: string) => void;
+  // now also returns a locality/town derived from the postcode lookup
+  onSearchComplete?: (results: MatchOut[], postcode: string, locality?: string) => void;
 };
 
 // ---- RPC shapes (wide to be safe) ----
@@ -78,6 +79,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [locality, setLocality] = useState<string>(""); // NEW: for “in Town” wording
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
@@ -92,7 +94,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode -> lat/lng
+      // 1) Geocode postcode -> lat/lng (+ town/locality)
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -104,6 +106,15 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       }
       const lat = Number(data.result.latitude);
       const lng = Number(data.result.longitude);
+
+      // Best-effort locality label for the UI
+      const town: string =
+        data.result.post_town ||
+        data.result.admin_district ||
+        data.result.parliamentary_constituency ||
+        data.result.region ||
+        "";
+      setLocality(town);
 
       // 2) Try polygon-based RPC first (point-in-service-area)
       let list: MatchIn[] = [];
@@ -154,7 +165,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       }));
 
       if (!onSearchComplete) setResults(normalized);
-      onSearchComplete?.(normalized, pc);
+      onSearchComplete?.(normalized, pc, town); // include locality for parent views
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError(e?.message || "Something went wrong.");
@@ -252,7 +263,10 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           })}
 
           {!loading && !error && results.length === 0 && (
-            <li className="text-gray-500">No cleaners found yet.</li>
+            <li className="text-gray-500">
+              No cleaners found near {postcode.trim().toUpperCase()}
+              {locality ? `, in ${locality}` : ""}.
+            </li>
           )}
         </ul>
       )}
