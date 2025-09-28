@@ -24,6 +24,21 @@ const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
+// shape the CleanerCard expects (lightweight local type)
+type CleanerCardShape = {
+  id: string;
+  business_name: string;
+  logo_url?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  whatsapp?: string | null;
+  rating_avg?: number | null;
+  rating_count?: number | null;
+  distance_m?: number | null;
+  payment_methods?: string[];
+  service_types?: string[];
+};
+
 // Resize an image file to a centered, covered 300x300 PNG
 async function resizeTo300PNG(file: File): Promise<Blob> {
   const url = URL.createObjectURL(file);
@@ -141,6 +156,20 @@ function ServiceTypePills({
     </div>
   );
 }
+
+// coerce unknown/CSV/JSON values to a string[]
+const toArr = (v: any): string[] => {
+  if (!v) return [];
+  if (Array.isArray(v)) return v as string[];
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+};
 
 /* ---------- page ---------- */
 export default function Settings() {
@@ -306,6 +335,24 @@ export default function Settings() {
 
   const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
 
+  // Build the preview object for the CleanerCard
+  const previewCleaner: CleanerCardShape = useMemo(
+    () => ({
+      id: cleaner?.id || "preview",
+      business_name: businessName || "Business name",
+      logo_url: logoPreview || undefined,
+      website: website || null,
+      phone: phone || null,
+      whatsapp: whatsapp || null,
+      rating_avg: null,
+      rating_count: null,
+      distance_m: null,
+      payment_methods: toArr(paymentMethods),
+      service_types: toArr(serviceTypes),
+    }),
+    [cleaner?.id, businessName, logoPreview, website, phone, whatsapp, paymentMethods, serviceTypes]
+  );
+
   if (loading) {
     return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
   }
@@ -318,7 +365,9 @@ export default function Settings() {
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
-
+        <div className="rounded-xl border border-black/5 bg-white p-4">
+          <CleanerCard cleaner={previewCleaner as any} showPayments />
+        </div>
 
         <p className="text-xs text-gray-500 mt-3">
           This matches how your listing appears in search results.
