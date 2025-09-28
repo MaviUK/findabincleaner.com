@@ -1,7 +1,7 @@
 // src/components/CleanerCard.tsx
 import { useMemo, useState } from "react";
-import { PaymentPill } from "../icons/payments";
-import { ServicePill } from "../icons/services";
+import { PaymentPill } from "./icons/payments";
+import { ServicePill } from "./icons/services";
 
 
 // Broad type to match Settings/ResultsList usage
