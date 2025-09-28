@@ -318,22 +318,7 @@ export default function Settings() {
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
-       <CleanerCard
-  preview
-  showPayments
-  cleaner={{
-    id: form.id,
-    business_name: form.business_name,
-    logo_url: form.logo_url,
-    website: form.website,
-    phone: form.phone,
-    whatsapp: form.whatsapp,
-    payment_methods: form.payment_methods,   // array from the pills
-    service_types: form.service_types,       // ["domestic","commercial"]
-    rating_avg: form.rating_avg ?? null,
-    rating_count: form.rating_count ?? null,
-  }}
-/>
+
 
         <p className="text-xs text-gray-500 mt-3">
           This matches how your listing appears in search results.
