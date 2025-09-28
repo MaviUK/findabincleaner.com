@@ -78,10 +78,15 @@ export default function CleanerCard({ cleaner, showPayments }: CleanerCardProps)
 
             {/* Services (above payments) */}
             {cleaner.service_types?.length ? (
+            <div className="mt-auto pt-3 border-t border-black/5">
+                <div className="text-sm font-medium text-night-800 mb-1.5">
+                  Services
+                </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {cleaner.service_types.map((s, i) => (
                   <ServicePill key={`svc-${i}`} kind={s} />
                 ))}
+              </div>
               </div>
             ) : null}
 
