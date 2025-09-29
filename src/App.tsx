@@ -29,12 +29,9 @@ function ProtectedRoute({
   children: ReactNode;
 }) {
   const location = useLocation();
-
   if (!authReady) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
-      </div>
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
     );
   }
   if (!user) {
@@ -43,7 +40,7 @@ function ProtectedRoute({
   return <>{children}</>;
 }
 
-/** Public-only pages (e.g., /login). If already logged in, go to dashboard. */
+/** Public-only pages */
 function PublicOnlyRoute({
   user,
   authReady,
@@ -55,9 +52,7 @@ function PublicOnlyRoute({
 }) {
   if (!authReady) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
-      </div>
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
     );
   }
   if (user) return <Navigate to="/dashboard" replace />;
@@ -65,28 +60,14 @@ function PublicOnlyRoute({
 }
 
 export default function App() {
-  // start as null (logged out) until we know otherwise
   const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false); // becomes true after INITIAL_SESSION
+  const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
-    // Single source of truth: onAuthStateChange fires INITIAL_SESSION immediately
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      // console.debug("[auth]", event, session?.user?.id); // uncomment to debug
-      if (
-        event === "INITIAL_SESSION" ||
-        event === "SIGNED_IN" ||
-        event === "TOKEN_REFRESHED"
-      ) {
-        setUser(session?.user ?? null);
-        setAuthReady(true);
-      } else if (event === "SIGNED_OUT" || event === "USER_DELETED") {
-        setUser(null);
-        setAuthReady(true);
-      } else {
-        // For other events, ensure we don't hang
-        setAuthReady((r) => r || event !== null);
-      }
+    // One listener handles everything (INITIAL_SESSION + future changes)
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthReady(true);
     });
 
     return () => sub.subscription.unsubscribe();
@@ -96,7 +77,7 @@ export default function App() {
     <Router>
       <Layout>
         <Routes>
-          {/* Root: WAIT for authReady before deciding */}
+          {/* Root: wait for auth, then route */}
           <Route
             path="/"
             element={
@@ -108,7 +89,6 @@ export default function App() {
             }
           />
 
-          {/* Public-only login */}
           <Route
             path="/login"
             element={
@@ -118,7 +98,6 @@ export default function App() {
             }
           />
 
-          {/* Private routes */}
           <Route
             path="/dashboard"
             element={
@@ -136,14 +115,10 @@ export default function App() {
             }
           />
 
-          {/* Optional public page */}
           <Route path="/landing" element={<Landing />} />
-
-          {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </Router>
   );
 }
- 
