@@ -133,60 +133,66 @@ export default function Onboarding() {
   }
 
   async function accept() {
-    try {
-      setSaving(true);
-      setErr(null);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) throw new Error("Not signed in.");
+  try {
+    setSaving(true);
+    setErr(null);
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error("Not signed in.");
 
-      // Look up existing cleaner row
-      const { data: row, error: fetchErr } = await supabase
+    // 1) Try to find an existing cleaner row for this user
+    let { data: row, error: fetchErr } = await supabase
+      .from("cleaners")
+      .select("id")
+      .eq("user_id", session.user.id)
+      .maybeSingle();
+    if (fetchErr) throw fetchErr;
+
+    // 2) If missing, create it — NO .select() here (avoid the .single() trap)
+    if (!row?.id) {
+      const fallbackName =
+        (session.user.user_metadata as any)?.business_name ??
+        (session.user.user_metadata as any)?.name ??
+        (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
+
+      // Use upsert on user_id to prevent accidental duplicates
+      const { error: insErr } = await supabase
+        .from("cleaners")
+        .upsert(
+          { user_id: session.user.id, business_name: String(fallbackName).slice(0, 120) },
+          { onConflict: "user_id", ignoreDuplicates: false }
+        );
+      if (insErr) throw insErr;
+
+      // Re-fetch the id (separate SELECT so RLS SELECT policies apply)
+      const again = await supabase
         .from("cleaners")
         .select("id")
         .eq("user_id", session.user.id)
         .maybeSingle();
-      if (fetchErr) throw fetchErr;
-
-      // Create if missing — ensure NOT NULL business_name with a safe fallback
-      let cleanerId = row?.id as string | null;
-      if (!cleanerId) {
-        const fallbackName =
-          (session.user.user_metadata as any)?.business_name ??
-          (session.user.user_metadata as any)?.name ??
-          (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
-
-        const { data: created, error: insErr } = await supabase
-          .from("cleaners")
-          .insert({
-            user_id: session.user.id,
-            business_name: String(fallbackName).slice(0, 120), // trim just in case
-          })
-          .select("id")
-          .single();
-        if (insErr) throw insErr;
-        cleanerId = created!.id;
-      }
-
-      // Mark terms accepted
-      const { error: updErr } = await supabase
-        .from("cleaners")
-        .update({
-          terms_accepted: true,
-          terms_version: TERMS_VERSION,
-          terms_accepted_at: new Date().toISOString(),
-        })
-        .eq("id", cleanerId!);
-
-      if (updErr) throw updErr;
-
-      nav("/settings", { replace: true });
-    } catch (e: any) {
-      console.error(e);
-      setErr(e?.message || "Could not save acceptance.");
-    } finally {
-      setSaving(false);
+      if (again.error) throw again.error;
+      row = again.data;
     }
+
+    // 3) Mark terms accepted
+    const { error: updErr } = await supabase
+      .from("cleaners")
+      .update({
+        terms_accepted: true,
+        terms_version: TERMS_VERSION,
+        terms_accepted_at: new Date().toISOString(),
+      })
+      .eq("id", row!.id);
+    if (updErr) throw updErr;
+
+    nav("/settings", { replace: true });
+  } catch (e: any) {
+    console.error(e);
+    setErr(e?.message || "Could not save acceptance.");
+  } finally {
+    setSaving(false);
   }
+}
+
 
   return (
     <main className="container mx-auto max-w-3xl px-4 py-10 space-y-6">
