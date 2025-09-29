@@ -8,6 +8,9 @@ export const supabase = createClient(url, key, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
-    storageKey: "findabincleaner.auth", // custom key to avoid clashes
+    storageKey: "findabincleaner.auth",
   },
 });
+
+// expose for debugging in DevTools:
+;(window as any).sb = supabase;
