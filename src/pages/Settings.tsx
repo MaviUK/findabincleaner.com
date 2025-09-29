@@ -22,12 +22,11 @@ type Cleaner = {
   service_types?: string[] | null;
 };
 
-const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
+const SERVICE_TYPES = [
   { key: "domestic", label: "Domestic", icon: "🏠" },
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
-// what CleanerCard needs
 type CleanerCardShape = {
   id: string;
   business_name: string;
@@ -42,14 +41,13 @@ type CleanerCardShape = {
   service_types?: string[];
 };
 
-// Resize an image file to a centered, covered 300x300 PNG
 async function resizeTo300PNG(file: File): Promise<Blob> {
   const url = URL.createObjectURL(file);
   try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
       const el = new Image();
-      el.onload = () => resolve(el);
-      el.onerror = reject;
+      el.onload = () => res(el);
+      el.onerror = rej;
       el.src = url;
     });
     const size = 300;
@@ -73,7 +71,6 @@ async function resizeTo300PNG(file: File): Promise<Blob> {
   }
 }
 
-/* ---------- little UI helpers (pills) ---------- */
 function PaymentPills({
   value,
   onChange,
@@ -96,9 +93,7 @@ function PaymentPills({
             <label
               key={m.key}
               className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition ${
-                checked
-                  ? "bg-black text-white border-black"
-                  : "bg-white hover:bg-gray-50 border-gray-300"
+                checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"
               }`}
             >
               <input
@@ -139,9 +134,7 @@ function ServiceTypePills({
             <label
               key={m.key}
               className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition ${
-                checked
-                  ? "bg-black text-white border-black"
-                  : "bg-white hover:bg-gray-50 border-gray-300"
+                checked ? "bg-black text-white border-black" : "bg-white hover:bg-gray-50 border-gray-300"
               }`}
             >
               <input
@@ -160,11 +153,10 @@ function ServiceTypePills({
   );
 }
 
-/* ---------- page ---------- */
 export default function Settings() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const firstRun = searchParams.get("firstRun") === "1";
+  const [params] = useSearchParams();
+  const firstRun = params.get("firstRun") === "1";
 
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
@@ -173,7 +165,6 @@ export default function Settings() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // form fields
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
@@ -184,14 +175,12 @@ export default function Settings() {
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
   const [serviceTypes, setServiceTypes] = useState<string[]>([]);
 
-  // logo state
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [resizedLogo, setResizedLogo] = useState<Blob | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
-
     (async () => {
       try {
         const { data: { session }, error: sErr } = await supabase.auth.getSession();
@@ -201,53 +190,47 @@ export default function Settings() {
           navigate("/login", { replace: true });
           return;
         }
+        if (!mounted) return;
 
         setUserId(session.user.id);
 
-        // Try get existing cleaner row
+        // Try to fetch cleaners; if it fails or is empty, we still render an empty form.
         const { data, error } = await supabase
           .from("cleaners")
           .select("*")
           .eq("user_id", session.user.id)
           .maybeSingle();
 
-        if (error) throw error;
-
-        if (mounted) {
-          if (data) {
-            setCleaner(data as Cleaner);
-            fillForm(data as Cleaner, session.user.email ?? "");
-          } else {
-            // No row yet — show empty form (first-run)
-            setCleaner(null);
-            fillForm(
-              {
-                id: "",
-                user_id: session.user.id,
-                business_name: null,
-                logo_url: null,
-                address: null,
-                phone: null,
-                whatsapp: null,
-                website: null,
-                about: null,
-                contact_email: session.user.email ?? null,
-                payment_methods: [] as string[],
-                service_types: [] as string[],
-              },
-              session.user.email ?? ""
-            );
-          }
+        if (error) {
+          console.warn("cleaners select failed:", error.message);
         }
+
+        const c: Cleaner | null = data ?? null;
+        setCleaner(c);
+
+        // fill form from data or defaults
+        setBusinessName(c?.business_name ?? "");
+        setAddress(c?.address ?? "");
+        setPhone(c?.phone ?? "");
+        setWhatsapp(c?.whatsapp ?? "");
+        setWebsite(c?.website ?? "");
+        setAbout(c?.about ?? "");
+        setContactEmail(c?.contact_email ?? session.user.email ?? "");
+        setLogoPreview(c?.logo_url ?? null);
+        setPaymentMethods(Array.isArray(c?.payment_methods) ? (c!.payment_methods as string[]) : []);
+        setServiceTypes(Array.isArray(c?.service_types) ? (c!.service_types as string[]) : []);
       } catch (e: any) {
-        if (mounted) setErr(e.message || "Failed to load profile.");
+        console.warn(e);
+        setErr(e?.message || "Failed to load profile.");
       } finally {
         if (mounted) setLoading(false);
       }
     })();
 
+    // IMPORTANT: do NOT navigate in an auth subscription (can cause loops)
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      if (!session) navigate("/login", { replace: true });
+      // just clear UI if signed out; let route guards handle redirects
+      if (!session) setUserId(null);
     });
 
     return () => {
@@ -256,33 +239,17 @@ export default function Settings() {
     };
   }, [navigate]);
 
-  function fillForm(c: Cleaner, fallbackEmail: string) {
-    setBusinessName(c.business_name ?? "");
-    setAddress(c.address ?? "");
-    setPhone(c.phone ?? "");
-    setWhatsapp(c.whatsapp ?? "");
-    setWebsite(c.website ?? "");
-    setAbout(c.about ?? "");
-    setContactEmail(c.contact_email ?? fallbackEmail ?? "");
-    setLogoPreview(c.logo_url ?? null);
-    setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
-    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
-  }
-
-  // IMPORTANT: never insert without a business name (avoids NOT NULL violation)
   async function ensureRow(): Promise<string> {
-    if (cleaner && cleaner.id) return cleaner.id;
+    if (cleaner?.id) return cleaner.id;
 
     const name = businessName.trim();
-    if (!name) {
-      throw new Error("Please enter your business name before saving.");
-    }
+    if (!name) throw new Error("Please enter your business name before saving.");
 
     const { data: created, error } = await supabase
       .from("cleaners")
       .insert({
         user_id: userId,
-        business_name: name, // non-null
+        business_name: name,
         address: address || null,
         phone: phone || null,
         whatsapp: whatsapp || null,
@@ -312,7 +279,6 @@ export default function Settings() {
       const { data } = supabase.storage.from("logos").getPublicUrl(path);
       return data.publicUrl;
     } catch (e) {
-      // Non-blocking; still save the rest
       console.warn("Logo upload failed:", e);
       return logoPreview || null;
     }
@@ -323,20 +289,14 @@ export default function Settings() {
     setMsg(null);
     setErr(null);
     try {
-      const {
-        data: { session },
-        error: sErr,
-      } = await supabase.auth.getSession();
+      const { data: { session }, error: sErr } = await supabase.auth.getSession();
       if (sErr) throw sErr;
       if (!session?.user) throw new Error("You are not signed in.");
 
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
-      const payload: Partial<Cleaner> & {
-        payment_methods?: string[];
-        service_types?: string[];
-      } = {
+      const payload: Partial<Cleaner> & { payment_methods?: string[]; service_types?: string[] } = {
         business_name: businessName.trim(),
         address: address || null,
         phone: phone || null,
@@ -358,12 +318,9 @@ export default function Settings() {
       setResizedLogo(null);
       setMsg(firstRun ? "Setup complete." : "Settings saved.");
 
-      if (firstRun) {
-        // First-time setup finished — take them to dashboard
-        navigate("/dashboard", { replace: true });
-      }
+      if (firstRun) navigate("/dashboard", { replace: true });
     } catch (e: any) {
-      setErr(e.message || "Failed to save.");
+      setErr(e?.message || "Failed to save.");
     } finally {
       setSaving(false);
     }
@@ -371,23 +328,19 @@ export default function Settings() {
 
   const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
 
-  // Build the preview object for the CleanerCard
-  const previewCleaner: CleanerCardShape = useMemo(
-    () => ({
-      id: cleaner?.id || "preview",
-      business_name: businessName || "Business name",
-      logo_url: logoPreview || undefined,
-      website: website || null,
-      phone: phone || null,
-      whatsapp: whatsapp || null,
-      rating_avg: null,
-      rating_count: null,
-      distance_m: null,
-      payment_methods: paymentMethods,
-      service_types: serviceTypes,
-    }),
-    [cleaner?.id, businessName, logoPreview, website, phone, whatsapp, paymentMethods, serviceTypes]
-  );
+  const previewCleaner: CleanerCardShape = {
+    id: cleaner?.id || "preview",
+    business_name: businessName || "Business name",
+    logo_url: logoPreview || undefined,
+    website: website || null,
+    phone: phone || null,
+    whatsapp: whatsapp || null,
+    rating_avg: null,
+    rating_count: null,
+    distance_m: null,
+    payment_methods: paymentMethods,
+    service_types: serviceTypes,
+  };
 
   if (loading) {
     return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
@@ -406,22 +359,15 @@ export default function Settings() {
         </div>
       )}
 
-      {/* TOP: Full-width preview using the actual search card */}
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
-
         <div className="rounded-xl border border-black/5 bg-white p-4">
           <CleanerCard cleaner={previewCleaner as any} showPayments />
         </div>
-
-        <p className="text-xs text-gray-500 mt-3">
-          This matches how your listing appears in search results.
-        </p>
+        <p className="text-xs text-gray-500 mt-3">This matches how your listing appears in search results.</p>
       </section>
 
-      {/* BELOW: Two-column form */}
       <div className="grid lg:grid-cols-2 gap-6">
-        {/* LEFT: Core details */}
         <section className="space-y-3 p-4 border rounded-2xl bg-white">
           <label className="block">
             <span className="text-sm">Business name *</span>
@@ -473,9 +419,7 @@ export default function Settings() {
               onChange={(e) => setWhatsapp(e.target.value)}
               placeholder="+447… or full wa.me link"
             />
-            <span className="text-xs text-gray-500">
-              Enter an international number (e.g. +447…) or a full WhatsApp link.
-            </span>
+            <span className="text-xs text-gray-500">Enter an international number (e.g. +447…) or a full WhatsApp link.</span>
           </label>
 
           <label className="block">
@@ -499,7 +443,6 @@ export default function Settings() {
           </label>
         </section>
 
-        {/* RIGHT: Methods, services, logo, save */}
         <section className="space-y-4 p-4 border rounded-2xl bg-white">
           <PaymentPills value={paymentMethods} onChange={setPaymentMethods} />
           <ServiceTypePills value={serviceTypes} onChange={setServiceTypes} />
@@ -511,9 +454,9 @@ export default function Settings() {
               accept="image/*"
               onChange={async (e) => {
                 const f = e.target.files?.[0] || null;
-                setLogoFile(f);
                 setMsg(null);
                 setErr(null);
+                setLogoFile(f);
                 try {
                   if (f) {
                     const blob = await resizeTo300PNG(f);
@@ -554,7 +497,6 @@ export default function Settings() {
         </section>
       </div>
 
-      {/* Danger Zone */}
       <section className="space-y-3 p-4 border rounded-2xl bg-white">
         <h2 className="text-lg font-semibold">Account</h2>
         <AccountDangerZone businessName={businessName || null} />
