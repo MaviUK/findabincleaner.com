@@ -1,3 +1,4 @@
+// src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
   HashRouter as Router,
@@ -19,7 +20,9 @@ import Settings from "./pages/Settings";
 
 function LoadingScreen() {
   return (
-    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
+    <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      Loading…
+    </main>
   );
 }
 
@@ -39,7 +42,7 @@ function ProtectedRoute({
   return <>{children}</>;
 }
 
-/** Public-only pages */
+/** Public-only pages (e.g., /login). If already logged in, go to dashboard. */
 function PublicOnlyRoute({
   user,
   ready,
@@ -61,18 +64,15 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    // 1) Fetch current session immediately
+    // 1) Get current session immediately on mount
     (async () => {
-      try {
-        const { data } = await supabase.auth.getSession();
-        if (!mounted) return;
-        setUser(data.session?.user ?? null);
-      } finally {
-        if (mounted) setReady(true);
-      }
+      const { data } = await supabase.auth.getSession();
+      if (!mounted) return;
+      setUser(data.session?.user ?? null);
+      setReady(true);
     })();
 
-    // 2) Subscribe to future auth changes
+    // 2) Subscribe to future changes (login/logout, token refresh)
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUser(session?.user ?? null);
       setReady(true);
@@ -88,7 +88,7 @@ export default function App() {
     <Router>
       <Layout>
         <Routes>
-          {/* Root: wait for ready before deciding */}
+          {/* Root: decide only after ready */}
           <Route
             path="/"
             element={
@@ -100,6 +100,7 @@ export default function App() {
             }
           />
 
+          {/* Public-only login */}
           <Route
             path="/login"
             element={
@@ -109,6 +110,7 @@ export default function App() {
             }
           />
 
+          {/* Private routes */}
           <Route
             path="/dashboard"
             element={
@@ -126,7 +128,10 @@ export default function App() {
             }
           />
 
+          {/* Optional public page */}
           <Route path="/landing" element={<Landing />} />
+
+          {/* Fallback */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
