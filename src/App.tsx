@@ -18,6 +18,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 
+/* --- Small loading UI while auth bootstraps --- */
 function LoadingScreen() {
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
@@ -26,7 +27,7 @@ function LoadingScreen() {
   );
 }
 
-/** Guard for private pages */
+/* --- Guard for private pages --- */
 function ProtectedRoute({
   user,
   ready,
@@ -42,7 +43,7 @@ function ProtectedRoute({
   return <>{children}</>;
 }
 
-/** Public-only pages (e.g., /login). If already logged in, go to dashboard. */
+/* --- Public-only pages (e.g., /login) --- */
 function PublicOnlyRoute({
   user,
   ready,
@@ -62,33 +63,25 @@ export default function App() {
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-
-    // 1) Get current session immediately on mount
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!mounted) return;
-      setUser(data.session?.user ?? null);
-      setReady(true);
-    })();
-
-    // 2) Subscribe to future changes (login/logout, token refresh)
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      setUser(session?.user ?? null);
-      setReady(true);
+    // IMPORTANT: rely on INITIAL_SESSION so OAuth callback can complete
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "INITIAL_SESSION") {
+        setUser(session?.user ?? null);
+        setReady(true); // decide routes only after initial session is known
+      } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
+        setUser(session?.user ?? null);
+      } else if (event === "SIGNED_OUT") {
+        setUser(null);
+      }
     });
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   return (
     <Router>
       <Layout>
         <Routes>
-          {/* Root: decide only after ready */}
+          {/* Root: wait for `ready` before choosing */}
           <Route
             path="/"
             element={
