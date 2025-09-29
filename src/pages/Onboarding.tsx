@@ -8,11 +8,11 @@ const TERMS_VERSION = "2025-09-29";
 // You can replace this with a richer component or fetch from /#/terms if you prefer.
 const TermsContent = () => (
   <div className="prose max-w-none">
-    <h2>Find a Bin Cleaner – Business Terms & Conditions</h2>
+    <h2>Cleenly Marketplace – Business Terms & Conditions</h2>
     <p><strong>Last updated:</strong> 29 September 2025</p>
 
     <p>
-      These Terms govern your use of the Find a Bin Cleaner service. By creating an
+      These Terms govern your use of the Cleenly Marketplace. By creating an
       account or listing your business, you agree to these Terms.
     </p>
 
@@ -91,7 +91,7 @@ const TermsContent = () => (
       <li>England &amp; Wales law, courts of England &amp; Wales have exclusive jurisdiction.</li>
     </ul>
 
-    <p><strong>Contact:</strong> support@findabincleaner.netlify.app</p>
+    <p><strong>Contact:</strong> cleenlymarketplace@gmail.com</p>
     <p className="text-sm text-gray-500">
       Version: <code>v{TERMS_VERSION}</code>
     </p>
