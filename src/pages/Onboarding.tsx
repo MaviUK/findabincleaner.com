@@ -1,228 +1,207 @@
-// src/pages/Onboarding.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+import { supabase } from "@/lib/supabase";
 
-const TERMS_VERSION = "2025-09-29";
+// keep in one place so you can bump this when T&Cs change
+const TERMS_VERSION = "v2025-09-29";
 
-// You can replace this with a richer component or fetch from /#/terms if you prefer.
-const TermsContent = () => (
-  <div className="prose max-w-none">
-    <h2>Cleenly Marketplace – Business Terms & Conditions</h2>
-    <p><strong>Last updated:</strong> 29 September 2025</p>
-
-    <p>
-      These Terms govern your use of the Cleenly Marketplace. By creating an
-      account or listing your business, you agree to these Terms.
-    </p>
-
-    <h3>1. Using the Service</h3>
-    <ul>
-      <li>You must be at least 18 and authorised to act for your business.</li>
-      <li>You are responsible for your account and all activity under it.</li>
-    </ul>
-
-    <h3>2. Your Listing & Content</h3>
-    <ul>
-      <li>You are responsible for accuracy and legality of your listing.</li>
-      <li>
-        You grant us a non-exclusive, royalty-free licence to host and display your
-        content for operating and promoting the service.
-      </li>
-    </ul>
-
-    <h3>3. Service Areas & Availability</h3>
-    <ul>
-      <li>You must draw and maintain your service areas accurately.</li>
-      <li>We are not party to any contract between you and consumers.</li>
-    </ul>
-
-    <h3>4. Reviews & Ratings</h3>
-    <ul>
-      <li>We may host reviews and may remove abusive or unlawful reviews.</li>
-    </ul>
-
-    <h3>5. Fees</h3>
-    <ul>
-      <li>Listings are currently free. We may introduce paid plans with notice.</li>
-    </ul>
-
-    <h3>6. Prohibited Conduct</h3>
-    <ul>
-      <li>No unlawful, infringing, or misleading content or activity.</li>
-      <li>No scraping, reverse-engineering, or service interference.</li>
-    </ul>
-
-    <h3>7. Data Protection & Privacy</h3>
-    <ul>
-      <li>See our Privacy Notice. You control any off-platform customer data.</li>
-    </ul>
-
-    <h3>8. Availability & Changes</h3>
-    <ul>
-      <li>The service is provided “as is”. We may update or discontinue features.</li>
-    </ul>
-
-    <h3>9. Liability</h3>
-    <ul>
-      <li>We are not liable for your services to consumers.</li>
-      <li>
-        To the extent permitted by law, we exclude indirect/consequential losses.
-        Our total liability is limited to £100 or fees paid in the prior 12 months.
-      </li>
-    </ul>
-
-    <h3>10. Indemnity</h3>
-    <ul>
-      <li>
-        You agree to indemnify us for claims arising from your listing, services, or
-        breach of these Terms.
-      </li>
-    </ul>
-
-    <h3>11. Termination</h3>
-    <ul>
-      <li>You may delete your account at any time.</li>
-      <li>We may suspend or terminate for breach or legal reasons.</li>
-    </ul>
-
-    <h3>12. Governing Law</h3>
-    <ul>
-      <li>England &amp; Wales law, courts of England &amp; Wales have exclusive jurisdiction.</li>
-    </ul>
-
-    <p><strong>Contact:</strong> cleenlymarketplace@gmail.com</p>
-    <p className="text-sm text-gray-500">
-      Version: <code>v{TERMS_VERSION}</code>
-    </p>
-  </div>
-);
-
-export default function Onboarding() {
-  const nav = useNavigate();
-  const [checked, setChecked] = useState(false);
-  const [scrolledEnd, setScrolledEnd] = useState(false);
+export default function Onboard() {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checked, setChecked] = useState(false);
+  const [scrolledToEnd, setScrolledToEnd] = useState(false);
 
-  // If already accepted, bounce to settings
+  const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+
+  // Fetch user and short-circuit if already accepted
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) { nav("/login", { replace: true }); return; }
+      setLoading(true);
+      setError(null);
+      const {
+        data: { user },
+        error: uErr,
+      } = await supabase.auth.getUser();
 
-      const { data: me, error } = await supabase
-        .from("cleaners")
-        .select("id, terms_accepted, terms_version")
-        .eq("user_id", session.user.id)
+      if (uErr) {
+        if (!cancelled) setError(uErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!user) {
+        // no session, kick to login
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      // check profile for terms acceptance
+      const { data: profile, error: pErr } = await supabase
+        .from("profiles")
+        .select("id, terms_version, terms_accepted_at")
+        .eq("id", user.id)
         .maybeSingle();
 
-      if (!error && me?.terms_accepted && me.terms_version === TERMS_VERSION) {
-        nav("/settings", { replace: true });
+      if (pErr) {
+        if (!cancelled) setError(pErr.message);
+        setLoading(false);
+        return;
       }
+
+      if (profile?.terms_accepted_at && profile?.terms_version === TERMS_VERSION) {
+        // already accepted this version — go to dashboard
+        navigate("/dashboard", { replace: true });
+        return;
+      }
+
+      setLoading(false);
     })();
-  }, [nav]);
 
-  // Track scroll progress to the bottom
-  function onScroll() {
-    const el = scrollRef.current;
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
+
+  // Enable button only when both conditions true
+  const canAgree = useMemo(() => checked && scrolledToEnd && !saving, [checked, scrolledToEnd, saving]);
+
+  // Track scroll position
+  useEffect(() => {
+    const el = scrollBoxRef.current;
     if (!el) return;
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
-    if (atBottom) setScrolledEnd(true);
-  }
+    const onScroll = () => {
+      const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8; // small tolerance
+      setScrolledToEnd(atBottom);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    // run once in case content already smaller than box
+    onScroll();
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
 
-  async function accept() {
-    try {
-      setSaving(true);
-      setErr(null);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) throw new Error("Not signed in.");
+  const handleAgree = async () => {
+    setSaving(true);
+    setError(null);
 
-      // Ensure a cleaners row exists
-      let cleanerId: string | null = null;
-      {
-        const { data: row, error } = await supabase
-          .from("cleaners")
-          .select("id")
-          .eq("user_id", session.user.id)
-          .maybeSingle();
-        if (error) throw error;
+    const {
+      data: { user },
+      error: uErr,
+    } = await supabase.auth.getUser();
 
-        if (row?.id) {
-          cleanerId = row.id;
-        } else {
-          const { data: created, error: insErr } = await supabase
-            .from("cleaners")
-            .insert({ user_id: session.user.id, business_name: null })
-            .select("id")
-            .single();
-          if (insErr) throw insErr;
-          cleanerId = created!.id;
-        }
-      }
-
-      const { error: updErr } = await supabase
-        .from("cleaners")
-        .update({
-          terms_accepted: true,
-          terms_version: TERMS_VERSION,
-          terms_accepted_at: new Date().toISOString(),
-          // Optional: auto-publish
-          // is_published: true,
-        })
-        .eq("id", cleanerId!);
-
-      if (updErr) throw updErr;
-
-      nav("/settings", { replace: true });
-    } catch (e: any) {
-      console.error(e);
-      setErr(e?.message || "Could not save acceptance.");
-    } finally {
+    if (uErr || !user) {
+      setError(uErr?.message || "You need to be signed in.");
       setSaving(false);
+      return;
     }
+
+    const payload = {
+      terms_version: TERMS_VERSION,
+      terms_accepted_at: new Date().toISOString(),
+    };
+
+    // Try update first (normal path if you have auth trigger creating profiles)
+    const { data: updated, error: upErr } = await supabase
+      .from("profiles")
+      .update(payload)
+      .eq("id", user.id)
+      .select("id");
+
+    if (upErr) {
+      setError(upErr.message);
+      setSaving(false);
+      return;
+    }
+
+    // If no row was updated (rare if profile didn’t exist), insert it
+    if (!updated || updated.length === 0) {
+      const { error: insErr } = await supabase.from("profiles").insert({
+        id: user.id,
+        ...payload,
+      });
+      if (insErr) {
+        setError(insErr.message);
+        setSaving(false);
+        return;
+      }
+    }
+
+    // IMPORTANT: do NOT create a cleaners row here.
+    // We’ll collect business_name on Settings.
+    navigate("/settings?firstRun=1", { replace: true });
+  };
+
+  if (loading) {
+    return (
+      <div className="container mx-auto max-w-2xl px-4 sm:px-6 py-10">
+        <div className="text-lg">Loading…</div>
+      </div>
+    );
   }
 
   return (
-    <main className="container mx-auto max-w-3xl px-4 py-10 space-y-6">
-      <h1 className="text-2xl font-bold">Terms &amp; Conditions</h1>
+    <div className="container mx-auto max-w-2xl px-4 sm:px-6 py-8">
+      <h1 className="text-3xl font-extrabold tracking-tight mb-4">Terms &amp; Conditions</h1>
 
-      {/* Scrollable terms box */}
       <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="border rounded-lg bg-white p-4 max-h-[50vh] overflow-y-auto"
+        ref={scrollBoxRef}
+        className="border rounded-2xl p-4 sm:p-5 bg-white shadow-sm max-h-96 overflow-y-auto"
       >
-        <TermsContent />
+        {/* --- Your T&Cs content below. Keep the version visible. --- */}
+        <p className="text-sm leading-6 text-gray-900">
+          Our total liability is limited to £100 or fees paid in the prior 12 months.
+        </p>
+        <p className="mt-3 text-sm leading-6 text-gray-900 font-semibold">10. Indemnity</p>
+        <p className="text-sm leading-6 text-gray-900">
+          You agree to indemnify us for claims arising from your listing, services, or breach of these Terms.
+        </p>
+        <p className="mt-3 text-sm leading-6 text-gray-900 font-semibold">11. Termination</p>
+        <p className="text-sm leading-6 text-gray-900">
+          You may delete your account at any time. We may suspend or terminate for breach or legal reasons.
+        </p>
+        <p className="mt-3 text-sm leading-6 text-gray-900 font-semibold">12. Governing Law</p>
+        <p className="text-sm leading-6 text-gray-900">
+          England &amp; Wales law, courts of England &amp; Wales have exclusive jurisdiction.
+        </p>
+        <p className="mt-4 text-sm leading-6 text-gray-900">
+          <span className="font-semibold">Contact:</span> cleenlymarketplace@gmail.com
+        </p>
+        <p className="mt-1 text-xs text-gray-600">Version: {TERMS_VERSION}</p>
       </div>
 
-      {!scrolledEnd && (
-        <p className="text-sm text-gray-600">
-          Please scroll to the bottom to enable the agreement.
-        </p>
-      )}
-
-      <label className="flex items-start gap-3">
+      <div className="mt-5 flex items-start gap-3">
         <input
+          id="agree"
           type="checkbox"
-          className="mt-1"
+          className="mt-1 h-5 w-5 rounded border-gray-300"
           checked={checked}
           onChange={(e) => setChecked(e.target.checked)}
-          disabled={!scrolledEnd}
         />
-        <span>I have read and agree to the Business Terms &amp; Conditions.</span>
-      </label>
+        <label htmlFor="agree" className="text-sm sm:text-base leading-6 text-gray-900">
+          I have read and agree to the Business Terms &amp; Conditions.
+          {!scrolledToEnd && (
+            <span className="block text-xs text-gray-500 mt-1">
+              Scroll to the bottom of the Terms to enable the button.
+            </span>
+          )}
+        </label>
+      </div>
 
-      {err && <div className="text-sm text-red-700">{err}</div>}
+      {error && (
+        <div className="mt-4 text-sm text-red-600">
+          {error}
+        </div>
+      )}
 
       <button
-        disabled={!checked || !scrolledEnd || saving}
-        onClick={accept}
-        className="rounded-lg px-4 py-2 bg-emerald-700 text-white disabled:opacity-60"
+        onClick={handleAgree}
+        disabled={!canAgree}
+        className={`mt-6 w-full sm:w-auto inline-flex items-center justify-center rounded-xl px-5 py-3 font-semibold text-white
+          ${canAgree ? "bg-emerald-700 hover:bg-emerald-800" : "bg-gray-300 cursor-not-allowed"}`}
       >
         {saving ? "Saving…" : "Agree & continue"}
       </button>
-    </main>
+    </div>
   );
 }
