@@ -21,15 +21,16 @@ import Settings from "./pages/Settings";
 /** Guard for private pages */
 function ProtectedRoute({
   user,
-  loading,
+  authReady,
   children,
 }: {
-  user: User | null | undefined;
-  loading: boolean;
+  user: User | null;
+  authReady: boolean;
   children: ReactNode;
 }) {
   const location = useLocation();
-  if (loading) {
+
+  if (!authReady) {
     return (
       <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
         Loading…
@@ -45,54 +46,64 @@ function ProtectedRoute({
 /** Public-only pages (e.g., /login). If already logged in, go to dashboard. */
 function PublicOnlyRoute({
   user,
+  authReady,
   children,
 }: {
-  user: User | null | undefined;
+  user: User | null;
+  authReady: boolean;
   children: ReactNode;
 }) {
+  if (!authReady) {
+    return (
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+        Loading…
+      </div>
+    );
+  }
   if (user) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>();
-  const [loading, setLoading] = useState(true);
+  // start as null (logged out) until we know otherwise
+  const [user, setUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false); // becomes true after INITIAL_SESSION
 
   useEffect(() => {
-    let mounted = true;
-
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!mounted) return;
-      setUser(session?.user ?? null);
-      setLoading(false);
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
-      setUser(session?.user ?? null);
-      // keep loading = false after first resolution
+    // Single source of truth: onAuthStateChange fires INITIAL_SESSION immediately
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      // console.debug("[auth]", event, session?.user?.id); // uncomment to debug
+      if (
+        event === "INITIAL_SESSION" ||
+        event === "SIGNED_IN" ||
+        event === "TOKEN_REFRESHED"
+      ) {
+        setUser(session?.user ?? null);
+        setAuthReady(true);
+      } else if (event === "SIGNED_OUT" || event === "USER_DELETED") {
+        setUser(null);
+        setAuthReady(true);
+      } else {
+        // For other events, ensure we don't hang
+        setAuthReady((r) => r || event !== null);
+      }
     });
 
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
+    return () => sub.subscription.unsubscribe();
   }, []);
 
   return (
     <Router>
       <Layout>
         <Routes>
-          {/* Root: WAIT for loading before deciding */}
+          {/* Root: WAIT for authReady before deciding */}
           <Route
             path="/"
             element={
-              loading ? (
-                <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
-              ) : user ? (
-                <Navigate to="/dashboard" replace />
+              authReady ? (
+                user ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />
               ) : (
-                <Navigate to="/login" replace />
+                <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
               )
             }
           />
@@ -101,7 +112,7 @@ export default function App() {
           <Route
             path="/login"
             element={
-              <PublicOnlyRoute user={user}>
+              <PublicOnlyRoute user={user} authReady={authReady}>
                 <Login />
               </PublicOnlyRoute>
             }
@@ -111,7 +122,7 @@ export default function App() {
           <Route
             path="/dashboard"
             element={
-              <ProtectedRoute user={user} loading={loading}>
+              <ProtectedRoute user={user} authReady={authReady}>
                 <Dashboard />
               </ProtectedRoute>
             }
@@ -119,7 +130,7 @@ export default function App() {
           <Route
             path="/settings"
             element={
-              <ProtectedRoute user={user} loading={loading}>
+              <ProtectedRoute user={user} authReady={authReady}>
                 <Settings />
               </ProtectedRoute>
             }
