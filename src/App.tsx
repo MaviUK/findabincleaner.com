@@ -70,6 +70,7 @@ export default function App() {
 
     const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUser(session?.user ?? null);
+      // keep loading = false after first resolution
     });
 
     return () => {
@@ -82,11 +83,17 @@ export default function App() {
     <Router>
       <Layout>
         <Routes>
-          {/* Root: if logged in go to dashboard, else go to login */}
+          {/* Root: WAIT for loading before deciding */}
           <Route
             path="/"
             element={
-              user ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />
+              loading ? (
+                <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
+              ) : user ? (
+                <Navigate to="/dashboard" replace />
+              ) : (
+                <Navigate to="/login" replace />
+              )
             }
           />
 
@@ -118,7 +125,7 @@ export default function App() {
             }
           />
 
-          {/* Keep any other routes you use; Landing is optional */}
+          {/* Optional public page */}
           <Route path="/landing" element={<Landing />} />
 
           {/* Fallback */}
