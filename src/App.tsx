@@ -17,11 +17,8 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
-import Onboarding from "./pages/Onboarding"; // ✅ new
 
-// Bump when you change the legal text to force re-acceptance
-const TERMS_VERSION = "2025-09-29";
-
+/** Guard for private pages */
 function ProtectedRoute({
   user,
   loading,
@@ -40,132 +37,92 @@ function ProtectedRoute({
     );
   }
   if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return <Navigate to="/login" replace state={{ from: location }} />;
   }
   return <>{children}</>;
 }
 
-/** TermsGate
- *  Checks the current user's cleaner row for terms acceptance.
- *  If not accepted (or wrong version), redirect to /onboarding.
- */
-function TermsGate({ children }: { children: ReactNode }) {
-  const [checking, setChecking] = useState(true);
-  const [ok, setOk] = useState(false);
-
-  useEffect(() => {
-    (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        setOk(false);
-        setChecking(false);
-        return;
-      }
-
-      const { data: row, error } = await supabase
-        .from("cleaners")
-        .select("terms_accepted, terms_version")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
-
-      if (error) {
-        console.error("Terms check failed", error);
-        setOk(false);
-      } else {
-        setOk(!!row?.terms_accepted && row?.terms_version === TERMS_VERSION);
-      }
-      setChecking(false);
-    })();
-  }, []);
-
-  if (checking) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
-      </div>
-    );
-  }
-
-  if (!ok) return <Navigate to="/onboarding" replace />;
-
+/** Public-only pages (e.g., /login). If already logged in, go to dashboard. */
+function PublicOnlyRoute({
+  user,
+  children,
+}: {
+  user: User | null | undefined;
+  children: ReactNode;
+}) {
+  if (user) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
-}
-
-function NotFound() {
-  return (
-    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-      <h1 className="section-title text-2xl mb-2">404</h1>
-      <p className="muted">That page doesn’t exist.</p>
-    </div>
-  );
 }
 
 export default function App() {
-  // undefined = still checking session, null = no user
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-
-  // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
-  useEffect(() => {
-    if (window.location.pathname !== "/") {
-      window.history.replaceState(null, "", "/");
-    }
-  }, []);
+  const [user, setUser] = useState<User | null>();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // initial check
-    supabase.auth.getSession().then(({ data: { session } }) =>
-      setUser(session?.user ?? null)
-    );
+    let mounted = true;
 
-    // keep in sync with auth changes
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!mounted) return;
+      setUser(session?.user ?? null);
+      setLoading(false);
+    })();
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUser(session?.user ?? null);
     });
-    return () => sub.subscription.unsubscribe();
-  }, []);
 
-  const loading = user === undefined;
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
 
   return (
     <Router>
       <Layout>
         <Routes>
-          <Route path="/" element={<Landing />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ new */}
+          {/* Root: if logged in go to dashboard, else go to login */}
+          <Route
+            path="/"
+            element={
+              user ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />
+            }
+          />
 
+          {/* Public-only login */}
+          <Route
+            path="/login"
+            element={
+              <PublicOnlyRoute user={user}>
+                <Login />
+              </PublicOnlyRoute>
+            }
+          />
+
+          {/* Private routes */}
           <Route
             path="/dashboard"
             element={
               <ProtectedRoute user={user} loading={loading}>
-                <TermsGate>
-                  <Dashboard />
-                </TermsGate>
+                <Dashboard />
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/settings"
             element={
               <ProtectedRoute user={user} loading={loading}>
-                <TermsGate>
-                  <Settings />
-                </TermsGate>
+                <Settings />
               </ProtectedRoute>
             }
           />
 
-          <Route
-            path="/_debug"
-            element={
-              <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-                Router is working ✅
-              </div>
-            }
-          />
+          {/* Keep any other routes you use; Landing is optional */}
+          <Route path="/landing" element={<Landing />} />
 
-          <Route path="*" element={<NotFound />} />
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </Router>
