@@ -106,31 +106,20 @@ export default function Onboarding() {
   const [err, setErr] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // If already accepted this version on profiles, bounce on
+  // If already accepted, bounce to settings
   useEffect(() => {
     (async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (!session?.user) {
-        nav("/login", { replace: true });
-        return;
-      }
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) { nav("/login", { replace: true }); return; }
 
-      const { data: prof, error } = await supabase
-        .from("profiles")
-        .select("id, terms_version, terms_accepted_at, terms_accepted")
-        .eq("id", session.user.id)
+      const { data: me, error } = await supabase
+        .from("cleaners")
+        .select("id, terms_accepted, terms_version")
+        .eq("user_id", session.user.id)
         .maybeSingle();
 
-      if (!error && prof?.terms_accepted_at && prof.terms_version === TERMS_VERSION) {
+      if (!error && me?.terms_accepted && me.terms_version === TERMS_VERSION) {
         nav("/settings", { replace: true });
-        return;
-      }
-
-      // If profile row doesn't exist yet, create a bare one so later update won't fail
-      if (!prof) {
-        await supabase.from("profiles").insert({ id: session.user.id });
       }
     })();
   }, [nav]);
@@ -140,31 +129,53 @@ export default function Onboarding() {
     const el = scrollRef.current;
     if (!el) return;
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 8;
-    setScrolledEnd(atBottom || el.scrollHeight <= el.clientHeight);
+    if (atBottom) setScrolledEnd(true);
   }
 
   async function accept() {
     try {
       setSaving(true);
       setErr(null);
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
+      const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) throw new Error("Not signed in.");
 
-      // Update ONLY the profiles table — do NOT create/upsert cleaners here
+      // Ensure a cleaners row exists
+      let cleanerId: string | null = null;
+      {
+        const { data: row, error } = await supabase
+          .from("cleaners")
+          .select("id")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (error) throw error;
+
+        if (row?.id) {
+          cleanerId = row.id;
+        } else {
+          const { data: created, error: insErr } = await supabase
+            .from("cleaners")
+            .insert({ user_id: session.user.id, business_name: null })
+            .select("id")
+            .single();
+          if (insErr) throw insErr;
+          cleanerId = created!.id;
+        }
+      }
+
       const { error: updErr } = await supabase
-        .from("profiles")
+        .from("cleaners")
         .update({
-          terms_accepted: true, // keep if you have this boolean column; otherwise safe to keep, it's ignored if column absent
+          terms_accepted: true,
           terms_version: TERMS_VERSION,
           terms_accepted_at: new Date().toISOString(),
+          // Optional: auto-publish
+          // is_published: true,
         })
-        .eq("id", session.user.id);
+        .eq("id", cleanerId!);
 
       if (updErr) throw updErr;
 
-      nav("/settings?firstRun=1", { replace: true });
+      nav("/settings", { replace: true });
     } catch (e: any) {
       console.error(e);
       setErr(e?.message || "Could not save acceptance.");

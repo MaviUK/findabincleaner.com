@@ -17,7 +17,7 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // If already signed in, go straight to Settings (guard will route as needed)
+  // If already signed in, go straight to Settings
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
@@ -25,20 +25,10 @@ export default function Login() {
     })();
   }, [navigate]);
 
-  // Handle auth state changes (e.g., password login finishes)
+  // ✅ Handle the moment Google (or any) auth completes
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        // Prefer stored post-login path if present
-        const next = localStorage.getItem("postLoginPath");
-        if (next) {
-          localStorage.removeItem("postLoginPath");
-          // next includes the hash, so redirect via window to preserve it
-          window.location.replace(next);
-        } else {
-          navigate("/settings", { replace: true });
-        }
-      }
+      if (session?.user) navigate("/settings", { replace: true });
     });
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
@@ -78,34 +68,22 @@ export default function Login() {
     }
   }
 
-  async function handleGoogle() {
-    try {
-      setErr(null);
-      setOauthLoading("google");
-
-      // Store where to go after login (current hash or default to dashboard)
-      const currentHash = window.location.hash || "#/dashboard";
-      localStorage.setItem("postLoginPath", currentHash);
-
-      // With HashRouter, ALWAYS include '#/auth/callback'
-      const redirectTo = `${window.location.origin}/#/auth/callback`;
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: {
-          redirectTo,
-          // optional niceties:
-          queryParams: { prompt: "select_account" },
-        },
-      });
-
-      if (error) throw error;
-      // browser will navigate away to Google; no further code runs here
-    } catch (e: any) {
-      setErr(e.message || "Google sign-in failed.");
-      setOauthLoading(null);
-    }
+async function handleGoogle() {
+  try {
+    setErr(null);
+    setOauthLoading("google");
+    // IMPORTANT: no '#/...' here to avoid double-hash
+    const redirectTo = `${window.location.origin}/`;
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+  } catch (e: any) {
+    setErr(e.message || "Google sign-in failed.");
+    setOauthLoading(null);
   }
+}
+
 
   return (
     <main className="container mx-auto max-w-md px-4 py-10">
