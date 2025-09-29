@@ -1,11 +1,11 @@
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
 import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
-import AccountDangerZone from "../components/settings/AccountDangerZone"; // ⬅️ NEW
+import AccountDangerZone from "../components/settings/AccountDangerZone";
 
 type Cleaner = {
   id: string;
@@ -27,7 +27,7 @@ const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
 
-// shape the CleanerCard expects (lightweight local type)
+// what CleanerCard needs
 type CleanerCardShape = {
   id: string;
   business_name: string;
@@ -160,29 +160,15 @@ function ServiceTypePills({
   );
 }
 
-// coerce unknown/CSV/JSON values to a string[]
-const toArr = (v: any): string[] => {
-  if (!v) return [];
-  if (Array.isArray(v)) return v as string[];
-  if (typeof v === "string") {
-    try {
-      const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed;
-    } catch {}
-    return v
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-  return [];
-};
-
 /* ---------- page ---------- */
 export default function Settings() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const firstRun = searchParams.get("firstRun") === "1";
+
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
-  const [ready, setReady] = useState(false);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -191,7 +177,7 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
-  const [whatsapp, setWhatsapp] = useState(""); // NEW
+  const [whatsapp, setWhatsapp] = useState("");
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
@@ -203,15 +189,13 @@ export default function Settings() {
   const [resizedLogo, setResizedLogo] = useState<Blob | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
-  const navigate = useNavigate();
-
   useEffect(() => {
     let mounted = true;
 
     (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!mounted) return;
+        const { data: { session }, error: sErr } = await supabase.auth.getSession();
+        if (sErr) throw sErr;
 
         if (!session?.user) {
           navigate("/login", { replace: true });
@@ -220,41 +204,45 @@ export default function Settings() {
 
         setUserId(session.user.id);
 
+        // Try get existing cleaner row
         const { data, error } = await supabase
           .from("cleaners")
           .select("*")
           .eq("user_id", session.user.id)
           .maybeSingle();
+
         if (error) throw error;
 
-        if (!data) {
-          fillForm(
-            {
-              id: "",
-              user_id: session.user.id,
-              business_name: null,
-              logo_url: null,
-              address: null,
-              phone: null,
-              whatsapp: null,
-              website: null,
-              about: null,
-              contact_email: session.user.email ?? null,
-              payment_methods: [] as string[],
-              service_types: [] as string[],
-            },
-            session.user.email ?? ""
-          );
-        } else {
-          fillForm(data as Cleaner, session.user.email ?? "");
+        if (mounted) {
+          if (data) {
+            setCleaner(data as Cleaner);
+            fillForm(data as Cleaner, session.user.email ?? "");
+          } else {
+            // No row yet — show empty form (first-run)
+            setCleaner(null);
+            fillForm(
+              {
+                id: "",
+                user_id: session.user.id,
+                business_name: null,
+                logo_url: null,
+                address: null,
+                phone: null,
+                whatsapp: null,
+                website: null,
+                about: null,
+                contact_email: session.user.email ?? null,
+                payment_methods: [] as string[],
+                service_types: [] as string[],
+              },
+              session.user.email ?? ""
+            );
+          }
         }
       } catch (e: any) {
-        setErr(e.message || "Failed to load profile.");
+        if (mounted) setErr(e.message || "Failed to load profile.");
       } finally {
-        if (mounted) {
-          setLoading(false);
-          setReady(true);
-        }
+        if (mounted) setLoading(false);
       }
     })();
 
@@ -269,11 +257,10 @@ export default function Settings() {
   }, [navigate]);
 
   function fillForm(c: Cleaner, fallbackEmail: string) {
-    setCleaner(c);
     setBusinessName(c.business_name ?? "");
     setAddress(c.address ?? "");
     setPhone(c.phone ?? "");
-    setWhatsapp(c.whatsapp ?? ""); // NEW
+    setWhatsapp(c.whatsapp ?? "");
     setWebsite(c.website ?? "");
     setAbout(c.about ?? "");
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
@@ -282,16 +269,23 @@ export default function Settings() {
     setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
   }
 
+  // IMPORTANT: never insert without a business name (avoids NOT NULL violation)
   async function ensureRow(): Promise<string> {
     if (cleaner && cleaner.id) return cleaner.id;
+
+    const name = businessName.trim();
+    if (!name) {
+      throw new Error("Please enter your business name before saving.");
+    }
+
     const { data: created, error } = await supabase
       .from("cleaners")
       .insert({
         user_id: userId,
-        business_name: businessName || null,
+        business_name: name, // non-null
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null, // NEW
+        whatsapp: whatsapp || null,
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -300,21 +294,28 @@ export default function Settings() {
       })
       .select("id,*")
       .single();
+
     if (error) throw error;
     setCleaner(created as Cleaner);
     return created.id as string;
   }
 
   async function uploadLogoIfAny(): Promise<string | null> {
-    if (!logoFile || !userId) return logoPreview || null;
-    const png = resizedLogo ?? (await resizeTo300PNG(logoFile));
-    const path = `${userId}/logo.png`;
-    const { error: upErr } = await supabase.storage
-      .from("logos")
-      .upload(path, png, { upsert: true, cacheControl: "3600", contentType: "image/png" });
-    if (upErr) throw upErr;
-    const { data } = supabase.storage.from("logos").getPublicUrl(path);
-    return data.publicUrl;
+    try {
+      if (!logoFile || !userId) return logoPreview || null;
+      const png = resizedLogo ?? (await resizeTo300PNG(logoFile));
+      const path = `${userId}/logo.png`;
+      const { error: upErr } = await supabase.storage
+        .from("logos")
+        .upload(path, png, { upsert: true, cacheControl: "3600", contentType: "image/png" });
+      if (upErr) throw upErr;
+      const { data } = supabase.storage.from("logos").getPublicUrl(path);
+      return data.publicUrl;
+    } catch (e) {
+      // Non-blocking; still save the rest
+      console.warn("Logo upload failed:", e);
+      return logoPreview || null;
+    }
   }
 
   async function save() {
@@ -322,6 +323,13 @@ export default function Settings() {
     setMsg(null);
     setErr(null);
     try {
+      const {
+        data: { session },
+        error: sErr,
+      } = await supabase.auth.getSession();
+      if (sErr) throw sErr;
+      if (!session?.user) throw new Error("You are not signed in.");
+
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
@@ -329,10 +337,10 @@ export default function Settings() {
         payment_methods?: string[];
         service_types?: string[];
       } = {
-        business_name: businessName || null,
+        business_name: businessName.trim(),
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null, // NEW
+        whatsapp: whatsapp || null,
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -348,7 +356,12 @@ export default function Settings() {
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
       setResizedLogo(null);
-      setMsg("Settings saved.");
+      setMsg(firstRun ? "Setup complete." : "Settings saved.");
+
+      if (firstRun) {
+        // First-time setup finished — take them to dashboard
+        navigate("/dashboard", { replace: true });
+      }
     } catch (e: any) {
       setErr(e.message || "Failed to save.");
     } finally {
@@ -370,13 +383,13 @@ export default function Settings() {
       rating_avg: null,
       rating_count: null,
       distance_m: null,
-      payment_methods: toArr(paymentMethods),
-      service_types: toArr(serviceTypes),
+      payment_methods: paymentMethods,
+      service_types: serviceTypes,
     }),
     [cleaner?.id, businessName, logoPreview, website, phone, whatsapp, paymentMethods, serviceTypes]
   );
 
-  if (loading || !ready) {
+  if (loading) {
     return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
   }
 
@@ -386,6 +399,12 @@ export default function Settings() {
         <h1 className="text-2xl font-bold">Settings</h1>
         <LogoutButton />
       </header>
+
+      {firstRun && !cleaner?.id && (
+        <div className="rounded-xl border p-4 bg-amber-50 text-amber-900 text-sm">
+          Welcome! Enter your business details to finish setup.
+        </div>
+      )}
 
       {/* TOP: Full-width preview using the actual search card */}
       <section className="p-0 bg-transparent border-0">
@@ -405,12 +424,13 @@ export default function Settings() {
         {/* LEFT: Core details */}
         <section className="space-y-3 p-4 border rounded-2xl bg-white">
           <label className="block">
-            <span className="text-sm">Business name</span>
+            <span className="text-sm">Business name *</span>
             <input
               className="w-full border rounded px-3 py-2"
               value={businessName}
               onChange={(e) => setBusinessName(e.target.value)}
               placeholder="e.g. NI Bin Guy"
+              required
             />
           </label>
 
@@ -529,12 +549,12 @@ export default function Settings() {
             disabled={!canSave || saving}
             onClick={save}
           >
-            {saving ? "Saving…" : "Save settings"}
+            {saving ? "Saving…" : cleaner?.id ? "Save settings" : "Create profile"}
           </button>
         </section>
       </div>
 
-      {/* ⬇️ NEW: Danger Zone */}
+      {/* Danger Zone */}
       <section className="space-y-3 p-4 border rounded-2xl bg-white">
         <h2 className="text-lg font-semibold">Account</h2>
         <AccountDangerZone businessName={businessName || null} />
