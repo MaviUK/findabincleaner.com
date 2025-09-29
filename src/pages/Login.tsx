@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
+import type { Session } from "@supabase/supabase-js";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -25,7 +26,7 @@ export default function Login() {
     })();
   }, [navigate]);
 
-  // Also handle OAuth/magic-link completion
+  // Handle OAuth/magic-link completion
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) navigate("/dashboard", { replace: true });
@@ -44,12 +45,12 @@ export default function Login() {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
 
-      // In some environments there can be a short delay before the session is readable.
-      // Re-check a few times before navigating.
-      let tries = 0, session = data.session;
+      // Re-check a few times until the session is readable
+      let tries = 0;
+      let session: Session | null = data.session ?? null;
       while (!session && tries < 10) {
         const { data: s } = await supabase.auth.getSession();
-        session = s.session;
+        session = s.session ?? null;
         if (!session) await new Promise(r => setTimeout(r, 100));
         tries++;
       }
@@ -87,8 +88,7 @@ export default function Login() {
     try {
       setErr(null);
       setOauthLoading("google");
-      // With HashRouter, use the origin (no '#/...' to avoid double-hash in redirect)
-      const redirectTo = `${window.location.origin}/`;
+      const redirectTo = `${window.location.origin}/`; // no '#/...'
       await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo },
