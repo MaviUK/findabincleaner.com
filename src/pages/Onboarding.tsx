@@ -139,37 +139,41 @@ export default function Onboarding() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user) throw new Error("Not signed in.");
 
-      // Ensure a cleaners row exists
-      let cleanerId: string | null = null;
-      {
-        const { data: row, error } = await supabase
-          .from("cleaners")
-          .select("id")
-          .eq("user_id", session.user.id)
-          .maybeSingle();
-        if (error) throw error;
+      // Look up existing cleaner row
+      const { data: row, error: fetchErr } = await supabase
+        .from("cleaners")
+        .select("id")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+      if (fetchErr) throw fetchErr;
 
-        if (row?.id) {
-          cleanerId = row.id;
-        } else {
-          const { data: created, error: insErr } = await supabase
-            .from("cleaners")
-            .insert({ user_id: session.user.id, business_name: null })
-            .select("id")
-            .single();
-          if (insErr) throw insErr;
-          cleanerId = created!.id;
-        }
+      // Create if missing — ensure NOT NULL business_name with a safe fallback
+      let cleanerId = row?.id as string | null;
+      if (!cleanerId) {
+        const fallbackName =
+          (session.user.user_metadata as any)?.business_name ??
+          (session.user.user_metadata as any)?.name ??
+          (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
+
+        const { data: created, error: insErr } = await supabase
+          .from("cleaners")
+          .insert({
+            user_id: session.user.id,
+            business_name: String(fallbackName).slice(0, 120), // trim just in case
+          })
+          .select("id")
+          .single();
+        if (insErr) throw insErr;
+        cleanerId = created!.id;
       }
 
+      // Mark terms accepted
       const { error: updErr } = await supabase
         .from("cleaners")
         .update({
           terms_accepted: true,
           terms_version: TERMS_VERSION,
           terms_accepted_at: new Date().toISOString(),
-          // Optional: auto-publish
-          // is_published: true,
         })
         .eq("id", cleanerId!);
 
