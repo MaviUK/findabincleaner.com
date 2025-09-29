@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
 import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
+import AccountDangerZone from "../components/settings/AccountDangerZone"; // ⬅️ NEW
 
 type Cleaner = {
   id: string;
@@ -532,6 +533,12 @@ export default function Settings() {
           </button>
         </section>
       </div>
+
+      {/* ⬇️ NEW: Danger Zone */}
+      <section className="space-y-3 p-4 border rounded-2xl bg-white">
+        <h2 className="text-lg font-semibold">Account</h2>
+        <AccountDangerZone businessName={businessName || null} />
+      </section>
     </main>
   );
 }
