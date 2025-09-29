@@ -12,5 +12,5 @@ export const supabase = createClient(url, key, {
   },
 });
 
-// expose for debugging in DevTools:
+// expose for DevTools as `sb`
 ;(window as any).sb = supabase;
