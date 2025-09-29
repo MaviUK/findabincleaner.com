@@ -1,4 +1,3 @@
-// src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
   HashRouter as Router,
@@ -18,73 +17,85 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 
+function LoadingScreen() {
+  return (
+    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
+  );
+}
+
 /** Guard for private pages */
 function ProtectedRoute({
   user,
-  authReady,
+  ready,
   children,
 }: {
   user: User | null;
-  authReady: boolean;
+  ready: boolean;
   children: ReactNode;
 }) {
   const location = useLocation();
-  if (!authReady) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
-    );
-  }
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: location }} />;
-  }
+  if (!ready) return <LoadingScreen />;
+  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
   return <>{children}</>;
 }
 
 /** Public-only pages */
 function PublicOnlyRoute({
   user,
-  authReady,
+  ready,
   children,
 }: {
   user: User | null;
-  authReady: boolean;
+  ready: boolean;
   children: ReactNode;
 }) {
-  if (!authReady) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
-    );
-  }
+  if (!ready) return <LoadingScreen />;
   if (user) return <Navigate to="/dashboard" replace />;
   return <>{children}</>;
 }
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [authReady, setAuthReady] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    // One listener handles everything (INITIAL_SESSION + future changes)
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+    let mounted = true;
+
+    // 1) Fetch current session immediately
+    (async () => {
+      try {
+        const { data } = await supabase.auth.getSession();
+        if (!mounted) return;
+        setUser(data.session?.user ?? null);
+      } finally {
+        if (mounted) setReady(true);
+      }
+    })();
+
+    // 2) Subscribe to future auth changes
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, session) => {
       setUser(session?.user ?? null);
-      setAuthReady(true);
+      setReady(true);
     });
 
-    return () => sub.subscription.unsubscribe();
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
   }, []);
 
   return (
     <Router>
       <Layout>
         <Routes>
-          {/* Root: wait for auth, then route */}
+          {/* Root: wait for ready before deciding */}
           <Route
             path="/"
             element={
-              authReady ? (
+              ready ? (
                 user ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />
               ) : (
-                <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">Loading…</div>
+                <LoadingScreen />
               )
             }
           />
@@ -92,7 +103,7 @@ export default function App() {
           <Route
             path="/login"
             element={
-              <PublicOnlyRoute user={user} authReady={authReady}>
+              <PublicOnlyRoute user={user} ready={ready}>
                 <Login />
               </PublicOnlyRoute>
             }
@@ -101,7 +112,7 @@ export default function App() {
           <Route
             path="/dashboard"
             element={
-              <ProtectedRoute user={user} authReady={authReady}>
+              <ProtectedRoute user={user} ready={ready}>
                 <Dashboard />
               </ProtectedRoute>
             }
@@ -109,7 +120,7 @@ export default function App() {
           <Route
             path="/settings"
             element={
-              <ProtectedRoute user={user} authReady={authReady}>
+              <ProtectedRoute user={user} ready={ready}>
                 <Settings />
               </ProtectedRoute>
             }
