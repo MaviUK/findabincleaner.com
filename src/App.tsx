@@ -63,7 +63,7 @@ export default function App() {
 
   useEffect(() => {
     // initial check
-    supabase.auth.getUser().then(({ data: { user } }) => setUser(user ?? null));
+   supabase.auth.getSession().then(({ data: { session } }) => setUser(session?.user ?? null));
 
     // keep in sync with auth changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
