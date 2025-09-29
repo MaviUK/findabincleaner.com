@@ -68,22 +68,22 @@ export default function Login() {
     }
   }
 
-  async function handleGoogle() {
-    try {
-      setErr(null);
-      setOauthLoading("google");
-      // For HashRouter, use a hash redirect.
-      const redirectTo = `${window.location.origin}/#/settings`;
-      await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo },
-      });
-      // Redirects away; nothing else runs here.
-    } catch (e: any) {
-      setErr(e.message || "Google sign-in failed.");
-      setOauthLoading(null);
-    }
+async function handleGoogle() {
+  try {
+    setErr(null);
+    setOauthLoading("google");
+    // IMPORTANT: no '#/...' here to avoid double-hash
+    const redirectTo = `${window.location.origin}/`;
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+  } catch (e: any) {
+    setErr(e.message || "Google sign-in failed.");
+    setOauthLoading(null);
   }
+}
+
 
   return (
     <main className="container mx-auto max-w-md px-4 py-10">
