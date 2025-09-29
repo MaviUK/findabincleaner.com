@@ -17,115 +17,155 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
+import Onboarding from "./pages/Onboarding"; // ✅ new
 
-/* --- Small loading UI while auth bootstraps --- */
-function LoadingScreen() {
-  return (
-    <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-      Loading…
-    </main>
-  );
-}
+// Bump when you change the legal text to force re-acceptance
+const TERMS_VERSION = "2025-09-29";
 
-/* --- Guard for private pages --- */
 function ProtectedRoute({
   user,
-  ready,
+  loading,
   children,
 }: {
-  user: User | null;
-  ready: boolean;
+  user: User | null | undefined;
+  loading: boolean;
   children: ReactNode;
 }) {
   const location = useLocation();
-  if (!ready) return <LoadingScreen />;
-  if (!user) return <Navigate to="/login" replace state={{ from: location }} />;
+  if (loading) {
+    return (
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+        Loading…
+      </div>
+    );
+  }
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  }
   return <>{children}</>;
 }
 
-/* --- Public-only pages (e.g., /login) --- */
-function PublicOnlyRoute({
-  user,
-  ready,
-  children,
-}: {
-  user: User | null;
-  ready: boolean;
-  children: ReactNode;
-}) {
-  if (!ready) return <LoadingScreen />;
-  if (user) return <Navigate to="/dashboard" replace />;
+/** TermsGate
+ *  Checks the current user's cleaner row for terms acceptance.
+ *  If not accepted (or wrong version), redirect to /onboarding.
+ */
+function TermsGate({ children }: { children: ReactNode }) {
+  const [checking, setChecking] = useState(true);
+  const [ok, setOk] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) {
+        setOk(false);
+        setChecking(false);
+        return;
+      }
+
+      const { data: row, error } = await supabase
+        .from("cleaners")
+        .select("terms_accepted, terms_version")
+        .eq("user_id", session.user.id)
+        .maybeSingle();
+
+      if (error) {
+        console.error("Terms check failed", error);
+        setOk(false);
+      } else {
+        setOk(!!row?.terms_accepted && row?.terms_version === TERMS_VERSION);
+      }
+      setChecking(false);
+    })();
+  }, []);
+
+  if (checking) {
+    return (
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+        Loading…
+      </div>
+    );
+  }
+
+  if (!ok) return <Navigate to="/onboarding" replace />;
+
   return <>{children}</>;
+}
+
+function NotFound() {
+  return (
+    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <h1 className="section-title text-2xl mb-2">404</h1>
+      <p className="muted">That page doesn’t exist.</p>
+    </div>
+  );
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null>(null);
-  const [ready, setReady] = useState(false);
+  // undefined = still checking session, null = no user
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+
+  // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
+  useEffect(() => {
+    if (window.location.pathname !== "/") {
+      window.history.replaceState(null, "", "/");
+    }
+  }, []);
 
   useEffect(() => {
-    // IMPORTANT: rely on INITIAL_SESSION so OAuth callback can complete
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      if (event === "INITIAL_SESSION") {
-        setUser(session?.user ?? null);
-        setReady(true); // decide routes only after initial session is known
-      } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        setUser(session?.user ?? null);
-      } else if (event === "SIGNED_OUT") {
-        setUser(null);
-      }
+    // initial check
+    supabase.auth.getSession().then(({ data: { session } }) =>
+      setUser(session?.user ?? null)
+    );
+
+    // keep in sync with auth changes
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
     });
     return () => sub.subscription.unsubscribe();
   }, []);
+
+  const loading = user === undefined;
 
   return (
     <Router>
       <Layout>
         <Routes>
-          {/* Root: wait for `ready` before choosing */}
-          <Route
-            path="/"
-            element={
-              ready ? (
-                user ? <Navigate to="/dashboard" replace /> : <Navigate to="/login" replace />
-              ) : (
-                <LoadingScreen />
-              )
-            }
-          />
+          <Route path="/" element={<Landing />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ new */}
 
-          {/* Public-only login */}
-          <Route
-            path="/login"
-            element={
-              <PublicOnlyRoute user={user} ready={ready}>
-                <Login />
-              </PublicOnlyRoute>
-            }
-          />
-
-          {/* Private routes */}
           <Route
             path="/dashboard"
             element={
-              <ProtectedRoute user={user} ready={ready}>
-                <Dashboard />
+              <ProtectedRoute user={user} loading={loading}>
+                <TermsGate>
+                  <Dashboard />
+                </TermsGate>
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/settings"
             element={
-              <ProtectedRoute user={user} ready={ready}>
-                <Settings />
+              <ProtectedRoute user={user} loading={loading}>
+                <TermsGate>
+                  <Settings />
+                </TermsGate>
               </ProtectedRoute>
             }
           />
 
-          {/* Optional public page */}
-          <Route path="/landing" element={<Landing />} />
+          <Route
+            path="/_debug"
+            element={
+              <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+                Router is working ✅
+              </div>
+            }
+          />
 
-          {/* Fallback */}
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
       </Layout>
     </Router>

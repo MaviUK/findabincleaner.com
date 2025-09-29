@@ -2,7 +2,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
-import type { Session } from "@supabase/supabase-js";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -18,18 +17,18 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // If already signed in, go straight to Dashboard
+  // If already signed in, go straight to Settings
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) navigate("/dashboard", { replace: true });
+      if (session?.user) navigate("/settings", { replace: true });
     })();
   }, [navigate]);
 
-  // Handle OAuth/magic-link completion
+  // ✅ Handle the moment Google (or any) auth completes
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) navigate("/dashboard", { replace: true });
+      if (session?.user) navigate("/settings", { replace: true });
     });
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
@@ -44,22 +43,7 @@ export default function Login() {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-
-      // Re-check a few times until the session is readable
-      let tries = 0;
-      let session: Session | null = data.session ?? null;
-      while (!session && tries < 10) {
-        const { data: s } = await supabase.auth.getSession();
-        session = s.session ?? null;
-        if (!session) await new Promise(r => setTimeout(r, 100));
-        tries++;
-      }
-
-      if (session) {
-        navigate("/dashboard", { replace: true });
-      } else {
-        setErr("Logged in but no session found. Check email confirmation & env keys.");
-      }
+      if (data.session) navigate("/settings", { replace: true });
     } catch (e: any) {
       setErr(e.message || "Login failed.");
     } finally {
@@ -75,7 +59,7 @@ export default function Login() {
       if (!data.session) {
         setMsg("Check your email to confirm your account, then log in.");
       } else {
-        navigate("/dashboard", { replace: true });
+        navigate("/settings", { replace: true });
       }
     } catch (e: any) {
       setErr(e.message || "Signup failed.");
@@ -84,20 +68,22 @@ export default function Login() {
     }
   }
 
-  async function handleGoogle() {
-    try {
-      setErr(null);
-      setOauthLoading("google");
-      const redirectTo = `${window.location.origin}/`; // no '#/...'
-      await supabase.auth.signInWithOAuth({
-        provider: "google",
-        options: { redirectTo },
-      });
-    } catch (e: any) {
-      setErr(e.message || "Google sign-in failed.");
-      setOauthLoading(null);
-    }
+async function handleGoogle() {
+  try {
+    setErr(null);
+    setOauthLoading("google");
+    // IMPORTANT: no '#/...' here to avoid double-hash
+    const redirectTo = `${window.location.origin}/`;
+    await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: { redirectTo },
+    });
+  } catch (e: any) {
+    setErr(e.message || "Google sign-in failed.");
+    setOauthLoading(null);
   }
+}
+
 
   return (
     <main className="container mx-auto max-w-md px-4 py-10">
@@ -199,4 +185,3 @@ export default function Login() {
     </main>
   );
 }
- 
