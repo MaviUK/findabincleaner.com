@@ -25,7 +25,7 @@ export default function Login() {
     })();
   }, [navigate]);
 
-  // Handle the moment OAuth (or any auth) completes
+  // Also handle OAuth/magic-link completion
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) navigate("/dashboard", { replace: true });
@@ -43,7 +43,22 @@ export default function Login() {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      if (data.session) navigate("/dashboard", { replace: true });
+
+      // In some environments there can be a short delay before the session is readable.
+      // Re-check a few times before navigating.
+      let tries = 0, session = data.session;
+      while (!session && tries < 10) {
+        const { data: s } = await supabase.auth.getSession();
+        session = s.session;
+        if (!session) await new Promise(r => setTimeout(r, 100));
+        tries++;
+      }
+
+      if (session) {
+        navigate("/dashboard", { replace: true });
+      } else {
+        setErr("Logged in but no session found. Check email confirmation & env keys.");
+      }
     } catch (e: any) {
       setErr(e.message || "Login failed.");
     } finally {
@@ -72,7 +87,7 @@ export default function Login() {
     try {
       setErr(null);
       setOauthLoading("google");
-      // With HashRouter, keep redirectTo on the origin (no '#/...' to avoid double-hash)
+      // With HashRouter, use the origin (no '#/...' to avoid double-hash in redirect)
       const redirectTo = `${window.location.origin}/`;
       await supabase.auth.signInWithOAuth({
         provider: "google",
