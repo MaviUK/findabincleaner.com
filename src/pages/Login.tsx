@@ -25,6 +25,14 @@ export default function Login() {
     })();
   }, [navigate]);
 
+  // ✅ Handle the moment Google (or any) auth completes
+  useEffect(() => {
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) navigate("/settings", { replace: true });
+    });
+    return () => sub.subscription.unsubscribe();
+  }, [navigate]);
+
   const title = useMemo(
     () => (tab === "signup" ? "Create a business account" : "Log in"),
     [tab]
@@ -48,7 +56,6 @@ export default function Login() {
     try {
       const { data, error } = await supabase.auth.signUp({ email, password });
       if (error) throw error;
-      // If email confirmations are enabled there won't be a session yet
       if (!data.session) {
         setMsg("Check your email to confirm your account, then log in.");
       } else {
@@ -65,13 +72,13 @@ export default function Login() {
     try {
       setErr(null);
       setOauthLoading("google");
-      // Important for HashRouter: include '#/settings'
+      // For HashRouter, use a hash redirect.
       const redirectTo = `${window.location.origin}/#/settings`;
       await supabase.auth.signInWithOAuth({
         provider: "google",
         options: { redirectTo },
       });
-      // Redirects to Google, so no more code runs here
+      // Redirects away; nothing else runs here.
     } catch (e: any) {
       setErr(e.message || "Google sign-in failed.");
       setOauthLoading(null);
