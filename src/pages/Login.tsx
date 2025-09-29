@@ -17,18 +17,18 @@ export default function Login() {
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
-  // If already signed in, go straight to Settings
+  // If already signed in, go straight to Dashboard
   useEffect(() => {
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) navigate("/settings", { replace: true });
+      if (session?.user) navigate("/dashboard", { replace: true });
     })();
   }, [navigate]);
 
-  // ✅ Handle the moment Google (or any) auth completes
+  // Handle the moment OAuth (or any auth) completes
   useEffect(() => {
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) navigate("/settings", { replace: true });
+      if (session?.user) navigate("/dashboard", { replace: true });
     });
     return () => sub.subscription.unsubscribe();
   }, [navigate]);
@@ -43,7 +43,7 @@ export default function Login() {
     try {
       const { data, error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      if (data.session) navigate("/settings", { replace: true });
+      if (data.session) navigate("/dashboard", { replace: true });
     } catch (e: any) {
       setErr(e.message || "Login failed.");
     } finally {
@@ -59,7 +59,7 @@ export default function Login() {
       if (!data.session) {
         setMsg("Check your email to confirm your account, then log in.");
       } else {
-        navigate("/settings", { replace: true });
+        navigate("/dashboard", { replace: true });
       }
     } catch (e: any) {
       setErr(e.message || "Signup failed.");
@@ -68,22 +68,21 @@ export default function Login() {
     }
   }
 
-async function handleGoogle() {
-  try {
-    setErr(null);
-    setOauthLoading("google");
-    // IMPORTANT: no '#/...' here to avoid double-hash
-    const redirectTo = `${window.location.origin}/`;
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo },
-    });
-  } catch (e: any) {
-    setErr(e.message || "Google sign-in failed.");
-    setOauthLoading(null);
+  async function handleGoogle() {
+    try {
+      setErr(null);
+      setOauthLoading("google");
+      // With HashRouter, keep redirectTo on the origin (no '#/...' to avoid double-hash)
+      const redirectTo = `${window.location.origin}/`;
+      await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: { redirectTo },
+      });
+    } catch (e: any) {
+      setErr(e.message || "Google sign-in failed.");
+      setOauthLoading(null);
+    }
   }
-}
-
 
   return (
     <main className="container mx-auto max-w-md px-4 py-10">
