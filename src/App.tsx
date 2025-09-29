@@ -1,4 +1,3 @@
-// src/App.tsx
 import { useEffect, useState, type ReactNode } from "react";
 import {
   HashRouter as Router,
@@ -11,74 +10,91 @@ import type { User } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 
 import "./index.css";
-import Layout from "./components/Layout";
 
 import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
-import Onboarding from "./pages/Onboarding"; // ✅ new
+import Onboarding from "./pages/Onboarding";
+import Layout from "./components/Layout";
 
-// Bump when you change the legal text to force re-acceptance
-const TERMS_VERSION = "2025-09-29";
+/** Bump when you change the Terms text */
+export const TERMS_VERSION = "2025-09-29";
 
-function ProtectedRoute({
-  user,
-  loading,
-  children,
-}: {
-  user: User | null | undefined;
-  loading: boolean;
-  children: ReactNode;
-}) {
-  const location = useLocation();
-  if (loading) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
-      </div>
-    );
-  }
-  if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  }
-  return <>{children}</>;
+/* ----------------------- auth + profile hooks ----------------------- */
+
+async function fetchSession(): Promise<User | null> {
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  return data.session?.user ?? null;
 }
 
-/** TermsGate
- *  Checks the current user's cleaner row for terms acceptance.
- *  If not accepted (or wrong version), redirect to /onboarding.
- */
-function TermsGate({ children }: { children: ReactNode }) {
-  const [checking, setChecking] = useState(true);
-  const [ok, setOk] = useState(false);
+async function fetchProfileTerms(userId: string) {
+  // Profiles table is optional but recommended. If it doesn't exist, treat as "not accepted".
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("terms_version, terms_accepted_at")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (error) {
+    // If table missing or RLS blocks, don't throw loops; just say "not accepted yet"
+    console.warn("profiles check error:", error.message);
+    return { accepted: false };
+  }
+
+  return {
+    accepted: Boolean(data?.terms_accepted_at && data?.terms_version === TERMS_VERSION),
+  };
+}
+
+/* ----------------------- Route Guards ----------------------- */
+
+function ProtectedRoute({ children }: { children: ReactNode }) {
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [termsOk, setTermsOk] = useState<boolean | undefined>(undefined);
+  const location = useLocation();
 
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) {
-        setOk(false);
-        setChecking(false);
-        return;
-      }
+      try {
+        const u = await fetchSession();
+        if (cancelled) return;
 
-      const { data: row, error } = await supabase
-        .from("cleaners")
-        .select("terms_accepted, terms_version")
-        .eq("user_id", session.user.id)
-        .maybeSingle();
+        if (!u) {
+          setUser(null);
+          setTermsOk(undefined);
+          return;
+        }
 
-      if (error) {
-        console.error("Terms check failed", error);
-        setOk(false);
-      } else {
-        setOk(!!row?.terms_accepted && row?.terms_version === TERMS_VERSION);
+        setUser(u);
+
+        const t = await fetchProfileTerms(u.id);
+        if (cancelled) return;
+        setTermsOk(t.accepted);
+      } catch (e) {
+        if (!cancelled) {
+          console.warn(e);
+          setUser(null);
+          setTermsOk(undefined);
+        }
       }
-      setChecking(false);
     })();
-  }, []);
 
-  if (checking) {
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, sess) => {
+      setUser(sess?.user ?? null);
+      // don’t fetch terms here; next render will trigger the effect above
+    });
+
+    return () => {
+      cancelled = true;
+      sub.subscription.unsubscribe();
+    };
+  }, [location.pathname]);
+
+  // Still checking session
+  if (user === undefined) {
     return (
       <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
         Loading…
@@ -86,86 +102,65 @@ function TermsGate({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!ok) return <Navigate to="/onboarding" replace />;
+  // Not logged in → to /login (but remember where they were going)
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location }} />;
+  }
 
+  // If NOT accepted terms and NOT already on /onboarding → send to /onboarding
+  if (termsOk === false && location.pathname !== "/onboarding") {
+    return <Navigate to="/onboarding" replace />;
+  }
+
+  // If accepted terms and trying to visit /onboarding, send them onward
+  if (termsOk === true && location.pathname === "/onboarding") {
+    // After accepting we send users to /settings?firstRun=1 to finish profile
+    return <Navigate to="/settings?firstRun=1" replace />;
+  }
+
+  // Otherwise allow
   return <>{children}</>;
 }
 
-function NotFound() {
-  return (
-    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-      <h1 className="section-title text-2xl mb-2">404</h1>
-      <p className="muted">That page doesn’t exist.</p>
-    </div>
-  );
-}
+/* ----------------------- App Routes ----------------------- */
 
 export default function App() {
-  // undefined = still checking session, null = no user
-  const [user, setUser] = useState<User | null | undefined>(undefined);
-
-  // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
-  useEffect(() => {
-    if (window.location.pathname !== "/") {
-      window.history.replaceState(null, "", "/");
-    }
-  }, []);
-
-  useEffect(() => {
-    // initial check
-    supabase.auth.getSession().then(({ data: { session } }) =>
-      setUser(session?.user ?? null)
-    );
-
-    // keep in sync with auth changes
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
-      setUser(session?.user ?? null);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  const loading = user === undefined;
-
   return (
     <Router>
       <Layout>
         <Routes>
+          {/* Public pages */}
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ new */}
 
+          {/* Protected pages */}
           <Route
-            path="/dashboard"
+            path="/onboarding"
             element={
-              <ProtectedRoute user={user} loading={loading}>
-                <TermsGate>
-                  <Dashboard />
-                </TermsGate>
+              <ProtectedRoute>
+                <Onboarding />
               </ProtectedRoute>
             }
           />
-
           <Route
             path="/settings"
             element={
-              <ProtectedRoute user={user} loading={loading}>
-                <TermsGate>
-                  <Settings />
-                </TermsGate>
+              <ProtectedRoute>
+                <Settings />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/dashboard"
+            element={
+              <ProtectedRoute>
+                <Dashboard />
               </ProtectedRoute>
             }
           />
 
-          <Route
-            path="/_debug"
-            element={
-              <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-                Router is working ✅
-              </div>
-            }
-          />
-
-          <Route path="*" element={<NotFound />} />
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Layout>
     </Router>
