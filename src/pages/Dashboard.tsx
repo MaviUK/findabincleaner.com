@@ -4,6 +4,20 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
+// src/pages/Dashboard.tsx (wherever you want the card)
+import AnalyticsOverview from "../components/AnalyticsOverview";
+
+export default function Dashboard() {
+  return (
+    <div className="p-6 space-y-6">
+      {/* ...your existing dashboard header/cards... */}
+      <AnalyticsOverview />
+      {/* maybe link to the full table: */}
+      {/* <Link to="/analytics" className="underline text-sm">View full stats →</Link> */}
+    </div>
+  );
+}
+
 
 type Cleaner = {
   id: string;
