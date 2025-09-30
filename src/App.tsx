@@ -18,6 +18,7 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import Onboarding from "./pages/Onboarding"; // ✅ new
+import Analytics from "./pages/Analytics";    // ✅ NEW
 
 // Bump when you change the legal text to force re-acceptance
 const TERMS_VERSION = "2025-09-29";
@@ -132,7 +133,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ new */}
+          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ */}
 
           <Route
             path="/dashboard"
@@ -151,6 +152,18 @@ export default function App() {
               <ProtectedRoute user={user} loading={loading}>
                 <TermsGate>
                   <Settings />
+                </TermsGate>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ✅ NEW: Analytics route (protected + terms-gated) */}
+          <Route
+            path="/analytics"
+            element={
+              <ProtectedRoute user={user} loading={loading}>
+                <TermsGate>
+                  <Analytics />
                 </TermsGate>
               </ProtectedRoute>
             }
