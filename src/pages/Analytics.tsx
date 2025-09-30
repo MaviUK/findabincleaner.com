@@ -9,53 +9,96 @@ type Row = {
   clicks_message: number | null;
   clicks_website: number | null;
   clicks_phone: number | null;
-  cleaner_id: string; // ← needed to filter/guard
+  cleaner_id: string; // used to guard/filter
 };
 
 export default function Analytics() {
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
   useEffect(() => {
     (async () => {
-      setLoading(true);
+      try {
+        setErr(null);
+        setLoading(true);
 
-      // 1) who is logged in
-      const { data: { session } } = await supabase.auth.getSession();
-      const uid = session?.user?.id;
-      if (!uid) { setRows([]); setLoading(false); return; }
+        // 1) Identify current user
+        const { data: { session } } = await supabase.auth.getSession();
+        const uid = session?.user?.id;
+        if (!uid) {
+          setRows([]);
+          setErr("You’re not signed in.");
+          setLoading(false);
+          return;
+        }
 
-      // 2) find their cleaner.id
-      const { data: cleaner, error: ce } = await supabase
-        .from("cleaners")
-        .select("id")
-        .eq("user_id", uid)
-        .maybeSingle();
-      if (ce || !cleaner) { setRows([]); setLoading(false); return; }
+        // 2) Resolve their cleaner id
+        const { data: cleaner, error: ce } = await supabase
+          .from("cleaners")
+          .select("id")
+          .eq("user_id", uid)
+          .maybeSingle();
 
-      // 3) fetch ONLY their stats
-      const { data, error } = await supabase
-        .from("area_stats_30d")
-        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id")
-        .eq("cleaner_id", cleaner.id) // ← filter
-        .order("area_name", { ascending: true });
+        if (ce) throw ce;
+        if (!cleaner) {
+          setRows([]);
+          setErr("No cleaner profile found for this account.");
+          setLoading(false);
+          return;
+        }
 
-      if (!error && data) setRows(data as Row[]);
-      setLoading(false);
+        // 3) Fetch ONLY this cleaner's area stats (view = last 30 days)
+        const { data, error } = await supabase
+          .from("area_stats_30d")
+          .select(
+            "area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id"
+          )
+          .eq("cleaner_id", cleaner.id)
+          .order("area_name", { ascending: true });
+
+        if (error) throw error;
+        setRows((data as Row[]) || []);
+      } catch (e: any) {
+        console.error("Analytics load error:", e);
+        setErr(e?.message || "Failed to load analytics.");
+      } finally {
+        setLoading(false);
+      }
     })();
   }, []);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     if (!term) return rows;
-    return rows.filter(r => (r.area_name || "").toLowerCase().includes(term));
+    return rows.filter((r) => (r.area_name || "").toLowerCase().includes(term));
   }, [rows, q]);
+
+  // compute totals across filtered rows
+  const totals = useMemo(() => {
+    const init = { impressions: 0, msg: 0, web: 0, phone: 0 };
+    return filtered.reduce((acc, r) => {
+      acc.impressions += r.impressions || 0;
+      acc.msg += r.clicks_message || 0;
+      acc.web += r.clicks_website || 0;
+      acc.phone += r.clicks_phone || 0;
+      return acc;
+    }, init);
+  }, [filtered]);
 
   if (loading) {
     return (
       <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-6">
         Loading stats…
+      </div>
+    );
+  }
+
+  if (err) {
+    return (
+      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-6">
+        <div className="border rounded-xl p-4 text-red-700 bg-red-50">{err}</div>
       </div>
     );
   }
@@ -105,6 +148,7 @@ export default function Analytics() {
                 </tr>
               );
             })}
+
             {filtered.length === 0 && (
               <tr>
                 <td className="py-6 px-3 text-gray-500" colSpan={7}>
@@ -113,6 +157,28 @@ export default function Analytics() {
               </tr>
             )}
           </tbody>
+
+          {/* Totals row */}
+          {filtered.length > 0 && (
+            <tfoot>
+              <tr className="border-t bg-gray-50 font-medium">
+                <td className="py-2 px-3">Total</td>
+                <td className="py-2 px-3">{totals.impressions}</td>
+                <td className="py-2 px-3">{totals.msg}</td>
+                <td className="py-2 px-3">{totals.web}</td>
+                <td className="py-2 px-3">{totals.phone}</td>
+                <td className="py-2 px-3">{totals.msg + totals.web + totals.phone}</td>
+                <td className="py-2 px-3">
+                  {totals.impressions
+                    ? `${(
+                        ((totals.msg + totals.web + totals.phone) / totals.impressions) *
+                        100
+                      ).toFixed(1)}%`
+                    : "—"}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
 
