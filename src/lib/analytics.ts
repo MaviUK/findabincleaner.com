@@ -3,7 +3,18 @@ import { supabase } from "./supabase";
 
 type EventName = "impression" | "click_message" | "click_website" | "click_phone";
 
-/** Standard RPC logger (awaitable). */
+/** Cache the current user's access token for auth.uid() RLS. */
+let ACCESS_TOKEN: string | null = null;
+
+// Initialize token cache and keep it fresh
+void supabase.auth.getSession().then(({ data }) => {
+  ACCESS_TOKEN = data.session?.access_token ?? null;
+});
+supabase.auth.onAuthStateChange((_event, session) => {
+  ACCESS_TOKEN = session?.access_token ?? null;
+});
+
+/** Awaitable RPC — use for things that don't trigger navigation (e.g., impressions). */
 export async function recordEvent(params: {
   cleanerId: string;
   areaId: string | null;
@@ -21,8 +32,11 @@ export async function recordEvent(params: {
   });
 }
 
-/** Fire-and-forget logger that survives page unload/app switch. */
-export function recordEventBeacon(params: {
+/**
+ * Click-safe logger: uses fetch with keepalive and proper Authorization headers.
+ * Call this BEFORE navigating/opening external apps/tabs.
+ */
+export async function recordEventBeacon(params: {
   cleanerId: string;
   areaId: string | null;
   event: EventName;
@@ -40,26 +54,23 @@ export function recordEventBeacon(params: {
     p_meta: meta ?? {},
   });
 
-  try {
-    if (navigator.sendBeacon) {
-      const blob = new Blob([body], { type: "application/json" });
-      navigator.sendBeacon(url, blob);
-      return;
-    }
-  } catch {
-    // ignore and fall back
-  }
+  // IMPORTANT: include the user's JWT, not just the anon key, for RLS to pass.
+  const auth = ACCESS_TOKEN ?? import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-  fetch(url, {
+  await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+      Authorization: `Bearer ${auth}`,
+      Prefer: "return=minimal",
     },
+    // keepalive lets the request continue during navigation/unload
     keepalive: true,
     body,
-  }).catch(() => {});
+  }).catch(() => {
+    // swallow — this is fire-and-forget
+  });
 }
 
 /** Stable, anonymous session id for dedupe/attribution. */
