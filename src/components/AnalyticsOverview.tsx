@@ -13,29 +13,40 @@ export default function AnalyticsOverview() {
   const [row, setRow] = useState<Row | null>(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+   useEffect(() => {
     (async () => {
       setLoading(true);
-      // Aggregate over your area_stats_30d view
-      const { data, error } = await supabase
-        .from("area_stats_30d")
-        .select("impressions, clicks_message, clicks_website, clicks_phone");
 
-      if (!error && data) {
-        const agg = data.reduce(
-          (acc: Row, r: any) => ({
-            impressions: acc.impressions + (r.impressions || 0),
-            clicks_message: acc.clicks_message + (r.clicks_message || 0),
-            clicks_website: acc.clicks_website + (r.clicks_website || 0),
-            clicks_phone: acc.clicks_phone + (r.clicks_phone || 0),
-          }),
-          { impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 }
-        );
-        setRow(agg);
-      }
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setTotals({impressions:0,clicks_message:0,clicks_website:0,clicks_phone:0}); setLoading(false); return; }
+
+      const { data: cleaner } = await supabase
+        .from("cleaners")
+        .select("id")
+        .eq("user_id", uid)
+        .maybeSingle();
+      if (!cleaner) { setTotals({impressions:0,clicks_message:0,clicks_website:0,clicks_phone:0}); setLoading(false); return; }
+
+      const { data } = await supabase
+        .from("area_stats_30d")
+        .select("impressions, clicks_message, clicks_website, clicks_phone")
+        .eq("cleaner_id", cleaner.id);    // 👈 filter
+
+      const agg = (data || []).reduce(
+        (acc: Totals, r: any) => ({
+          impressions: acc.impressions + (r.impressions || 0),
+          clicks_message: acc.clicks_message + (r.clicks_message || 0),
+          clicks_website: acc.clicks_website + (r.clicks_website || 0),
+          clicks_phone: acc.clicks_phone + (r.clicks_phone || 0),
+        }),
+        { impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 }
+      );
+      setTotals(agg);
       setLoading(false);
     })();
   }, []);
+
 
   if (loading) return <div className="p-4 border rounded-xl">Loading analytics…</div>;
   if (!row) return null;
