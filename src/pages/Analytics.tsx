@@ -9,6 +9,7 @@ type Row = {
   clicks_message: number | null;
   clicks_website: number | null;
   clicks_phone: number | null;
+  cleaner_id: string; // ← needed to filter/guard
 };
 
 export default function Analytics() {
@@ -19,9 +20,25 @@ export default function Analytics() {
   useEffect(() => {
     (async () => {
       setLoading(true);
+
+      // 1) who is logged in
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) { setRows([]); setLoading(false); return; }
+
+      // 2) find their cleaner.id
+      const { data: cleaner, error: ce } = await supabase
+        .from("cleaners")
+        .select("id")
+        .eq("user_id", uid)
+        .maybeSingle();
+      if (ce || !cleaner) { setRows([]); setLoading(false); return; }
+
+      // 3) fetch ONLY their stats
       const { data, error } = await supabase
         .from("area_stats_30d")
-        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone")
+        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id")
+        .eq("cleaner_id", cleaner.id) // ← filter
         .order("area_name", { ascending: true });
 
       if (!error && data) setRows(data as Row[]);
@@ -32,7 +49,7 @@ export default function Analytics() {
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     if (!term) return rows;
-    return rows.filter((r) => (r.area_name || "").toLowerCase().includes(term));
+    return rows.filter(r => (r.area_name || "").toLowerCase().includes(term));
   }, [rows, q]);
 
   if (loading) {
@@ -91,7 +108,7 @@ export default function Analytics() {
             {filtered.length === 0 && (
               <tr>
                 <td className="py-6 px-3 text-gray-500" colSpan={7}>
-                  No areas match your filter.
+                  No areas found.
                 </td>
               </tr>
             )}
