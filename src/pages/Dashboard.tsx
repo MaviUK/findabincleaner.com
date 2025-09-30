@@ -4,20 +4,7 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
-// src/pages/Dashboard.tsx (wherever you want the card)
-import AnalyticsOverview from "../components/AnalyticsOverview";
-
-export default function Dashboard() {
-  return (
-    <div className="p-6 space-y-6">
-      {/* ...your existing dashboard header/cards... */}
-      <AnalyticsOverview />
-      {/* maybe link to the full table: */}
-      {/* <Link to="/analytics" className="underline text-sm">View full stats →</Link> */}
-    </div>
-  );
-}
-
+import AnalyticsOverview from "../components/AnalyticsOverview"; // NEW
 
 type Cleaner = {
   id: string;
@@ -108,17 +95,21 @@ export default function Dashboard() {
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
-            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
+            <p className="muted">
+              Welcome! Add your logo, business name, and address to complete your profile.
+            </p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
-              onSaved={(patch) => setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))}
+              onSaved={(patch) =>
+                setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))
+              }
             />
           </div>
         </section>
       ) : (
         <>
-          {/* Profile summary (fixed alignment) */}
+          {/* Profile summary */}
           <section className="card">
             <div className="card-pad grid grid-cols-[auto_1fr_auto] items-center gap-4">
               {cleaner.logo_url ? (
@@ -136,19 +127,33 @@ export default function Dashboard() {
                 <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
-              <Link to="/settings" className="btn btn-primary justify-self-end">Edit profile</Link>
+              <Link to="/settings" className="btn btn-primary justify-self-end">
+                Edit profile
+              </Link>
             </div>
           </section>
 
-          {/* Service areas (let editor handle its internals; give it a tidy container) */}
+          {/* Analytics (at-a-glance) */}
+          <section className="card">
+            <div className="card-pad space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Analytics</h2>
+                <Link to="/analytics" className="text-sm underline">
+                  View full stats →
+                </Link>
+              </div>
+              <AnalyticsOverview />
+            </div>
+          </section>
+
+          {/* Service areas */}
           <section className="card">
             <div className="card-pad">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Your Service Areas</h2>
-                {/* ServiceAreaEditor renders its own “New Area” UI, so no extra button here */}
+                {/* ServiceAreaEditor renders its own “New Area” UI */}
               </div>
               <div className="rounded-xl overflow-hidden border">
-                {/* If your editor stretches to parent, this wrapper keeps edges crisp */}
                 <ServiceAreaEditor cleanerId={cleaner.id} />
               </div>
             </div>
