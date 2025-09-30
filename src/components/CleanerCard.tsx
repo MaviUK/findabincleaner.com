@@ -440,9 +440,11 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
-          // pass analytics info
+          // analytics context
           areaId={areaId}
           sessionId={sessionId}
+          searchLat={searchLat}
+          searchLng={searchLng}
         />
       )}
     </div>
@@ -477,6 +479,8 @@ function EnquiryModal(props: {
   /** analytics context */
   areaId: string | null;
   sessionId: string;
+  searchLat: number | null;
+  searchLng: number | null;
 }) {
   const {
     cleaner,
@@ -504,7 +508,41 @@ function EnquiryModal(props: {
     autocompleteRef,
     areaId,
     sessionId,
+    searchLat,
+    searchLng,
   } = props;
+
+  // local logger inside modal (fixes the out-of-scope error)
+  function logClickModal(event: "click_message" | "click_website" | "click_phone") {
+    if (areaId) {
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId,
+        event,
+        sessionId,
+      });
+    } else if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        event,
+        sessionId,
+      });
+    } else {
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId: null,
+        event,
+        sessionId,
+      });
+    }
+  }
 
   return (
     <div
@@ -515,7 +553,7 @@ function EnquiryModal(props: {
     >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
-        <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
+        <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h[calc(100vh-4rem)] sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
           {/* Sticky header */}
           <div className="sticky top-0 z-10 bg-white border-b border-black/5">
             <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
@@ -618,7 +656,7 @@ function EnquiryModal(props: {
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  className="min-h[110px] min-h-[110px] rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/50"
+                  className="min-h-[110px] rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/50"
                   placeholder="Tell us about your bins, frequency, and any access notes…"
                   required
                 />
@@ -635,7 +673,7 @@ function EnquiryModal(props: {
           {/* Sticky footer */}
           <div className="sticky bottom-0 z-10 bg-white border-t border-black/5 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom,0)+12px)]">
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
-              {props.isMobile && cleaner.whatsapp && (
+              {isMobile && cleaner.whatsapp && (
                 <a
                   href={buildWhatsAppUrl(cleaner.whatsapp, {
                     business: cleaner.business_name,
@@ -649,7 +687,7 @@ function EnquiryModal(props: {
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
                   onClick={() => {
-                    logClick("click_message");
+                    logClickModal("click_message");
                   }}
                 >
                   Send via WhatsApp
@@ -665,7 +703,7 @@ function EnquiryModal(props: {
                   if (!message.trim()) return setError("Please add a short message.");
 
                   // record Email message click
-                  logClick("click_message");
+                  logClickModal("click_message");
 
                   try {
                     setSubmitting("email");
