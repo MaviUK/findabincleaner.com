@@ -1,7 +1,5 @@
-// src/components/FindCleaners.tsx
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { findContainingAreaId } from "../lib/areas";
 import {
   recordEvent,
   recordEventBeacon,
@@ -26,6 +24,8 @@ type MatchIn = {
   rating_count?: number | null;
   distance_m?: number | null;
   distance_meters?: number | null;
+
+  // some installs already return this from the RPC; if not, we’ll fall back to point logging
   area_id?: string | null;
   area_name?: string | null;
 };
@@ -101,7 +101,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Postcode → lat/lng + town label
+      // 1) geocode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -121,18 +121,14 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         "";
       setLocality(town);
 
-      // 2) polygon-based RPC
+      // 2) polygon RPC first
       let list: MatchIn[] = [];
       {
         const { data: coverMatches, error: coverErr } = await supabase.rpc(
           "find_cleaners_covering_point",
           { lat, lng }
         );
-        if (coverErr) {
-          console.error("RPC find_cleaners_covering_point error:", coverErr);
-        } else {
-          list = (coverMatches || []) as MatchIn[];
-        }
+        if (!coverErr && coverMatches) list = coverMatches as MatchIn[];
       }
 
       // 3) fallback to distance RPC
@@ -141,19 +137,15 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           "find_cleaners_for_point_sorted",
           { lat, lng, max_km: 50, lim: 50 }
         );
-        if (distErr) {
-          console.error("RPC find_cleaners_for_point_sorted error:", distErr);
-          if (!list.length) {
-            setError(distErr.message);
-            return;
-          }
-        } else {
-          list = (distMatches || []) as MatchIn[];
+        if (distErr && !list.length) {
+          setError(distErr.message);
+          return;
         }
+        list = (distMatches || []) as MatchIn[];
       }
 
-      // 4) normalize
-      const normalized = list.map<MatchOut>((m) => ({
+      // 4) normalize (note: we DO NOT fetch service_areas here anymore)
+      const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
         logo_url: m.logo_url ?? null,
@@ -171,96 +163,59 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         area_name: (m as any).area_name ?? null,
       }));
 
-      // 5) fill missing area_id via Turf
-      const needArea = normalized.filter((n) => !n.area_id);
-      let withArea = normalized;
-
-      if (needArea.length) {
-        const cleanerIds = [...new Set(needArea.map((m) => m.cleaner_id))];
-        const { data: areasRows, error: areasErr } = await supabase
-          .from("service_areas")
-          .select("id, cleaner_id, geometry, name")
-          .in("cleaner_id", cleanerIds);
-        if (areasErr) {
-          console.error("service_areas fetch error:", areasErr);
-        } else {
-          const areasByCleaner = new Map<string, { id: string; geometry: any; name?: string }[]>();
-          (areasRows || []).forEach((r: any) => {
-            const arr = areasByCleaner.get(r.cleaner_id) || [];
-            const geom = typeof r.geometry === "string" ? JSON.parse(r.geometry) : r.geometry;
-            arr.push({ id: r.id, geometry: geom, name: r.name });
-            areasByCleaner.set(r.cleaner_id, arr);
-          });
-
-          withArea = normalized.map((m) => {
-            if (m.area_id) return m;
-            const arr = areasByCleaner.get(m.cleaner_id) || [];
-            const areaId = findContainingAreaId(lat, lng, arr as any);
-            return { ...m, area_id: areaId ?? null };
-          });
-        }
-      }
-
-      // 6) impressions (fallback to point when needed)
+      // 5) record impressions (use area_id when present; otherwise point-based)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         await Promise.all(
-          withArea.map((r) => {
-            if (r.area_id) {
-              return recordEvent({
-                cleanerId: r.cleaner_id,
-                areaId: r.area_id,
-                event: "impression",
-                sessionId,
-                meta: { search_id: searchId, postcode: pc, lat, lng, town },
-              });
-            } else {
-              return recordEventFromPointBeacon({
-                cleanerId: r.cleaner_id,
-                lat,
-                lng,
-                event: "impression",
-                sessionId,
-                meta: { search_id: searchId, postcode: pc, town },
-              });
-            }
-          })
+          normalized.map((r) =>
+            r.area_id
+              ? recordEvent({
+                  cleanerId: r.cleaner_id,
+                  areaId: r.area_id,
+                  event: "impression",
+                  sessionId,
+                  meta: { search_id: searchId, postcode: pc, lat, lng, town },
+                })
+              : recordEventFromPointBeacon({
+                  cleanerId: r.cleaner_id,
+                  lat,
+                  lng,
+                  event: "impression",
+                  sessionId,
+                  meta: { search_id: searchId, postcode: pc, town },
+                })
+          )
         );
       } catch (e) {
         console.warn("recordEvent(impression) error", e);
       }
 
-      // 7) push to parent / inline
-      if (!onSearchComplete) setResults(withArea);
-      onSearchComplete?.(withArea, pc, town);
+      // put results in UI or bubble up
+      if (!onSearchComplete) setResults(normalized);
+      onSearchComplete?.(normalized, pc, town);
 
-      // --- helpers for click logging from inline list ---
-      function logClickOrPoint(
+      // expose a click logger that falls back to point-based RPC
+      (window as any).__nbg_clickLogger = (
         r: MatchOut,
         ev: "click_website" | "click_phone" | "click_message"
-      ) {
+      ) => {
         const sessionId = getOrCreateSessionId();
-        if (r.area_id) {
-          return recordEventBeacon({
-            cleanerId: r.cleaner_id,
-            areaId: r.area_id,
-            event: ev,
-            sessionId,
-          });
-        } else {
-          return recordEventFromPointBeacon({
-            cleanerId: r.cleaner_id,
-            lat,
-            lng,
-            event: ev,
-            sessionId,
-          });
-        }
-      }
-
-      // expose handlers onto window for use in JSX below (avoid re-declaring)
-      (window as any).__nbg_clickLogger = logClickOrPoint;
+        return r.area_id
+          ? recordEventBeacon({
+              cleanerId: r.cleaner_id,
+              areaId: r.area_id,
+              event: ev,
+              sessionId,
+            })
+          : recordEventFromPointBeacon({
+              cleanerId: r.cleaner_id,
+              lat,
+              lng,
+              event: ev,
+              sessionId,
+            });
+      };
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError(e?.message || "Something went wrong.");
@@ -329,7 +284,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           onClick={(e) => {
                             e.preventDefault();
                             (window as any).__nbg_clickLogger?.(r, "click_website");
-                            // open after logging (new tab)
                             setTimeout(() => {
                               window.open(r.website!, "_blank", "noopener,noreferrer");
                             }, 10);
@@ -345,7 +299,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           onClick={(e) => {
                             e.preventDefault();
                             (window as any).__nbg_clickLogger?.(r, "click_phone");
-                            // navigate after logging (same tab)
                             setTimeout(() => {
                               window.location.href = tel;
                             }, 10);
@@ -363,7 +316,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           onClick={(e) => {
                             e.preventDefault();
                             (window as any).__nbg_clickLogger?.(r, "click_message");
-                            // open after logging (new tab / app)
                             setTimeout(() => {
                               window.open(wa, "_blank", "noopener,noreferrer");
                             }, 10);
