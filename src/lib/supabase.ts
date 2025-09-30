@@ -12,5 +12,10 @@ export const supabase = createClient(url, anonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true, // important for Google OAuth redirects
+  
   },
+
+  // src/lib/supabase.ts (at the bottom, after creating `supabase`)
+if (typeof window !== "undefined") (window as any).__sb = supabase;
+
 });
