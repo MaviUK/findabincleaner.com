@@ -1,4 +1,3 @@
-// src/pages/Analytics.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -9,7 +8,7 @@ type Row = {
   clicks_message: number | null;
   clicks_website: number | null;
   clicks_phone: number | null;
-  cleaner_id: string; // used to guard/filter
+  cleaner_id: string;
 };
 
 export default function Analytics() {
@@ -18,55 +17,56 @@ export default function Analytics() {
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
 
+  async function loadRows() {
+    try {
+      setErr(null);
+      setLoading(true);
+
+      const { data: { session } } = await supabase.auth.getSession();
+      const uid = session?.user?.id;
+      if (!uid) throw new Error("You’re not signed in.");
+
+      const { data: cleaner, error: ce } = await supabase
+        .from("cleaners")
+        .select("id")
+        .eq("user_id", uid)
+        .maybeSingle();
+      if (ce) throw ce;
+      if (!cleaner) throw new Error("No cleaner profile found.");
+
+      const { data, error } = await supabase
+        .from("area_stats_30d")
+        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id")
+        .eq("cleaner_id", cleaner.id)
+        .order("area_name", { ascending: true });
+      if (error) throw error;
+
+      setRows((data as Row[]) || []);
+    } catch (e: any) {
+      console.error("Analytics load error:", e);
+      setErr(e?.message || "Failed to load analytics.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
-    (async () => {
-      try {
-        setErr(null);
-        setLoading(true);
+    loadRows();
 
-        // 1) Identify current user
-        const { data: { session } } = await supabase.auth.getSession();
-        const uid = session?.user?.id;
-        if (!uid) {
-          setRows([]);
-          setErr("You’re not signed in.");
-          setLoading(false);
-          return;
-        }
+    // quick auto-refresh so new events appear without manual reload
+    const t1 = setTimeout(loadRows, 1500);
+    const t2 = setTimeout(loadRows, 3500);
 
-        // 2) Resolve their cleaner id
-        const { data: cleaner, error: ce } = await supabase
-          .from("cleaners")
-          .select("id")
-          .eq("user_id", uid)
-          .maybeSingle();
+    const onFocus = () => loadRows();
+    window.addEventListener("visibilitychange", onFocus);
+    window.addEventListener("focus", onFocus);
 
-        if (ce) throw ce;
-        if (!cleaner) {
-          setRows([]);
-          setErr("No cleaner profile found for this account.");
-          setLoading(false);
-          return;
-        }
-
-        // 3) Fetch ONLY this cleaner's area stats (view = last 30 days)
-        const { data, error } = await supabase
-          .from("area_stats_30d")
-          .select(
-            "area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id"
-          )
-          .eq("cleaner_id", cleaner.id)
-          .order("area_name", { ascending: true });
-
-        if (error) throw error;
-        setRows((data as Row[]) || []);
-      } catch (e: any) {
-        console.error("Analytics load error:", e);
-        setErr(e?.message || "Failed to load analytics.");
-      } finally {
-        setLoading(false);
-      }
-    })();
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      window.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
+    };
   }, []);
 
   const filtered = useMemo(() => {
@@ -75,7 +75,6 @@ export default function Analytics() {
     return rows.filter((r) => (r.area_name || "").toLowerCase().includes(term));
   }, [rows, q]);
 
-  // compute totals across filtered rows
   const totals = useMemo(() => {
     const init = { impressions: 0, msg: 0, web: 0, phone: 0 };
     return filtered.reduce((acc, r) => {
@@ -158,7 +157,6 @@ export default function Analytics() {
             )}
           </tbody>
 
-          {/* Totals row */}
           {filtered.length > 0 && (
             <tfoot>
               <tr className="border-t bg-gray-50 font-medium">
