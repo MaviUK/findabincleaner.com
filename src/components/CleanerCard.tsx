@@ -3,7 +3,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
-import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
+import {
+  recordEventBeacon,
+  recordEventFromPointBeacon,
+  getOrCreateSessionId,
+} from "../lib/analytics";
 
 // Broad type to match Settings/ResultsList usage
 export type Cleaner = {
@@ -32,8 +36,11 @@ export type CleanerCardProps = {
   onSendEnquiry?: (payload: EnquiryPayload) => Promise<void>;
   emailEndpoint?: string;
 
-  /** NEW: for analytics attribution (optional) */
+  /** For analytics attribution (preferred if available) */
   areaId?: string | null;
+  /** Fallback so the DB can compute area when areaId is missing */
+  searchLat?: number | null;
+  searchLng?: number | null;
 };
 
 type EnquiryPayload = {
@@ -53,6 +60,8 @@ export default function CleanerCard({
   onSendEnquiry,
   emailEndpoint,
   areaId = null,
+  searchLat = null,
+  searchLng = null,
 }: CleanerCardProps) {
   const [showPhone, setShowPhone] = useState(false);
   const [showEnquiry, setShowEnquiry] = useState(false);
@@ -114,12 +123,36 @@ export default function CleanerCard({
   }
 
   function logClick(event: "click_message" | "click_website" | "click_phone") {
-    recordEventBeacon({
-      cleanerId: cleaner.id,
-      areaId,
-      event,
-      sessionId,
-    });
+    if (areaId) {
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId,
+        event,
+        sessionId,
+      });
+    } else if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      // No areaId on the client → let the DB determine it from the point
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        event,
+        sessionId,
+      });
+    } else {
+      // Last resort: still send without area; DB will store null area_id
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId: null,
+        event,
+        sessionId,
+      });
+    }
   }
 
   return (
@@ -242,7 +275,7 @@ export default function CleanerCard({
           <button
             type="button"
             onClick={() => {
-              logClick("click_message"); // record Message click
+              logClick("click_message");
               setShowEnquiry(true);
             }}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
@@ -266,7 +299,7 @@ export default function CleanerCard({
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
                   onClick={() => {
-                    logClick("click_phone"); // record Phone click
+                    logClick("click_phone");
                     setShowPhone(false);
                   }}
                   title="Tap to call"
@@ -281,7 +314,7 @@ export default function CleanerCard({
             <button
               type="button"
               onClick={() => {
-                logClick("click_website"); // record Website click
+                logClick("click_website");
                 go(websiteHref, true);
               }}
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
@@ -329,7 +362,7 @@ export default function CleanerCard({
             <button
               type="button"
               onClick={() => {
-                logClick("click_message"); // record Message click
+                logClick("click_message");
                 setShowEnquiry(true);
               }}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
@@ -353,7 +386,7 @@ export default function CleanerCard({
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
                     onClick={() => {
-                      logClick("click_phone"); // record Phone click
+                      logClick("click_phone");
                       setShowPhone(false);
                     }}
                     title="Tap to call"
@@ -368,7 +401,7 @@ export default function CleanerCard({
               <button
                 type="button"
                 onClick={() => {
-                  logClick("click_website"); // record Website click
+                  logClick("click_website");
                   go(websiteHref, true);
                 }}
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
@@ -441,7 +474,7 @@ function EnquiryModal(props: {
   };
   hasPlaces: boolean;
   autocompleteRef: any;
-  /** NEW: analytics context */
+  /** analytics context */
   areaId: string | null;
   sessionId: string;
 }) {
@@ -616,14 +649,7 @@ function EnquiryModal(props: {
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
                   onClick={() => {
-                    // record WhatsApp message click
-                    recordEventBeacon({
-                      cleanerId: cleaner.id,
-                      areaId,
-                      event: "click_message",
-                      sessionId,
-                    });
-                    // let the link open in a new tab/app
+                    logClick("click_message");
                   }}
                 >
                   Send via WhatsApp
@@ -639,12 +665,7 @@ function EnquiryModal(props: {
                   if (!message.trim()) return setError("Please add a short message.");
 
                   // record Email message click
-                  recordEventBeacon({
-                    cleanerId: cleaner.id,
-                    areaId,
-                    event: "click_message",
-                    sessionId,
-                  });
+                  logClick("click_message");
 
                   try {
                     setSubmitting("email");
