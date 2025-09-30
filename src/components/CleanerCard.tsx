@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
+import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 // Broad type to match Settings/ResultsList usage
 export type Cleaner = {
@@ -30,6 +31,9 @@ export type CleanerCardProps = {
 
   onSendEnquiry?: (payload: EnquiryPayload) => Promise<void>;
   emailEndpoint?: string;
+
+  /** NEW: for analytics attribution (optional) */
+  areaId?: string | null;
 };
 
 type EnquiryPayload = {
@@ -48,6 +52,7 @@ export default function CleanerCard({
   showPayments,
   onSendEnquiry,
   emailEndpoint,
+  areaId = null,
 }: CleanerCardProps) {
   const [showPhone, setShowPhone] = useState(false);
   const [showEnquiry, setShowEnquiry] = useState(false);
@@ -60,6 +65,9 @@ export default function CleanerCard({
   const [userPhone, setUserPhone] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
+
+  // Session id for analytics
+  const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
   // Device checks
   const [isMobile, setIsMobile] = useState(false);
@@ -97,6 +105,22 @@ export default function CleanerCard({
     if (!cleaner.website) return null;
     return normalizeWebsite(cleaner.website);
   }, [cleaner.website]);
+
+  // Helpers to log + navigate
+  function go(href?: string | null, blank?: boolean) {
+    if (!href) return;
+    if (blank) window.open(href, "_blank", "noopener,noreferrer");
+    else window.location.href = href;
+  }
+
+  function logClick(event: "click_message" | "click_website" | "click_phone") {
+    recordEventBeacon({
+      cleanerId: cleaner.id,
+      areaId,
+      event,
+      sessionId,
+    });
+  }
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-3 sm:p-5">
@@ -217,7 +241,10 @@ export default function CleanerCard({
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => setShowEnquiry(true)}
+            onClick={() => {
+              logClick("click_message"); // record Message click
+              setShowEnquiry(true);
+            }}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
@@ -238,7 +265,10 @@ export default function CleanerCard({
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                  onClick={() => setShowPhone(false)}
+                  onClick={() => {
+                    logClick("click_phone"); // record Phone click
+                    setShowPhone(false);
+                  }}
                   title="Tap to call"
                 >
                   {prettyPhone(cleaner.phone)}
@@ -248,14 +278,16 @@ export default function CleanerCard({
           )}
 
           {websiteHref && (
-            <a
-              href={websiteHref}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              type="button"
+              onClick={() => {
+                logClick("click_website"); // record Website click
+                go(websiteHref, true);
+              }}
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
-            </a>
+            </button>
           )}
         </div>
       </div>
@@ -296,7 +328,10 @@ export default function CleanerCard({
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              onClick={() => setShowEnquiry(true)}
+              onClick={() => {
+                logClick("click_message"); // record Message click
+                setShowEnquiry(true);
+              }}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
             >
               Message
@@ -317,7 +352,10 @@ export default function CleanerCard({
                   <a
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                    onClick={() => setShowPhone(false)}
+                    onClick={() => {
+                      logClick("click_phone"); // record Phone click
+                      setShowPhone(false);
+                    }}
                     title="Tap to call"
                   >
                     {prettyPhone(cleaner.phone)}
@@ -327,14 +365,16 @@ export default function CleanerCard({
             )}
 
             {websiteHref && (
-              <a
-                href={websiteHref}
-                target="_blank"
-                rel="noreferrer"
+              <button
+                type="button"
+                onClick={() => {
+                  logClick("click_website"); // record Website click
+                  go(websiteHref, true);
+                }}
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
               >
                 Website
-              </a>
+              </button>
             )}
           </div>
         </div>
@@ -367,6 +407,9 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
+          // pass analytics info
+          areaId={areaId}
+          sessionId={sessionId}
         />
       )}
     </div>
@@ -398,6 +441,9 @@ function EnquiryModal(props: {
   };
   hasPlaces: boolean;
   autocompleteRef: any;
+  /** NEW: analytics context */
+  areaId: string | null;
+  sessionId: string;
 }) {
   const {
     cleaner,
@@ -423,6 +469,8 @@ function EnquiryModal(props: {
     },
     hasPlaces,
     autocompleteRef,
+    areaId,
+    sessionId,
   } = props;
 
   return (
@@ -537,7 +585,7 @@ function EnquiryModal(props: {
                 <textarea
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  className="min-h-[110px] rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/50"
+                  className="min-h[110px] min-h-[110px] rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/50"
                   placeholder="Tell us about your bins, frequency, and any access notes…"
                   required
                 />
@@ -567,7 +615,16 @@ function EnquiryModal(props: {
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                  onClick={onClose}
+                  onClick={() => {
+                    // record WhatsApp message click
+                    recordEventBeacon({
+                      cleanerId: cleaner.id,
+                      areaId,
+                      event: "click_message",
+                      sessionId,
+                    });
+                    // let the link open in a new tab/app
+                  }}
                 >
                   Send via WhatsApp
                 </a>
@@ -580,6 +637,15 @@ function EnquiryModal(props: {
                   setError(null);
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
+
+                  // record Email message click
+                  recordEventBeacon({
+                    cleanerId: cleaner.id,
+                    areaId,
+                    event: "click_message",
+                    sessionId,
+                  });
+
                   try {
                     setSubmitting("email");
                     const payload: EnquiryPayload = {
