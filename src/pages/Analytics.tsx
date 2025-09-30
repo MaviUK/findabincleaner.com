@@ -32,7 +32,7 @@ export default function Analytics() {
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
     if (!term) return rows;
-    return rows.filter(r => (r.area_name || "").toLowerCase().includes(term));
+    return rows.filter((r) => (r.area_name || "").toLowerCase().includes(term));
   }, [rows, q]);
 
   if (loading) {
@@ -96,4 +96,12 @@ export default function Analytics() {
               </tr>
             )}
           </tbody>
-        </ta
+        </table>
+      </div>
+
+      <p className="text-xs text-gray-500">
+        Impressions = your card was shown at least once per user search. Clicks are taps on Message, Website, or Phone.
+      </p>
+    </div>
+  );
+}
