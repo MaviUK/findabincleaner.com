@@ -1,6 +1,7 @@
 // src/components/FindCleaners.tsx
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
+import { findContainingAreaId } from "../lib/areas";
 
 export type FindCleanersProps = {
   // now also returns a locality/town derived from the postcode lookup
@@ -23,6 +24,7 @@ type MatchIn = {
   distance_meters?: number | null;  // alternate name, just in case
 };
 
+// ---- Outgoing shape used by UI (now includes area_id) ----
 export type MatchOut = {
   cleaner_id: string;
   business_name: string | null;
@@ -35,6 +37,7 @@ export type MatchOut = {
   rating_avg: number | null;
   rating_count: number | null;
   distance_m: number | null;
+  area_id: string | null; // NEW: service area that contains the searched point
 };
 
 function toArray(v: unknown): string[] {
@@ -79,7 +82,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [locality, setLocality] = useState<string>(""); // NEW: for “in Town” wording
+  const [locality, setLocality] = useState<string>(""); // for “in Town” wording
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
@@ -147,8 +150,8 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         }
       }
 
-      // 4) Normalize to MatchOut
-      const normalized: MatchOut[] = list.map((m) => ({
+      // 4) Normalize to MatchOut (without area yet)
+      const normalized = list.map<MatchOut>((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
         logo_url: m.logo_url ?? null,
@@ -162,10 +165,41 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         distance_m:
           (m.distance_meters as number | null | undefined) ??
           (m.distance_m ?? null),
+        area_id: null,
       }));
 
-      if (!onSearchComplete) setResults(normalized);
-      onSearchComplete?.(normalized, pc, town); // include locality for parent views
+      // 5) Pull service areas for these cleaners and compute area_id per result
+      const cleanerIds = [...new Set(normalized.map((m) => m.cleaner_id))];
+      let withArea = normalized;
+
+      if (cleanerIds.length) {
+        const { data: areasRows, error: areasErr } = await supabase
+          .from("service_areas")
+          .select("id, cleaner_id, geometry")
+          .in("cleaner_id", cleanerIds);
+
+        if (areasErr) {
+          console.error("service_areas fetch error:", areasErr);
+        } else {
+          const areasByCleaner = new Map<string, { id: string; geometry: any }[]>();
+          (areasRows || []).forEach((r: any) => {
+            const arr = areasByCleaner.get(r.cleaner_id) || [];
+            // r.geometry should be GeoJSON (Feature<MultiPolygon>); if it comes as text, JSON.parse it:
+            const geom = typeof r.geometry === "string" ? JSON.parse(r.geometry) : r.geometry;
+            arr.push({ id: r.id, geometry: geom });
+            areasByCleaner.set(r.cleaner_id, arr);
+          });
+
+          withArea = normalized.map((m) => {
+            const arr = areasByCleaner.get(m.cleaner_id) || [];
+            const areaId = findContainingAreaId(lat, lng, arr as any);
+            return { ...m, area_id: areaId };
+          });
+        }
+      }
+
+      if (!onSearchComplete) setResults(withArea);
+      onSearchComplete?.(withArea, pc, town);
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError(e?.message || "Something went wrong.");
@@ -252,6 +286,13 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                         </a>
                       )}
                     </div>
+
+                    {/* Optional: show which area matched (debug/QA) */}
+                    {r.area_id && (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Matched area: {r.area_id}
+                      </div>
+                    )}
                   </div>
                 </div>
 
