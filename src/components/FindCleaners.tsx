@@ -10,11 +10,9 @@ import {
 } from "../lib/analytics";
 
 export type FindCleanersProps = {
-  // returns results + postcode + derived town/locality
   onSearchComplete?: (results: MatchOut[], postcode: string, locality?: string) => void;
 };
 
-// ---- RPC shapes (wide to be safe) ----
 type MatchIn = {
   cleaner_id: string;
   business_name: string | null;
@@ -22,19 +20,16 @@ type MatchIn = {
   website: string | null;
   phone: string | null;
   whatsapp?: string | null;
-  payment_methods?: unknown;  // json/array/csv/string/null
-  service_types?: unknown;    // json/array/csv/string/null
+  payment_methods?: unknown;
+  service_types?: unknown;
   rating_avg?: number | null;
   rating_count?: number | null;
-  distance_m?: number | null;       // distance RPC returns this
-  distance_meters?: number | null;  // alternate name, just in case
-
-  // some implementations of find_cleaners_covering_point may already return these:
+  distance_m?: number | null;
+  distance_meters?: number | null;
   area_id?: string | null;
   area_name?: string | null;
 };
 
-// ---- Outgoing shape used by UI (includes area_id) ----
 export type MatchOut = {
   cleaner_id: string;
   business_name: string | null;
@@ -55,12 +50,10 @@ function toArray(v: unknown): string[] {
   if (!v) return [];
   if (Array.isArray(v)) return v as string[];
   if (typeof v === "string") {
-    // try JSON array first
     try {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    // fallback CSV
     return v.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
@@ -83,7 +76,7 @@ function toWhatsAppHref(phone?: string | null) {
   if (phone.trim().startsWith("+")) {
     digits = phone.replace(/[^\d]/g, "");
   } else if (digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`; // UK normalize 0xxxx -> +44xxxx
+    digits = `44${digits.slice(1)}`;
   }
   return `https://wa.me/${digits}`;
 }
@@ -108,7 +101,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode -> lat/lng (+ town/locality)
+      // 1) Postcode → lat/lng + town label
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -120,8 +113,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       }
       const lat = Number(data.result.latitude);
       const lng = Number(data.result.longitude);
-
-      // Best-effort locality label for the UI
       const town: string =
         data.result.post_town ||
         data.result.admin_district ||
@@ -130,7 +121,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         "";
       setLocality(town);
 
-      // 2) Try polygon-based RPC first (point-in-service-area)
+      // 2) polygon-based RPC
       let list: MatchIn[] = [];
       {
         const { data: coverMatches, error: coverErr } = await supabase.rpc(
@@ -144,7 +135,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         }
       }
 
-      // 3) Fallback to distance-based RPC if polygon search found nothing
+      // 3) fallback to distance RPC
       if (!list.length) {
         const { data: distMatches, error: distErr } = await supabase.rpc(
           "find_cleaners_for_point_sorted",
@@ -161,7 +152,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         }
       }
 
-      // 4) Normalize to MatchOut, keep any area_id returned by RPC
+      // 4) normalize
       const normalized = list.map<MatchOut>((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -180,7 +171,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         area_name: (m as any).area_name ?? null,
       }));
 
-      // 5) If some results lack area_id, fetch cleaner areas and compute via Turf
+      // 5) fill missing area_id via Turf
       const needArea = normalized.filter((n) => !n.area_id);
       let withArea = normalized;
 
@@ -190,18 +181,13 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           .from("service_areas")
           .select("id, cleaner_id, geometry, name")
           .in("cleaner_id", cleanerIds);
-
         if (areasErr) {
           console.error("service_areas fetch error:", areasErr);
         } else {
-          const areasByCleaner = new Map<
-            string,
-            { id: string; geometry: any; name?: string }[]
-          >();
+          const areasByCleaner = new Map<string, { id: string; geometry: any; name?: string }[]>();
           (areasRows || []).forEach((r: any) => {
             const arr = areasByCleaner.get(r.cleaner_id) || [];
-            const geom =
-              typeof r.geometry === "string" ? JSON.parse(r.geometry) : r.geometry;
+            const geom = typeof r.geometry === "string" ? JSON.parse(r.geometry) : r.geometry;
             arr.push({ id: r.id, geometry: geom, name: r.name });
             areasByCleaner.set(r.cleaner_id, arr);
           });
@@ -215,14 +201,13 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         }
       }
 
-      // 6) Record impressions for each returned result
+      // 6) impressions (fallback to point when needed)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         await Promise.all(
           withArea.map((r) => {
             if (r.area_id) {
-              // direct record when we know the area
               return recordEvent({
                 cleanerId: r.cleaner_id,
                 areaId: r.area_id,
@@ -231,7 +216,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                 meta: { search_id: searchId, postcode: pc, lat, lng, town },
               });
             } else {
-              // fall back to DB-side area resolution from the point
               return recordEventFromPointBeacon({
                 cleanerId: r.cleaner_id,
                 lat,
@@ -244,13 +228,39 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           })
         );
       } catch (e) {
-        // don't block UI if analytics fails
         console.warn("recordEvent(impression) error", e);
       }
 
-      // 7) Push to parent or show inline
+      // 7) push to parent / inline
       if (!onSearchComplete) setResults(withArea);
       onSearchComplete?.(withArea, pc, town);
+
+      // --- helpers for click logging from inline list ---
+      function logClickOrPoint(
+        r: MatchOut,
+        ev: "click_website" | "click_phone" | "click_message"
+      ) {
+        const sessionId = getOrCreateSessionId();
+        if (r.area_id) {
+          return recordEventBeacon({
+            cleanerId: r.cleaner_id,
+            areaId: r.area_id,
+            event: ev,
+            sessionId,
+          });
+        } else {
+          return recordEventFromPointBeacon({
+            cleanerId: r.cleaner_id,
+            lat,
+            lng,
+            event: ev,
+            sessionId,
+          });
+        }
+      }
+
+      // expose handlers onto window for use in JSX below (avoid re-declaring)
+      (window as any).__nbg_clickLogger = logClickOrPoint;
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError(e?.message || "Something went wrong.");
@@ -283,7 +293,6 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         </div>
       )}
 
-      {/* Inline list only when parent didn't pass onSearchComplete */}
       {!onSearchComplete && (
         <ul className="space-y-2">
           {results.map((r) => {
@@ -317,24 +326,14 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           target="_blank"
                           rel="noreferrer"
                           className="underline"
-                          onClick={() =>
-                            r.area_id
-                              ? recordEventBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  areaId: r.area_id,
-                                  event: "click_website",
-                                })
-                              : recordEventFromPointBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  // use the lat/lng from this search to resolve area on the server
-                                  // (closure variables from lookup())
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lat,
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lng,
-                                  event: "click_website",
-                                })
-                          }
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(r, "click_website");
+                            // open after logging (new tab)
+                            setTimeout(() => {
+                              window.open(r.website!, "_blank", "noopener,noreferrer");
+                            }, 10);
+                          }}
                         >
                           Website
                         </a>
@@ -343,22 +342,14 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                         <a
                           href={tel}
                           className="underline"
-                          onClick={() =>
-                            r.area_id
-                              ? recordEventBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  areaId: r.area_id,
-                                  event: "click_phone",
-                                })
-                              : recordEventFromPointBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lat,
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lng,
-                                  event: "click_phone",
-                                })
-                          }
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(r, "click_phone");
+                            // navigate after logging (same tab)
+                            setTimeout(() => {
+                              window.location.href = tel;
+                            }, 10);
+                          }}
                         >
                           Call
                         </a>
@@ -369,29 +360,20 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           target="_blank"
                           rel="noreferrer"
                           className="underline"
-                          onClick={() =>
-                            r.area_id
-                              ? recordEventBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  areaId: r.area_id,
-                                  event: "click_message",
-                                })
-                              : recordEventFromPointBeacon({
-                                  cleanerId: r.cleaner_id,
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lat,
-                                  // @ts-expect-error – lat/lng are in scope at runtime
-                                  lng,
-                                  event: "click_message",
-                                })
-                          }
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(r, "click_message");
+                            // open after logging (new tab / app)
+                            setTimeout(() => {
+                              window.open(wa, "_blank", "noopener,noreferrer");
+                            }, 10);
+                          }}
                         >
                           WhatsApp
                         </a>
                       )}
                     </div>
 
-                    {/* Optional: show which area matched (debug/QA) */}
                     {r.area_id && (
                       <div className="text-xs text-gray-500 mt-1">
                         Matched area: {r.area_id}
