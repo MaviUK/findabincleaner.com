@@ -274,10 +274,8 @@ export default function CleanerCard({
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
-            onClick={() => {
-              logClick("click_message");
-              setShowEnquiry(true);
-            }}
+            onMouseDown={() => logClick("click_message")}
+            onClick={() => setShowEnquiry(true)}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
@@ -298,10 +296,8 @@ export default function CleanerCard({
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                  onClick={() => {
-                    logClick("click_phone");
-                    setShowPhone(false);
-                  }}
+                  onMouseDown={() => logClick("click_phone")}
+                  onClick={() => setShowPhone(false)}
                   title="Tap to call"
                 >
                   {prettyPhone(cleaner.phone)}
@@ -313,10 +309,8 @@ export default function CleanerCard({
           {websiteHref && (
             <button
               type="button"
-              onClick={() => {
-                logClick("click_website");
-                go(websiteHref, true);
-              }}
+              onMouseDown={() => logClick("click_website")}
+              onClick={() => go(websiteHref, true)}
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
             >
               Website
@@ -361,10 +355,8 @@ export default function CleanerCard({
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              onClick={() => {
-                logClick("click_message");
-                setShowEnquiry(true);
-              }}
+              onMouseDown={() => logClick("click_message")}
+              onClick={() => setShowEnquiry(true)}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
             >
               Message
@@ -385,10 +377,8 @@ export default function CleanerCard({
                   <a
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                    onClick={() => {
-                      logClick("click_phone");
-                      setShowPhone(false);
-                    }}
+                    onMouseDown={() => logClick("click_phone")}
+                    onClick={() => setShowPhone(false)}
                     title="Tap to call"
                   >
                     {prettyPhone(cleaner.phone)}
@@ -400,10 +390,8 @@ export default function CleanerCard({
             {websiteHref && (
               <button
                 type="button"
-                onClick={() => {
-                  logClick("click_website");
-                  go(websiteHref, true);
-                }}
+                onMouseDown={() => logClick("click_website")}
+                onClick={() => go(websiteHref, true)}
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
               >
                 Website
@@ -553,7 +541,7 @@ function EnquiryModal(props: {
     >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
-        <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h[calc(100vh-4rem)] sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
+        <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
           {/* Sticky header */}
           <div className="sticky top-0 z-10 bg-white border-b border-black/5">
             <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
@@ -686,9 +674,7 @@ function EnquiryModal(props: {
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                  onClick={() => {
-                    logClickModal("click_message");
-                  }}
+                  onMouseDown={() => logClickModal("click_message")}
                 >
                   Send via WhatsApp
                 </a>
