@@ -1,3 +1,4 @@
+// src/pages/Analytics.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -16,6 +17,7 @@ export default function Analytics() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   async function loadRows() {
     try {
@@ -42,6 +44,7 @@ export default function Analytics() {
       if (error) throw error;
 
       setRows((data as Row[]) || []);
+      setLastUpdated(new Date());
     } catch (e: any) {
       console.error("Analytics load error:", e);
       setErr(e?.message || "Failed to load analytics.");
@@ -105,13 +108,30 @@ export default function Analytics() {
   return (
     <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-6 space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold">Stats by Area (Last 30 days)</h1>
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Filter by area name…"
-          className="border rounded px-3 py-2 w-64"
-        />
+        <div>
+          <h1 className="text-2xl font-bold">Stats by Area (Last 30 days)</h1>
+          {lastUpdated && (
+            <div className="text-xs text-gray-500 mt-1">
+              Last updated {lastUpdated.toLocaleTimeString()}
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Filter by area name…"
+            className="border rounded px-3 py-2 w-64"
+          />
+          <button
+            type="button"
+            onClick={loadRows}
+            className="border rounded px-3 py-2 text-sm"
+            title="Refresh"
+          >
+            Refresh
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto border rounded-xl">
@@ -151,7 +171,9 @@ export default function Analytics() {
             {filtered.length === 0 && (
               <tr>
                 <td className="py-6 px-3 text-gray-500" colSpan={7}>
-                  No areas found.
+                  {q.trim()
+                    ? "No areas match your filter."
+                    : "No stats yet. Try performing a search and clicking Message/Website/Phone on your listing."}
                 </td>
               </tr>
             )}
