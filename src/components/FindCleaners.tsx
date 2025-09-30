@@ -2,9 +2,10 @@
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { findContainingAreaId } from "../lib/areas";
+import { recordEvent, recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type FindCleanersProps = {
-  // now also returns a locality/town derived from the postcode lookup
+  // returns results + postcode + derived town/locality
   onSearchComplete?: (results: MatchOut[], postcode: string, locality?: string) => void;
 };
 
@@ -22,9 +23,13 @@ type MatchIn = {
   rating_count?: number | null;
   distance_m?: number | null;       // distance RPC returns this
   distance_meters?: number | null;  // alternate name, just in case
+
+  // some implementations of find_cleaners_covering_point may already return these:
+  area_id?: string | null;
+  area_name?: string | null;
 };
 
-// ---- Outgoing shape used by UI (now includes area_id) ----
+// ---- Outgoing shape used by UI (includes area_id) ----
 export type MatchOut = {
   cleaner_id: string;
   business_name: string | null;
@@ -37,7 +42,8 @@ export type MatchOut = {
   rating_avg: number | null;
   rating_count: number | null;
   distance_m: number | null;
-  area_id: string | null; // NEW: service area that contains the searched point
+  area_id: string | null;
+  area_name?: string | null;
 };
 
 function toArray(v: unknown): string[] {
@@ -82,7 +88,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [locality, setLocality] = useState<string>(""); // for “in Town” wording
+  const [locality, setLocality] = useState<string>("");
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
@@ -150,7 +156,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         }
       }
 
-      // 4) Normalize to MatchOut (without area yet)
+      // 4) Normalize to MatchOut, keep any area_id returned by RPC
       const normalized = list.map<MatchOut>((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -165,39 +171,62 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         distance_m:
           (m.distance_meters as number | null | undefined) ??
           (m.distance_m ?? null),
-        area_id: null,
+        area_id: (m as any).area_id ?? null,
+        area_name: (m as any).area_name ?? null,
       }));
 
-      // 5) Pull service areas for these cleaners and compute area_id per result
-      const cleanerIds = [...new Set(normalized.map((m) => m.cleaner_id))];
+      // 5) If some results lack area_id, fetch cleaner areas and compute via Turf
+      const needArea = normalized.filter((n) => !n.area_id);
       let withArea = normalized;
 
-      if (cleanerIds.length) {
+      if (needArea.length) {
+        const cleanerIds = [...new Set(needArea.map((m) => m.cleaner_id))];
         const { data: areasRows, error: areasErr } = await supabase
           .from("service_areas")
-          .select("id, cleaner_id, geometry")
+          .select("id, cleaner_id, geometry, name")
           .in("cleaner_id", cleanerIds);
 
         if (areasErr) {
           console.error("service_areas fetch error:", areasErr);
         } else {
-          const areasByCleaner = new Map<string, { id: string; geometry: any }[]>();
+          const areasByCleaner = new Map<string, { id: string; geometry: any; name?: string }[]>();
           (areasRows || []).forEach((r: any) => {
             const arr = areasByCleaner.get(r.cleaner_id) || [];
-            // r.geometry should be GeoJSON (Feature<MultiPolygon>); if it comes as text, JSON.parse it:
             const geom = typeof r.geometry === "string" ? JSON.parse(r.geometry) : r.geometry;
-            arr.push({ id: r.id, geometry: geom });
+            arr.push({ id: r.id, geometry: geom, name: r.name });
             areasByCleaner.set(r.cleaner_id, arr);
           });
 
           withArea = normalized.map((m) => {
+            if (m.area_id) return m;
             const arr = areasByCleaner.get(m.cleaner_id) || [];
             const areaId = findContainingAreaId(lat, lng, arr as any);
-            return { ...m, area_id: areaId };
+            return { ...m, area_id: areaId ?? null };
           });
         }
       }
 
+      // 6) Record impressions for each returned result
+      try {
+        const sessionId = getOrCreateSessionId();
+        const searchId = crypto.randomUUID();
+        await Promise.all(
+          withArea.map((r) =>
+            recordEvent({
+              cleanerId: r.cleaner_id,
+              areaId: r.area_id ?? null,
+              event: "impression",
+              sessionId,
+              meta: { search_id: searchId, postcode: pc, lat, lng, town },
+            })
+          )
+        );
+      } catch (e) {
+        // don't block UI if analytics fails
+        console.warn("recordEvent(impression) error", e);
+      }
+
+      // 7) Push to parent or show inline
       if (!onSearchComplete) setResults(withArea);
       onSearchComplete?.(withArea, pc, town);
     } catch (e: any) {
@@ -266,12 +295,29 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           target="_blank"
                           rel="noreferrer"
                           className="underline"
+                          onClick={() =>
+                            recordEventBeacon({
+                              cleanerId: r.cleaner_id,
+                              areaId: r.area_id,
+                              event: "click_website",
+                            })
+                          }
                         >
                           Website
                         </a>
                       )}
                       {tel && (
-                        <a href={tel} className="underline">
+                        <a
+                          href={tel}
+                          className="underline"
+                          onClick={() =>
+                            recordEventBeacon({
+                              cleanerId: r.cleaner_id,
+                              areaId: r.area_id,
+                              event: "click_phone",
+                            })
+                          }
+                        >
                           Call
                         </a>
                       )}
@@ -281,6 +327,13 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           target="_blank"
                           rel="noreferrer"
                           className="underline"
+                          onClick={() =>
+                            recordEventBeacon({
+                              cleanerId: r.cleaner_id,
+                              areaId: r.area_id,
+                              event: "click_message",
+                            })
+                          }
                         >
                           WhatsApp
                         </a>
