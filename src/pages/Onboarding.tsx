@@ -5,12 +5,10 @@ import { supabase } from "../lib/supabase";
 
 const TERMS_VERSION = "2025-09-29";
 
-// You can replace this with a richer component or fetch from /#/terms if you prefer.
 const TermsContent = () => (
   <div className="prose max-w-none">
     <h2>Cleenly Marketplace – Business Terms & Conditions</h2>
     <p><strong>Last updated:</strong> 29 September 2025</p>
-
     <p>
       These Terms govern your use of the Cleenly Marketplace. By creating an
       account or listing your business, you agree to these Terms.
@@ -133,66 +131,63 @@ export default function Onboarding() {
   }
 
   async function accept() {
-  try {
-    setSaving(true);
-    setErr(null);
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error("Not signed in.");
+    try {
+      setSaving(true);
+      setErr(null);
 
-    // 1) Try to find an existing cleaner row for this user
-    let { data: row, error: fetchErr } = await supabase
-      .from("cleaners")
-      .select("id")
-      .eq("user_id", session.user.id)
-      .maybeSingle();
-    if (fetchErr) throw fetchErr;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.user) throw new Error("Not signed in.");
 
-    // 2) If missing, create it — NO .select() here (avoid the .single() trap)
-    if (!row?.id) {
-      const fallbackName =
-        (session.user.user_metadata as any)?.business_name ??
-        (session.user.user_metadata as any)?.name ??
-        (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
-
-      // Use upsert on user_id to prevent accidental duplicates
-      const { error: insErr } = await supabase
-        .from("cleaners")
-        .upsert(
-          { user_id: session.user.id, business_name: String(fallbackName).slice(0, 120) },
-          { onConflict: "user_id", ignoreDuplicates: false }
-        );
-      if (insErr) throw insErr;
-
-      // Re-fetch the id (separate SELECT so RLS SELECT policies apply)
-      const again = await supabase
+      // 1) Find existing row
+      let { data: row, error: fetchErr } = await supabase
         .from("cleaners")
         .select("id")
         .eq("user_id", session.user.id)
         .maybeSingle();
-      if (again.error) throw again.error;
-      row = again.data;
+      if (fetchErr) throw fetchErr;
+
+      // 2) Create if missing — plain INSERT (no upsert / no select)
+      if (!row?.id) {
+        const fallbackName =
+          (session.user.user_metadata as any)?.business_name ??
+          (session.user.user_metadata as any)?.name ??
+          (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
+
+        const { error: insErr } = await supabase.from("cleaners").insert({
+          user_id: session.user.id,
+          business_name: String(fallbackName).slice(0, 120),
+        });
+        if (insErr) throw insErr;
+
+        // Re-fetch id
+        const again = await supabase
+          .from("cleaners")
+          .select("id")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (again.error) throw again.error;
+        row = again.data;
+      }
+
+      // 3) Mark terms accepted
+      const { error: updErr } = await supabase
+        .from("cleaners")
+        .update({
+          terms_accepted: true,
+          terms_version: TERMS_VERSION,
+          terms_accepted_at: new Date().toISOString(),
+        })
+        .eq("id", row!.id);
+      if (updErr) throw updErr;
+
+      nav("/settings", { replace: true });
+    } catch (e: any) {
+      console.error(e);
+      setErr(e?.message || "Could not save acceptance.");
+    } finally {
+      setSaving(false);
     }
-
-    // 3) Mark terms accepted
-    const { error: updErr } = await supabase
-      .from("cleaners")
-      .update({
-        terms_accepted: true,
-        terms_version: TERMS_VERSION,
-        terms_accepted_at: new Date().toISOString(),
-      })
-      .eq("id", row!.id);
-    if (updErr) throw updErr;
-
-    nav("/settings", { replace: true });
-  } catch (e: any) {
-    console.error(e);
-    setErr(e?.message || "Could not save acceptance.");
-  } finally {
-    setSaving(false);
   }
-}
-
 
   return (
     <main className="container mx-auto max-w-3xl px-4 py-10 space-y-6">
