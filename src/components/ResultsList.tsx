@@ -1,3 +1,4 @@
+// src/components/ResultsList.tsx
 import CleanerCard, { Cleaner } from "./CleanerCard";
 
 function toArr(v: unknown): string[] {
@@ -8,7 +9,7 @@ function toArr(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map(s => s.trim()).filter(Boolean);
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
 }
@@ -16,15 +17,25 @@ function toArr(v: unknown): string[] {
 type Props = {
   cleaners: any[];
   postcode: string;
-  locality?: string;   // <- NEW
+  locality?: string;
+  /** NEW: pass the search point so clicks can be attributed to an area when area_id is missing */
+  searchLat?: number | null;
+  searchLng?: number | null;
 };
 
-export default function ResultsList({ cleaners, postcode, locality }: Props) {
+export default function ResultsList({
+  cleaners,
+  postcode,
+  locality,
+  searchLat = null,
+  searchLng = null,
+}: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
     return (
       <p className="text-center text-gray-600 mt-6">
-        No cleaners found near {pc}{locality ? `, in ${locality}` : ""}.
+        No cleaners found near {pc}
+        {locality ? `, in ${locality}` : ""}.
       </p>
     );
   }
@@ -42,8 +53,12 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
-          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
+          payment_methods: toArr(
+            c.payment_methods ?? c.payment_methods_accepted ?? c.payments
+          ),
+          service_types: toArr(
+            c.service_types ?? c.services ?? c.service_types_supported
+          ),
         };
 
         return (
@@ -52,6 +67,10 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
             cleaner={cleaner}
             postcodeHint={postcode}
             showPayments
+            /** Pass analytics context */
+            areaId={c.area_id ?? null}
+            searchLat={searchLat}
+            searchLng={searchLng}
           />
         );
       })}
