@@ -1,3 +1,4 @@
+// src/components/FindCleaners.tsx
 import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
@@ -8,7 +9,17 @@ import {
 } from "../lib/analytics";
 
 export type FindCleanersProps = {
-  onSearchComplete?: (results: MatchOut[], postcode: string, locality?: string) => void;
+  /**
+   * Now includes lat/lng so parents (ResultsList → CleanerCard) can attribute clicks
+   * even when a result doesn’t carry area_id.
+   */
+  onSearchComplete?: (
+    results: MatchOut[],
+    postcode: string,
+    locality?: string,
+    lat?: number,
+    lng?: number
+  ) => void;
 };
 
 type MatchIn = {
@@ -24,8 +35,7 @@ type MatchIn = {
   rating_count?: number | null;
   distance_m?: number | null;
   distance_meters?: number | null;
-
-  // some installs already return this from the RPC; if not, we’ll fall back to point logging
+  // Some installs return these directly from the RPC:
   area_id?: string | null;
   area_name?: string | null;
 };
@@ -76,7 +86,7 @@ function toWhatsAppHref(phone?: string | null) {
   if (phone.trim().startsWith("+")) {
     digits = phone.replace(/[^\d]/g, "");
   } else if (digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`;
+    digits = `44${digits.slice(1)}`; // UK
   }
   return `https://wa.me/${digits}`;
 }
@@ -101,7 +111,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) geocode
+      // 1) Geocode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -111,8 +121,8 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         setError("Postcode not found.");
         return;
       }
-      const lat = Number(data.result.latitude);
-      const lng = Number(data.result.longitude);
+      const lat: number = Number(data.result.latitude);
+      const lng: number = Number(data.result.longitude);
       const town: string =
         data.result.post_town ||
         data.result.admin_district ||
@@ -121,7 +131,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         "";
       setLocality(town);
 
-      // 2) polygon RPC first
+      // 2) Try polygon RPC first
       let list: MatchIn[] = [];
       {
         const { data: coverMatches, error: coverErr } = await supabase.rpc(
@@ -131,7 +141,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         if (!coverErr && coverMatches) list = coverMatches as MatchIn[];
       }
 
-      // 3) fallback to distance RPC
+      // 3) Fallback to distance RPC
       if (!list.length) {
         const { data: distMatches, error: distErr } = await supabase.rpc(
           "find_cleaners_for_point_sorted",
@@ -144,7 +154,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         list = (distMatches || []) as MatchIn[];
       }
 
-      // 4) normalize (note: we DO NOT fetch service_areas here anymore)
+      // 4) Normalize
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -163,7 +173,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         area_name: (m as any).area_name ?? null,
       }));
 
-      // 5) record impressions (use area_id when present; otherwise point-based)
+      // 5) Record impressions (prefer area_id; else point-based so DB resolves area)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
@@ -191,11 +201,11 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         console.warn("recordEvent(impression) error", e);
       }
 
-      // put results in UI or bubble up
+      // 6) Update UI / bubble up — now INCLUDING lat/lng
       if (!onSearchComplete) setResults(normalized);
-      onSearchComplete?.(normalized, pc, town);
+      onSearchComplete?.(normalized, pc, town, lat, lng);
 
-      // expose a click logger that falls back to point-based RPC
+      // 7) (Optional) Debug helper for inline list
       (window as any).__nbg_clickLogger = (
         r: MatchOut,
         ev: "click_website" | "click_phone" | "click_message"
@@ -248,6 +258,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         </div>
       )}
 
+      {/* Inline list (dev path only) */}
       {!onSearchComplete && (
         <ul className="space-y-2">
           {results.map((r) => {
@@ -283,9 +294,16 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           className="underline"
                           onClick={(e) => {
                             e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_website");
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_website"
+                            );
                             setTimeout(() => {
-                              window.open(r.website!, "_blank", "noopener,noreferrer");
+                              window.open(
+                                r.website!,
+                                "_blank",
+                                "noopener,noreferrer"
+                              );
                             }, 10);
                           }}
                         >
@@ -298,7 +316,10 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           className="underline"
                           onClick={(e) => {
                             e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_phone");
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_phone"
+                            );
                             setTimeout(() => {
                               window.location.href = tel;
                             }, 10);
@@ -315,9 +336,16 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           className="underline"
                           onClick={(e) => {
                             e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_message");
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_message"
+                            );
                             setTimeout(() => {
-                              window.open(wa, "_blank", "noopener,noreferrer");
+                              window.open(
+                                wa,
+                                "_blank",
+                                "noopener,noreferrer"
+                              );
                             }, 10);
                           }}
                         >
