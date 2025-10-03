@@ -1,3 +1,4 @@
+// src/pages/Landing.tsx
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import FindCleaners from "../components/FindCleaners";
@@ -9,6 +10,10 @@ export default function Landing() {
   const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
   const [locality, setLocality] = useState<string>("");
+
+  // NEW: keep the search point so clicks can be attributed when area_id is missing
+  const [searchLat, setSearchLat] = useState<number | null>(null);
+  const [searchLng, setSearchLng] = useState<number | null>(null);
 
   return (
     <main className="w-full">
@@ -29,20 +34,28 @@ export default function Landing() {
         </div>
 
         <div id="find" className="mt-6">
-          {/* NOTE the 3rd param (locality) */}
           <FindCleaners
-            onSearchComplete={(results, pc, town) => {
+            // NOTE: we now capture (results, pc, town, lat, lng)
+            onSearchComplete={(results, pc, town, lat, lng) => {
               setCleaners(results || []);
               setPostcode(pc || "");
-              setLocality(town || "");   // <- capture locality
+              setLocality(town || "");
+              setSearchLat(typeof lat === "number" ? lat : null);
+              setSearchLng(typeof lng === "number" ? lng : null);
             }}
           />
         </div>
 
         {Array.isArray(cleaners) && (
           <div className="mt-6">
-            {/* pass locality to ResultsList */}
-            <ResultsList cleaners={cleaners} postcode={postcode} locality={locality} />
+            <ResultsList
+              cleaners={cleaners}
+              postcode={postcode}
+              locality={locality}
+              // IMPORTANT: pass through to CleanerCard for point-based click logging
+              searchLat={searchLat}
+              searchLng={searchLng}
+            />
           </div>
         )}
 
