@@ -5,7 +5,8 @@ import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
 import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
-import AccountDangerZone from "../components/settings/AccountDangerZone"; // ⬅️ NEW
+import AccountDangerZone from "../components/settings/AccountDangerZone"; // ⬅️ EXISTING
+import MiniSponsorshipMap from "../components/MiniSponsorshipMap";          // ⬅️ NEW
 
 type Cleaner = {
   id: string;
@@ -534,7 +535,16 @@ export default function Settings() {
         </section>
       </div>
 
-      {/* ⬇️ NEW: Danger Zone */}
+      {/* NEW: Sponsorship mini map */}
+      <section className="space-y-3 p-4 border rounded-2xl bg-white">
+        <h2 className="text-lg font-semibold">Sponsored placement</h2>
+        <p className="text-sm text-gray-600">
+          See where you currently hold <strong>#1</strong> and where you can still buy it inside your coverage.
+        </p>
+        <MiniSponsorshipMap cleanerId={cleaner?.id ?? ""} />
+      </section>
+
+      {/* Danger Zone */}
       <section className="space-y-3 p-4 border rounded-2xl bg-white">
         <h2 className="text-lg font-semibold">Account</h2>
         <AccountDangerZone businessName={businessName || null} />
