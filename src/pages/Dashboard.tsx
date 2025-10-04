@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview"; // NEW
+import MiniSponsorshipMap from "../components/MiniSponsorshipMap"; // NEW
 
 type Cleaner = {
   id: string;
@@ -24,7 +25,10 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       try {
-        const { data: { user }, error: userErr } = await supabase.auth.getUser();
+        const {
+          data: { user },
+          error: userErr,
+        } = await supabase.auth.getUser();
         if (userErr) throw userErr;
         if (!user) {
           window.location.hash = "#/login";
@@ -73,7 +77,9 @@ export default function Dashboard() {
   if (err) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card"><div className="card-pad text-red-600">{err}</div></div>
+        <div className="card">
+          <div className="card-pad text-red-600">{err}</div>
+        </div>
       </main>
     );
   }
@@ -81,7 +87,9 @@ export default function Dashboard() {
   if (!userId || !cleaner) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card"><div className="card-pad">No profile found.</div></div>
+        <div className="card">
+          <div className="card-pad">No profile found.</div>
+        </div>
       </main>
     );
   }
@@ -143,6 +151,36 @@ export default function Dashboard() {
                 </Link>
               </div>
               <AnalyticsOverview />
+            </div>
+          </section>
+
+          {/* Sponsored placement */}
+          <section className="card">
+            <div className="card-pad space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Sponsored placement</h2>
+                <Link to="/settings" className="text-sm underline">
+                  Manage →
+                </Link>
+              </div>
+
+              {/* Mini map shows: your coverage, areas you're #1, and what's available */}
+              <MiniSponsorshipMap cleanerId={cleaner.id} />
+
+              {/* CTA – wired in next step to open a purchase modal */}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() =>
+                    alert(
+                      "Next step: we'll add the 'Buy First Spot' modal to draw/select an area and purchase."
+                    )
+                  }
+                >
+                  Buy First Spot
+                </button>
+              </div>
             </div>
           </section>
 
