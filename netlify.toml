@@ -22,3 +22,8 @@ status = 200
 from = "/api/sponsored/purchase"
 to = "/.netlify/functions/sponsored-purchase"
 status = 200
+
+[[redirects]]
+from = "/api/stripe/webhook"
+to = "/.netlify/functions/stripe-webhook"
+status = 200
