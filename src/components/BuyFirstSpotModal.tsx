@@ -59,7 +59,6 @@ export default function BuyFirstSpotModal({
     const tick = () => {
       if (mapRef.current) mapRef.current.invalidateSize();
     };
-    // run after mount + after any small animation
     const t1 = setTimeout(tick, 0);
     const onResize = () => setTimeout(tick, 0);
     window.addEventListener("resize", onResize);
@@ -193,7 +192,11 @@ export default function BuyFirstSpotModal({
                 setPoints((prev) => [...prev, [lat, lng]]);
               }}
             >
-              <TileLayer url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"/>
+              {/* Fallback tile server (HOT) to avoid OSM rate limits */}
+              <TileLayer
+                url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+              />
 
               {points.length > 0 && (
                 <PolygonAny
