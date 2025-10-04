@@ -1,5 +1,5 @@
 // src/components/BuyFirstSpotModal.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   MapContainer as RLMapContainer,
   TileLayer,
@@ -10,15 +10,27 @@ import type { LatLngExpression } from "leaflet";
 const MapAny = RLMapContainer as any;
 const PolygonAny = RLPolygon as any;
 
-type PurchaseResult = {
-  ok: boolean;
-  sponsorship_id: string;
-  area_id: string;
-  area_km2: number;
-  monthly_price: number;
-  total_price: number;
-  final_geojson: any;
-} | { error: string };
+type PurchaseResult =
+  | {
+      ok: boolean;
+      sponsorship_id: string;
+      area_id: string;
+      area_km2: number;
+      monthly_price: number;
+      total_price: number;
+      final_geojson: any;
+    }
+  | { error: string };
+
+type PreviewResult =
+  | {
+      ok: true;
+      area_km2: number;
+      monthly_price: number;
+      total_price: number;
+      final_geojson: any | null;
+    }
+  | { error: string };
 
 export default function BuyFirstSpotModal({
   open,
@@ -34,6 +46,10 @@ export default function BuyFirstSpotModal({
   const [result, setResult] = useState<PurchaseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // live preview state
+  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+
   // Bangor-ish default; replace with your centroid if you like
   const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
 
@@ -42,6 +58,7 @@ export default function BuyFirstSpotModal({
       setPoints([]);
       setResult(null);
       setError(null);
+      setPreview(null);
       setSubmitting(false);
     }
   }, [open]);
@@ -52,20 +69,55 @@ export default function BuyFirstSpotModal({
     return points.map(([lat, lng]) => [lat, lng]) as LatLngExpression[];
   }, [points]);
 
+  function buildGeoJSON() {
+    const ring = points.map(([lat, lng]) => [lng, lat]);
+    if (ring.length > 0) ring.push(ring[0]);
+    return { type: "Polygon", coordinates: [ring] } as const;
+  }
+
+  // --- live preview whenever points change ---
+  useEffect(() => {
+    let cancelled = false;
+
+    async function runPreview() {
+      if (!open || points.length < 3) {
+        setPreview(null);
+        return;
+      }
+      setPreviewing(true);
+      try {
+        const drawnGeoJSON = buildGeoJSON();
+        const res = await fetch("/api/sponsored/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cleanerId, drawnGeoJSON, months: 1 }),
+        });
+        const data = (await res.json()) as PreviewResult;
+        if (!res.ok || (data as any)?.error) {
+          throw new Error((data as any)?.error || "Preview failed");
+        }
+        if (!cancelled) setPreview(data);
+      } catch {
+        if (!cancelled) setPreview(null);
+      } finally {
+        if (!cancelled) setPreviewing(false);
+      }
+    }
+
+    runPreview();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [points, open, cleanerId]);
+
   async function handlePurchase() {
     setSubmitting(true);
     setError(null);
     try {
-      // Build GeoJSON Polygon from drawn points (close the ring)
-      const ring = points.map(([lat, lng]) => [lng, lat]);
-      if (ring.length > 0) ring.push(ring[0]);
+      const drawnGeoJSON = buildGeoJSON();
 
-      const drawnGeoJSON = {
-        type: "Polygon",
-        coordinates: [ring],
-      };
-
-      // Grab the current Supabase JWT from localStorage (vite+supa pattern)
+      // Grab the current Supabase JWT from localStorage (vite + supabase)
       const raw = localStorage.getItem("supabase.auth.token");
       let token: string | null = null;
       if (raw) {
@@ -103,6 +155,9 @@ export default function BuyFirstSpotModal({
   }
 
   if (!open) return null;
+
+  const billableZero =
+    !preview || (preview as any)?.area_km2 === 0 || (preview as any)?.monthly_price === 0;
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
@@ -159,40 +214,58 @@ export default function BuyFirstSpotModal({
                 </MapAny>
               </div>
 
-              {/* controls */}
-              <div className="flex items-center justify-between gap-3">
+              {/* controls + preview */}
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <div className="text-xs text-gray-500">
                   Points: {points.length} {isPolygonValid ? "(ok)" : "(need 3+)"}
+                  {previewing && <span className="ml-2">calculating…</span>}
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    className="px-3 py-1.5 rounded border"
-                    onClick={() => setPoints((p) => p.slice(0, -1))}
-                    disabled={points.length === 0 || submitting}
-                  >
-                    Undo
-                  </button>
-                  <button
-                    className="px-3 py-1.5 rounded border"
-                    onClick={() => setPoints([])}
-                    disabled={points.length === 0 || submitting}
-                  >
-                    Clear
-                  </button>
-                  <button
-                    className="btn btn-primary"
-                    disabled={!isPolygonValid || submitting}
-                    onClick={handlePurchase}
-                  >
-                    {submitting ? "Purchasing…" : "Purchase"}
-                  </button>
-                </div>
+
+                {preview && "ok" in preview && (
+                  <div className="text-sm">
+                    <span className="mr-4">
+                      Area: {(preview.area_km2 ?? 0).toFixed(4)} km²
+                    </span>
+                    <span>
+                      Monthly: £{(preview.monthly_price ?? 0).toFixed(2)}
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* action buttons */}
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  className="px-3 py-1.5 rounded border"
+                  onClick={() => setPoints((p) => p.slice(0, -1))}
+                  disabled={points.length === 0 || submitting}
+                >
+                  Undo
+                </button>
+                <button
+                  className="px-3 py-1.5 rounded border"
+                  onClick={() => setPoints([])}
+                  disabled={points.length === 0 || submitting}
+                >
+                  Clear
+                </button>
+                <button
+                  className="btn btn-primary"
+                  disabled={!isPolygonValid || submitting || billableZero}
+                  onClick={handlePurchase}
+                  title={
+                    billableZero
+                      ? "No billable area in this shape (overlaps someone else's #1)."
+                      : undefined
+                  }
+                >
+                  {submitting ? "Purchasing…" : "Purchase"}
+                </button>
               </div>
 
               {error && <p className="text-sm text-red-600">{error}</p>}
               <p className="text-xs text-gray-500">
-                Note: The system will clip your shape to the parts that are actually available for
-                #1. You will only be billed for the billable area.
+                We’ll only charge for the part of your shape that’s actually available for #1.
               </p>
             </>
           ) : (
@@ -222,8 +295,8 @@ export default function BuyFirstSpotModal({
                 </button>
               </div>
               <p className="text-xs text-gray-500">
-                Your sponsored region will appear on the mini map within a few seconds. If you don’t
-                see it, refresh the page.
+                Your sponsored region will appear on the mini map shortly. If you don’t see it,
+                refresh the page.
               </p>
             </>
           )}
