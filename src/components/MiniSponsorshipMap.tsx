@@ -1,74 +1,111 @@
-import { useEffect, useState } from "react";
+// src/components/MiniSponsorshipMap.tsx
+import { useEffect, useRef, useState } from "react";
 import {
   MapContainer as RLMapContainer,
   TileLayer,
   GeoJSON as RLGeoJSON,
 } from "react-leaflet";
-import type { FeatureCollection, Geometry } from "geojson";
-import type { PathOptions } from "leaflet";
 
-// ---- styles
-const outline: PathOptions = { weight: 1.5, opacity: 1, color: "#222", fillOpacity: 0 };
-const winStyle: PathOptions = { weight: 2, color: "#1d4ed8", fillOpacity: 0.22 };
-const availStyle: PathOptions = { weight: 2, color: "#16a34a", dashArray: "6,6", fillOpacity: 0.12 };
-
-// ---- map defaults
-const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
-const DEFAULT_ZOOM = 11;
-
-// Cast the RL components to any to avoid TS prop mismatches in your env
+// react-leaflet types are a bit strict on some props; casting keeps TS happy.
 const MapAny = RLMapContainer as any;
 const GeoJSONAny = RLGeoJSON as any;
 
-export default function MiniSponsorshipMap({ cleanerId }: { cleanerId: string }) {
-  const [coverage, setCoverage] = useState<FeatureCollection<Geometry> | null>(null);
-  const [wins, setWins] = useState<FeatureCollection<Geometry> | null>(null);
-  const [available, setAvailable] = useState<FeatureCollection<Geometry> | null>(null);
+type FC = GeoJSON.FeatureCollection;
+
+export default function MiniSponsorshipMap({
+  cleanerId,
+}: {
+  cleanerId: string;
+}) {
+  const [meFc, setMeFc] = useState<FC | null>(null);
+  const [winsFc, setWinsFc] = useState<FC | null>(null);
+  const [availFc, setAvailFc] = useState<FC | null>(null);
+  const mapRef = useRef<any | null>(null);
+
+  // Bangor-ish default. You can center to user's centroid if you have it.
+  const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
 
   useEffect(() => {
-    (async () => {
-      const [cov, w, av] = await Promise.all([
-        fetch(`/api/geo/my-coverage?me=${cleanerId}`).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/geo/my-wins?slot=1&me=${cleanerId}`).then((r) => (r.ok ? r.json() : null)),
-        fetch(`/api/geo/available?slot=1&me=${cleanerId}`).then((r) => (r.ok ? r.json() : null)),
-      ]);
-      if (cov) setCoverage(cov);
-      if (w) setWins(w);
-      if (av) setAvailable(av);
-    })();
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const me = cleanerId;
+
+        const [a, b, c] = await Promise.all([
+          fetch(`/api/geo/my-coverage?me=${me}`),
+          fetch(`/api/geo/my-wins?slot=1&me=${me}`),
+          fetch(`/api/geo/available?slot=1&me=${me}`),
+        ]);
+
+        const [fa, fb, fc] = (await Promise.all([
+          a.json(),
+          b.json(),
+          c.json(),
+        ])) as [FC, FC, FC];
+
+        if (!cancelled) {
+          setMeFc(fa);
+          setWinsFc(fb);
+          setAvailFc(fc);
+        }
+      } catch {
+        // swallow; component still renders base map
+      }
+    }
+
+    load();
+    return () => {
+      cancelled = true;
+    };
   }, [cleanerId]);
 
+  // Nudge Leaflet to compute the correct size when first shown
+  useEffect(() => {
+    const t = setTimeout(() => mapRef.current?.invalidateSize(), 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  // Small helpers to color layers without using the `style` prop (avoids older TS type errors)
+  const styleCoverage = (_: any, layer: any) =>
+    layer.setStyle({ weight: 1, color: "#111827", fillOpacity: 0.04 });
+  const styleWins = (_: any, layer: any) =>
+    layer.setStyle({ weight: 2, color: "#1d4ed8", fillOpacity: 0.15 });
+  const styleAvail = (_: any, layer: any) =>
+    layer.setStyle({
+      weight: 2,
+      color: "#059669",
+      dashArray: "4,4",
+      fillOpacity: 0.08,
+    });
+
   return (
-    <div className="relative rounded-xl overflow-hidden border border-neutral-200">
+    <div className="relative">
       <MapAny
-        style={{ height: 260 }}
-        whenCreated={(map: any) => map.setView(DEFAULT_CENTER, DEFAULT_ZOOM)}
+        style={{ height: 260, width: "100%" }}
+        whenCreated={(map: any) => {
+          mapRef.current = map;
+          map.setView(DEFAULT_CENTER, 11);
+          // extra tick to ensure tiles paint in hidden/just-mounted containers
+          setTimeout(() => map.invalidateSize(), 400);
+        }}
         scrollWheelZoom={false}
         attributionControl={false}
         zoomControl={false}
       >
-        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+        {/* Use a robust basemap (Carto light). You can swap to OSM if you prefer. */}
+        <TileLayer url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" />
 
-        {coverage && <GeoJSONAny data={coverage} style={outline} />}
-        {wins && <GeoJSONAny data={wins} style={winStyle} />}
-        {available && <GeoJSONAny data={available} style={availStyle} />}
+        {meFc && (
+          <GeoJSONAny data={meFc} onEachFeature={styleCoverage} />
+        )}
+        {winsFc && (
+          <GeoJSONAny data={winsFc} onEachFeature={styleWins} />
+        )}
+        {availFc && (
+          <GeoJSONAny data={availFc} onEachFeature={styleAvail} />
+        )}
       </MapAny>
-
-      {/* Legend */}
-      <div className="absolute bottom-2 left-2 bg-white/90 rounded-md shadow px-3 py-2 text-xs space-y-1">
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-3 h-3 border border-[#222]" />
-          <span>My coverage</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-3 h-3 bg-[#1d4ed8]/30 border border-[#1d4ed8]" />
-          <span>I’m #1 now</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-3 h-3 border-2 border-dashed border-[#16a34a]" />
-          <span>Available for #1</span>
-        </div>
-      </div>
     </div>
   );
 }
