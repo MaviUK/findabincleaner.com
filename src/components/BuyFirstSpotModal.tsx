@@ -1,5 +1,5 @@
 // src/components/BuyFirstSpotModal.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MapContainer as RLMapContainer,
   TileLayer,
@@ -37,9 +37,13 @@ export default function BuyFirstSpotModal({
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
+  // Leaflet map instance (for invalidateSize fix)
+  const mapRef = useRef<any | null>(null);
+
   // Bangor-ish default; replace with your centroid if you like
   const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
 
+  // reset on close
   useEffect(() => {
     if (!open) {
       setPoints([]);
@@ -47,6 +51,22 @@ export default function BuyFirstSpotModal({
       setPreview(null);
       setSubmitting(false);
     }
+  }, [open]);
+
+  // ensure Leaflet recalculates size when modal opens / window resizes
+  useEffect(() => {
+    if (!open) return;
+    const tick = () => {
+      if (mapRef.current) mapRef.current.invalidateSize();
+    };
+    // run after mount + after any small animation
+    const t1 = setTimeout(tick, 0);
+    const onResize = () => setTimeout(tick, 0);
+    window.addEventListener("resize", onResize);
+    return () => {
+      clearTimeout(t1);
+      window.removeEventListener("resize", onResize);
+    };
   }, [open]);
 
   const isPolygonValid = points.length >= 3;
@@ -61,7 +81,7 @@ export default function BuyFirstSpotModal({
     return { type: "Polygon", coordinates: [ring] } as const;
   }
 
-  // --- live preview whenever points change ---
+  // live price preview as user draws
   useEffect(() => {
     let cancelled = false;
 
@@ -103,7 +123,7 @@ export default function BuyFirstSpotModal({
     try {
       const drawnGeoJSON = buildGeoJSON();
 
-      // Start Stripe Checkout (server computes final price and creates session)
+      // Start Stripe Checkout (server computes final price + creates session)
       const res = await fetch("/api/sponsored/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -113,7 +133,8 @@ export default function BuyFirstSpotModal({
       if (!res.ok || !data?.url) {
         throw new Error(data?.error || "Failed to start checkout.");
       }
-      window.location.href = data.url; // go to Stripe
+      // Redirect to Stripe
+      window.location.href = data.url;
     } catch (e: any) {
       setError(e?.message || "Failed to start checkout.");
       setSubmitting(false);
@@ -159,10 +180,14 @@ export default function BuyFirstSpotModal({
           <div className="relative rounded-xl overflow-hidden border">
             <MapAny
               style={{ height: 320 }}
-              whenCreated={(map: any) => map.setView(DEFAULT_CENTER, 11)}
-              scrollWheelZoom={true}
+              whenCreated={(map: any) => {
+                mapRef.current = map;
+                map.setView(DEFAULT_CENTER, 11);
+                setTimeout(() => map.invalidateSize(), 0);
+              }}
+              scrollWheelZoom
               attributionControl={false}
-              zoomControl={true}
+              zoomControl
               onClick={(e: any) => {
                 const { lat, lng } = e.latlng;
                 setPoints((prev) => [...prev, [lat, lng]]);
