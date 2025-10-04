@@ -17,3 +17,8 @@ status = 200
 from = "/api/geo/available"
 to = "/.netlify/functions/geo-available"
 status = 200
+
+[[redirects]]
+from = "/api/sponsored/purchase"
+to = "/.netlify/functions/sponsored-purchase"
+status = 200
