@@ -4,6 +4,9 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
+import AnalyticsOverview from "../components/AnalyticsOverview";
+import MiniSponsorshipMap from "../components/MiniSponsorshipMap";       // NEW
+import BuyFirstSpotModal from "../components/BuyFirstSpotModal";         // NEW
 
 type Cleaner = {
   id: string;
@@ -11,7 +14,6 @@ type Cleaner = {
   business_name: string | null;
   logo_url: string | null;
   address: string | null;
-  // keep subscription for future billing, but default to 'active' in free mode
   subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
 };
 
@@ -21,13 +23,18 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  // Modal state (Buy First Spot)
+  const [buyOpen, setBuyOpen] = useState(false); // NEW
+
   useEffect(() => {
     (async () => {
       try {
-        const { data: { user }, error: userErr } = await supabase.auth.getUser();
+        const {
+          data: { user },
+          error: userErr,
+        } = await supabase.auth.getUser();
         if (userErr) throw userErr;
         if (!user) {
-          // ProtectedRoute should normally handle this, but this keeps hard reloads safe.
           window.location.hash = "#/login";
           return;
         }
@@ -38,11 +45,9 @@ export default function Dashboard() {
           .select("*")
           .eq("user_id", user.id)
           .maybeSingle();
-
         if (error) throw error;
 
         if (!existing) {
-          // Create a starter record in FREE mode (treat as active)
           const { data: created, error: insertErr } = await supabase
             .from("cleaners")
             .insert({
@@ -52,7 +57,6 @@ export default function Dashboard() {
             })
             .select("*")
             .single();
-
           if (insertErr) throw insertErr;
           setCleaner(created as Cleaner);
         } else {
@@ -68,40 +72,40 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
         Loading…
-      </div>
+      </main>
     );
   }
 
   if (err) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
         <div className="card">
           <div className="card-pad text-red-600">{err}</div>
         </div>
-      </div>
+      </main>
     );
   }
 
   if (!userId || !cleaner) {
     return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
         <div className="card">
           <div className="card-pad">No profile found.</div>
         </div>
-      </div>
+      </main>
     );
   }
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
   return (
-    <div className="space-y-6">
-      <h1 className="section-title text-2xl">Cleaner Dashboard</h1>
+    <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
+      <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
       {needsOnboard ? (
-        <div className="card">
+        <section className="card">
           <div className="card-pad space-y-4">
             <p className="muted">
               Welcome! Add your logo, business name, and address to complete your profile.
@@ -114,12 +118,12 @@ export default function Dashboard() {
               }
             />
           </div>
-        </div>
+        </section>
       ) : (
         <>
           {/* Profile summary */}
-          <div className="card">
-            <div className="card-pad flex items-center gap-4">
+          <section className="card">
+            <div className="card-pad grid grid-cols-[auto_1fr_auto] items-center gap-4">
               {cleaner.logo_url ? (
                 <img
                   src={cleaner.logo_url}
@@ -130,27 +134,77 @@ export default function Dashboard() {
                 <div className="h-16 w-16 rounded-lg bg-ink-100" />
               )}
 
-              <div className="flex-1 min-w-0">
+              <div className="min-w-0">
                 <div className="font-semibold truncate">{cleaner.business_name}</div>
                 <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
-              <Link to="/settings" className="btn btn-primary">
+              <Link to="/settings" className="btn btn-primary justify-self-end">
                 Edit profile
               </Link>
             </div>
-          </div>
+          </section>
+
+          {/* Analytics (at-a-glance) */}
+          <section className="card">
+            <div className="card-pad space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Analytics</h2>
+                <Link to="/analytics" className="text-sm underline">
+                  View full stats →
+                </Link>
+              </div>
+              <AnalyticsOverview />
+            </div>
+          </section>
+
+          {/* Sponsored placement */}
+          <section className="card">
+            <div className="card-pad space-y-2">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Sponsored placement</h2>
+                <Link to="/settings" className="text-sm underline">
+                  Manage →
+                </Link>
+              </div>
+
+              {/* Mini map shows: your coverage, areas you're #1, and what's available */}
+              <MiniSponsorshipMap cleanerId={cleaner.id} />
+
+              {/* CTA – opens the purchase modal */}
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={() => setBuyOpen(true)}
+                >
+                  Buy First Spot
+                </button>
+              </div>
+            </div>
+          </section>
 
           {/* Service areas */}
-          <div className="card">
+          <section className="card">
             <div className="card-pad">
-              <h2 className="section-title mb-3">Your Service Areas</h2>
-              <ServiceAreaEditor cleanerId={cleaner.id} />
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold">Your Service Areas</h2>
+                {/* ServiceAreaEditor renders its own “New Area” UI */}
+              </div>
+              <div className="rounded-xl overflow-hidden border">
+                <ServiceAreaEditor cleanerId={cleaner.id} />
+              </div>
             </div>
-          </div>
+          </section>
         </>
       )}
-    </div>
+
+      {/* Modal lives at the end so it can overlay the page */}
+      <BuyFirstSpotModal
+        open={buyOpen}
+        onClose={() => setBuyOpen(false)}
+        cleanerId={cleaner.id}
+      />
+    </main>
   );
 }
-
