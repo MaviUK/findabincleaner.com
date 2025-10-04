@@ -32,18 +32,12 @@ export default function BuyFirstSpotModal({
   const [points, setPoints] = useState<[number, number][]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // live preview state
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
-
-  // Leaflet map instance (for invalidateSize fix)
   const mapRef = useRef<any | null>(null);
 
-  // Bangor-ish default; replace with your centroid if you like
   const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
 
-  // reset on close
   useEffect(() => {
     if (!open) {
       setPoints([]);
@@ -53,22 +47,19 @@ export default function BuyFirstSpotModal({
     }
   }, [open]);
 
-  // ensure Leaflet recalculates size when modal opens / window resizes
+  // force map refresh on modal open
   useEffect(() => {
     if (!open) return;
-    const tick = () => {
-      if (mapRef.current) mapRef.current.invalidateSize();
-    };
-    const t1 = setTimeout(tick, 300);
-    window.addEventListener("resize", tick);
+    const fixMap = () => mapRef.current?.invalidateSize();
+    const t1 = setTimeout(fixMap, 300);
+    window.addEventListener("resize", fixMap);
     return () => {
       clearTimeout(t1);
-      window.removeEventListener("resize", tick);
+      window.removeEventListener("resize", fixMap);
     };
   }, [open]);
 
   const isPolygonValid = points.length >= 3;
-
   const polygonLatLngs = useMemo<LatLngExpression[]>(() => {
     return points.map(([lat, lng]) => [lat, lng]) as LatLngExpression[];
   }, [points]);
@@ -79,10 +70,9 @@ export default function BuyFirstSpotModal({
     return { type: "Polygon", coordinates: [ring] } as const;
   }
 
-  // live price preview as user draws
+  // live preview
   useEffect(() => {
     let cancelled = false;
-
     async function runPreview() {
       if (!open || points.length < 3) {
         setPreview(null);
@@ -97,9 +87,7 @@ export default function BuyFirstSpotModal({
           body: JSON.stringify({ cleanerId, drawnGeoJSON, months: 1 }),
         });
         const data = (await res.json()) as PreviewResult;
-        if (!res.ok || (data as any)?.error) {
-          throw new Error((data as any)?.error || "Preview failed");
-        }
+        if (!res.ok || (data as any)?.error) throw new Error("Preview failed");
         if (!cancelled) setPreview(data);
       } catch {
         if (!cancelled) setPreview(null);
@@ -107,12 +95,10 @@ export default function BuyFirstSpotModal({
         if (!cancelled) setPreviewing(false);
       }
     }
-
     runPreview();
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points, open, cleanerId]);
 
   async function handlePurchase() {
@@ -120,18 +106,13 @@ export default function BuyFirstSpotModal({
     setError(null);
     try {
       const drawnGeoJSON = buildGeoJSON();
-
-      // Start Stripe Checkout (server computes final price + creates session)
       const res = await fetch("/api/sponsored/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cleanerId, drawnGeoJSON, months: 1 }),
       });
       const data = await res.json();
-      if (!res.ok || !data?.url) {
-        throw new Error(data?.error || "Failed to start checkout.");
-      }
-      // Redirect to Stripe
+      if (!res.ok || !data?.url) throw new Error(data?.error || "Checkout failed.");
       window.location.href = data.url;
     } catch (e: any) {
       setError(e?.message || "Failed to start checkout.");
@@ -140,21 +121,15 @@ export default function BuyFirstSpotModal({
   }
 
   if (!open) return null;
-
   const billableZero =
     !preview || (preview as any)?.area_km2 === 0 || (preview as any)?.monthly_price === 0;
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      {/* backdrop */}
       <div
         className="absolute inset-0 bg-black/50"
-        onClick={() => {
-          if (!submitting) onClose();
-        }}
+        onClick={() => !submitting && onClose()}
       />
-
-      {/* modal */}
       <div className="relative w-full max-w-2xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Buy First Spot (#1)</h3>
@@ -166,7 +141,6 @@ export default function BuyFirstSpotModal({
           </button>
         </div>
 
-        {/* body */}
         <div className="p-4 space-y-4 max-h-[80vh] overflow-auto">
           <p className="text-sm text-gray-600">
             Draw a shape inside your coverage where you want to buy the <strong>#1</strong> spot.
@@ -174,14 +148,13 @@ export default function BuyFirstSpotModal({
             happy, click <strong>Purchase</strong>.
           </p>
 
-          {/* map */}
           <div className="relative rounded-xl overflow-hidden border">
             <MapAny
               style={{ height: 320 }}
               whenCreated={(map: any) => {
                 mapRef.current = map;
                 map.setView(DEFAULT_CENTER, 11);
-                setTimeout(() => map.invalidateSize(), 300);
+                setTimeout(() => map.invalidateSize(), 400);
               }}
               scrollWheelZoom
               attributionControl={false}
@@ -191,9 +164,8 @@ export default function BuyFirstSpotModal({
                 setPoints((prev) => [...prev, [lat, lng]]);
               }}
             >
-              {/* Carto tiles (robust) — no attribution prop to satisfy TS */}
-              <TileLayer url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" />
-
+              {/* ✅ reliable open tile source */}
+              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
               {points.length > 0 && (
                 <PolygonAny
                   positions={polygonLatLngs}
@@ -203,7 +175,6 @@ export default function BuyFirstSpotModal({
             </MapAny>
           </div>
 
-          {/* controls + preview */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="text-xs text-gray-500">
               Points: {points.length} {isPolygonValid ? "(ok)" : "(need 3+)"}
@@ -220,7 +191,6 @@ export default function BuyFirstSpotModal({
             )}
           </div>
 
-          {/* action buttons */}
           <div className="flex items-center gap-2 justify-end">
             <button
               className="px-3 py-1.5 rounded border"
