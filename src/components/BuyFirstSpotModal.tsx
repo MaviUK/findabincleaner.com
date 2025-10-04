@@ -193,7 +193,11 @@ export default function BuyFirstSpotModal({
                 setPoints((prev) => [...prev, [lat, lng]]);
               }}
             >
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+              <TileLayer
+  url="https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png"
+  attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+/>
+
               {points.length > 0 && (
                 <PolygonAny
                   positions={polygonLatLngs}
