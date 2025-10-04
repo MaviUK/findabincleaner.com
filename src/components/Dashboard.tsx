@@ -7,6 +7,7 @@ import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
 import MiniSponsorshipMap from "../components/MiniSponsorshipMap";       // NEW
 import BuyFirstSpotModal from "../components/BuyFirstSpotModal";         // NEW
+import SponsorshipsTable from "../components/SponsorshipsTable";         // NEW
 
 type Cleaner = {
   id: string;
@@ -24,7 +25,7 @@ export default function Dashboard() {
   const [err, setErr] = useState<string | null>(null);
 
   // Modal state (Buy First Spot)
-  const [buyOpen, setBuyOpen] = useState(false); // NEW
+  const [buyOpen, setBuyOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -181,6 +182,16 @@ export default function Dashboard() {
                   Buy First Spot
                 </button>
               </div>
+            </div>
+          </section>
+
+          {/* My Sponsored Areas */}
+          <section className="card">
+            <div className="card-pad space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
+              </div>
+              <SponsorshipsTable cleanerId={cleaner.id} />
             </div>
           </section>
 
