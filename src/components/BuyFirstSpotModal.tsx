@@ -37,10 +37,13 @@ export default function BuyFirstSpotModal({
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
+  // Leaflet map instance (for invalidateSize fix)
   const mapRef = useRef<any | null>(null);
 
+  // Bangor-ish default; replace with your centroid if you like
   const DEFAULT_CENTER: [number, number] = [54.664, -5.67];
 
+  // reset on close
   useEffect(() => {
     if (!open) {
       setPoints([]);
@@ -50,7 +53,7 @@ export default function BuyFirstSpotModal({
     }
   }, [open]);
 
-  // Ensure Leaflet map resizes correctly
+  // ensure Leaflet recalculates size when modal opens / window resizes
   useEffect(() => {
     if (!open) return;
     const tick = () => {
@@ -76,7 +79,7 @@ export default function BuyFirstSpotModal({
     return { type: "Polygon", coordinates: [ring] } as const;
   }
 
-  // live preview calculation
+  // live price preview as user draws
   useEffect(() => {
     let cancelled = false;
 
@@ -109,6 +112,7 @@ export default function BuyFirstSpotModal({
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [points, open, cleanerId]);
 
   async function handlePurchase() {
@@ -116,6 +120,8 @@ export default function BuyFirstSpotModal({
     setError(null);
     try {
       const drawnGeoJSON = buildGeoJSON();
+
+      // Start Stripe Checkout (server computes final price + creates session)
       const res = await fetch("/api/sponsored/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -125,6 +131,7 @@ export default function BuyFirstSpotModal({
       if (!res.ok || !data?.url) {
         throw new Error(data?.error || "Failed to start checkout.");
       }
+      // Redirect to Stripe
       window.location.href = data.url;
     } catch (e: any) {
       setError(e?.message || "Failed to start checkout.");
@@ -139,6 +146,7 @@ export default function BuyFirstSpotModal({
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
+      {/* backdrop */}
       <div
         className="absolute inset-0 bg-black/50"
         onClick={() => {
@@ -146,6 +154,7 @@ export default function BuyFirstSpotModal({
         }}
       />
 
+      {/* modal */}
       <div className="relative w-full max-w-2xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Buy First Spot (#1)</h3>
@@ -157,6 +166,7 @@ export default function BuyFirstSpotModal({
           </button>
         </div>
 
+        {/* body */}
         <div className="p-4 space-y-4 max-h-[80vh] overflow-auto">
           <p className="text-sm text-gray-600">
             Draw a shape inside your coverage where you want to buy the <strong>#1</strong> spot.
@@ -181,11 +191,8 @@ export default function BuyFirstSpotModal({
                 setPoints((prev) => [...prev, [lat, lng]]);
               }}
             >
-              {/* ✅ switch to Carto’s high-reliability tiles */}
-              <TileLayer
-                url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-              />
+              {/* Carto tiles (robust) — no attribution prop to satisfy TS */}
+              <TileLayer url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png" />
 
               {points.length > 0 && (
                 <PolygonAny
@@ -213,7 +220,7 @@ export default function BuyFirstSpotModal({
             )}
           </div>
 
-          {/* buttons */}
+          {/* action buttons */}
           <div className="flex items-center gap-2 justify-end">
             <button
               className="px-3 py-1.5 rounded border"
