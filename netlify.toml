@@ -2,3 +2,18 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+[[redirects]]
+from = "/api/geo/my-coverage"
+to = "/.netlify/functions/geo-my-coverage"
+status = 200
+
+[[redirects]]
+from = "/api/geo/my-wins"
+to = "/.netlify/functions/geo-my-wins"
+status = 200
+
+[[redirects]]
+from = "/api/geo/available"
+to = "/.netlify/functions/geo-available"
+status = 200
