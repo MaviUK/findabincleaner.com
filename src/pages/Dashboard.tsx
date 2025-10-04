@@ -4,8 +4,10 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
-import AnalyticsOverview from "../components/AnalyticsOverview"; // NEW
-import MiniSponsorshipMap from "../components/MiniSponsorshipMap"; // NEW
+import AnalyticsOverview from "../components/AnalyticsOverview";
+import MiniSponsorshipMap from "../components/MiniSponsorshipMap";   // NEW
+import BuyFirstSpotModal from "../components/BuyFirstSpotModal";     // NEW
+import SponsorshipsTable from "../components/SponsorshipsTable";     // NEW
 
 type Cleaner = {
   id: string;
@@ -22,13 +24,13 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  // controls the Buy First Spot modal
+  const [buyOpen, setBuyOpen] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
-        const {
-          data: { user },
-          error: userErr,
-        } = await supabase.auth.getUser();
+        const { data: { user }, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;
         if (!user) {
           window.location.hash = "#/login";
@@ -77,9 +79,7 @@ export default function Dashboard() {
   if (err) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card">
-          <div className="card-pad text-red-600">{err}</div>
-        </div>
+        <div className="card"><div className="card-pad text-red-600">{err}</div></div>
       </main>
     );
   }
@@ -87,9 +87,7 @@ export default function Dashboard() {
   if (!userId || !cleaner) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card">
-          <div className="card-pad">No profile found.</div>
-        </div>
+        <div className="card"><div className="card-pad">No profile found.</div></div>
       </main>
     );
   }
@@ -164,23 +162,27 @@ export default function Dashboard() {
                 </Link>
               </div>
 
-              {/* Mini map shows: your coverage, areas you're #1, and what's available */}
               <MiniSponsorshipMap cleanerId={cleaner.id} />
 
-              {/* CTA – wired in next step to open a purchase modal */}
               <div className="flex justify-end">
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={() =>
-                    alert(
-                      "Next step: we'll add the 'Buy First Spot' modal to draw/select an area and purchase."
-                    )
-                  }
+                  onClick={() => setBuyOpen(true)}
                 >
                   Buy First Spot
                 </button>
               </div>
+            </div>
+          </section>
+
+          {/* My Sponsored Areas */}
+          <section className="card">
+            <div className="card-pad space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
+              </div>
+              <SponsorshipsTable cleanerId={cleaner.id} />
             </div>
           </section>
 
@@ -189,7 +191,6 @@ export default function Dashboard() {
             <div className="card-pad">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Your Service Areas</h2>
-                {/* ServiceAreaEditor renders its own “New Area” UI */}
               </div>
               <div className="rounded-xl overflow-hidden border">
                 <ServiceAreaEditor cleanerId={cleaner.id} />
@@ -198,6 +199,9 @@ export default function Dashboard() {
           </section>
         </>
       )}
+
+      {/* Modal */}
+      <BuyFirstSpotModal open={buyOpen} onClose={() => setBuyOpen(false)} cleanerId={cleaner.id} />
     </main>
   );
 }
