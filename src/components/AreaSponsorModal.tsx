@@ -1,3 +1,4 @@
+// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Availability =
@@ -38,14 +39,14 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // build query string with cache-buster
+  // Build URL with cache-buster; call function path directly to bypass SPA.
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
-      t: String(Date.now()), // 👈 cache-buster so we don't get 304 stuck states
+      t: String(Date.now()),
     });
-    return `/api/area/availability?${qs.toString()}`;
+    return `/.netlify/functions/area-availability?${qs.toString()}`;
   }, [areaId, slot]);
 
   useEffect(() => {
@@ -61,21 +62,28 @@ export default function AreaSponsorModal({
         const res = await fetch(availabilityUrl, {
           method: "GET",
           headers: { accept: "application/json" },
-          // cache: "no-store", // optional extra
         });
-        if (!res.ok) {
+
+        // If we accidentally hit the SPA, the Content-Type will be text/html
+        const ct = res.headers.get("content-type") || "";
+        if (!res.ok || ct.includes("text/html")) {
           const text = await res.text().catch(() => "");
           throw new Error(text || `Request failed (${res.status})`);
         }
+
         const data = (await res.json()) as Availability;
         if (!("ok" in data) || !data.ok) {
           throw new Error((data as any)?.error || "Availability failed.");
         }
         if (!cancelled) setAvail(data);
       } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "Failed to load availability.");
+        const msg: string =
+          typeof e?.message === "string" && e.message.startsWith("<")
+            ? "Received HTML from server (check Netlify redirects order)."
+            : e?.message || "Failed to load availability.";
+        if (!cancelled) setErr(msg);
       } finally {
-        if (!cancelled) setLoading(false); // 👈 always clear the spinner
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -91,7 +99,7 @@ export default function AreaSponsorModal({
     setErr(null);
     setPreview(null);
     try {
-      const res = await fetch(`/api/area/preview`, {
+      const res = await fetch(`/.netlify/functions/area-preview`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -100,17 +108,24 @@ export default function AreaSponsorModal({
           months: 1,
         }),
       });
-      if (!res.ok) {
+
+      const ct = res.headers.get("content-type") || "";
+      if (!res.ok || ct.includes("text/html")) {
         const text = await res.text().catch(() => "");
         throw new Error(text || `Preview failed (${res.status})`);
       }
+
       const data = (await res.json()) as PreviewResult;
       if (!("ok" in data) || !data.ok) {
         throw new Error((data as any)?.error || "Preview failed.");
       }
       setPreview(data);
     } catch (e: any) {
-      setErr(e?.message || "Failed to preview.");
+      const msg: string =
+        typeof e?.message === "string" && e.message.startsWith("<")
+          ? "Received HTML from server (check Netlify redirects order)."
+          : e?.message || "Failed to preview.";
+      setErr(msg);
     } finally {
       setPreviewing(false);
     }
@@ -118,7 +133,7 @@ export default function AreaSponsorModal({
 
   async function goToCheckout() {
     try {
-      // pull supabase token, if available (your function may require auth)
+      // Pull supabase token, if available (your function may require auth)
       let token: string | null = null;
       const raw = localStorage.getItem("supabase.auth.token");
       if (raw) {
@@ -128,7 +143,7 @@ export default function AreaSponsorModal({
         } catch {}
       }
 
-      const res = await fetch(`/api/sponsored/checkout`, {
+      const res = await fetch(`/.netlify/functions/sponsored-checkout`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -142,7 +157,8 @@ export default function AreaSponsorModal({
         }),
       });
 
-      if (!res.ok) {
+      const ct = res.headers.get("content-type") || "";
+      if (!res.ok || ct.includes("text/html")) {
         const text = await res.text().catch(() => "");
         throw new Error(text || `Checkout failed (${res.status})`);
       }
@@ -154,13 +170,17 @@ export default function AreaSponsorModal({
         throw new Error("No checkout URL returned.");
       }
     } catch (e: any) {
-      setErr(e?.message || "Failed to start checkout.");
+      const msg: string =
+        typeof e?.message === "string" && e.message.startsWith("<")
+          ? "Received HTML from server (check Netlify redirects order)."
+          : e?.message || "Failed to start checkout.";
+      setErr(msg);
     }
   }
 
   if (!open) return null;
 
-  // tiny helper about availability
+  // derived helper about availability
   const hasAvailable =
     (avail as any)?.ok &&
     (avail as any)?.available &&
