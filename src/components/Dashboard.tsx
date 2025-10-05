@@ -5,9 +5,10 @@ import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
-import MiniSponsorshipMap from "../components/MiniSponsorshipMap";       // NEW
-import BuyFirstSpotModal from "../components/BuyFirstSpotModal";         // NEW
-import SponsorshipsTable from "../components/SponsorshipsTable";         // NEW
+import MiniSponsorshipMap from "../components/MiniSponsorshipMap";
+import BuyFirstSpotModal from "../components/BuyFirstSpotModal";
+// If you already have this table, keep the import. If not, you can remove the section below.
+// import SponsorshipsTable from "../components/SponsorshipsTable";
 
 type Cleaner = {
   id: string;
@@ -24,8 +25,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Modal state (Buy First Spot)
-  const [buyOpen, setBuyOpen] = useState(false);
+  // Buy-first-spot modal
+  const [showBuy, setShowBuy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -146,7 +147,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Analytics (at-a-glance) */}
+          {/* Analytics */}
           <section className="card">
             <div className="card-pad space-y-4">
               <div className="flex items-center justify-between">
@@ -159,48 +160,45 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Sponsored placement */}
+          {/* Sponsored placement (map + buy button) */}
           <section className="card">
-            <div className="card-pad space-y-2">
-              <div className="flex items-center justify-between">
+            <div className="card-pad">
+              <div className="flex items-center justify-between mb-3">
                 <h2 className="text-lg font-semibold">Sponsored placement</h2>
-                <Link to="/settings" className="text-sm underline">
+                <a href="#/sponsorships" className="text-sm underline">
                   Manage →
-                </Link>
+                </a>
               </div>
 
-              {/* Mini map shows: your coverage, areas you're #1, and what's available */}
-              <MiniSponsorshipMap cleanerId={cleaner.id} />
+              <div className="rounded-xl overflow-hidden border relative">
+                {/* Optional small debug label; remove if you like */}
+                {/* <div className="absolute left-2 top-2 z-[1000] bg-white/80 text-xs px-2 py-1 rounded">debug: map slot</div> */}
+                <MiniSponsorshipMap cleanerId={cleaner.id} />
+              </div>
 
-              {/* CTA – opens the purchase modal */}
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => setBuyOpen(true)}
-                >
+              <div className="flex justify-end mt-3">
+                <button className="btn btn-primary" onClick={() => setShowBuy(true)}>
                   Buy First Spot
                 </button>
               </div>
             </div>
           </section>
 
-          {/* My Sponsored Areas */}
-          <section className="card">
+          {/* My Sponsored Areas (optional table; comment out if you don't have it) */}
+          {/* <section className="card">
             <div className="card-pad space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
               </div>
               <SponsorshipsTable cleanerId={cleaner.id} />
             </div>
-          </section>
+          </section> */}
 
           {/* Service areas */}
           <section className="card">
             <div className="card-pad">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-lg font-semibold">Your Service Areas</h2>
-                {/* ServiceAreaEditor renders its own “New Area” UI */}
               </div>
               <div className="rounded-xl overflow-hidden border">
                 <ServiceAreaEditor cleanerId={cleaner.id} />
@@ -210,12 +208,14 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* Modal lives at the end so it can overlay the page */}
-      <BuyFirstSpotModal
-        open={buyOpen}
-        onClose={() => setBuyOpen(false)}
-        cleanerId={cleaner.id}
-      />
+      {/* Buy First Spot modal */}
+      {showBuy && (
+        <BuyFirstSpotModal
+          open={showBuy}
+          onClose={() => setShowBuy(false)}
+          cleanerId={cleaner.id}
+        />
+      )}
     </main>
   );
 }
