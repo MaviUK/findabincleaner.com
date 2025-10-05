@@ -13,7 +13,13 @@ type PreviewOk = {
   total_price: number;
   final_geojson: any | null;
 };
-type PreviewResult = PreviewOk | { ok: false; error: string };
+type PreviewErr = { ok: false; error: string };
+type PreviewResult = PreviewOk | PreviewErr;
+
+// user-defined type guard to narrow PreviewResult
+function isPreviewOk(x: PreviewResult): x is PreviewOk {
+  return x.ok === true;
+}
 
 export default function AreaSponsorModal({
   open,
@@ -44,7 +50,6 @@ export default function AreaSponsorModal({
     let cancelled = false;
 
     async function loadViaRpc() {
-      // Prefer an RPC you own: get_service_area_gj(p_area_id uuid)
       const { data, error } = await supabase.rpc("get_service_area_gj", {
         p_area_id: areaId,
       });
@@ -180,10 +185,8 @@ export default function AreaSponsorModal({
       }
 
       const data = (await res.json()) as PreviewResult;
-      if (!("ok" in data)) {
-        throw new Error("Malformed response from preview.");
-      }
-      if (!data.ok) {
+      if (!isPreviewOk(data)) {
+        // narrowed to PreviewErr here
         throw new Error(data.error || "Preview failed.");
       }
       setPreview(data);
@@ -262,7 +265,7 @@ export default function AreaSponsorModal({
       : true);
 
   const numbers =
-    preview && "ok" in preview && preview.ok
+    preview && isPreviewOk(preview)
       ? {
           km2: Number(preview.area_km2),
           monthly: Number(preview.monthly_price),
@@ -332,19 +335,27 @@ export default function AreaSponsorModal({
                 </button>
               </div>
 
-              {numbers && Number.isFinite(numbers.km2) && Number.isFinite(numbers.monthly) && Number.isFinite(numbers.total) && (
-                <div className="mt-3 text-sm space-y-1">
-                  <div>
-                    <span className="text-gray-500">Area:</span> {numbers.km2.toFixed(4)} km²
+              {numbers &&
+                Number.isFinite(numbers.km2) &&
+                Number.isFinite(numbers.monthly) &&
+                Number.isFinite(numbers.total) && (
+                  <div className="mt-3 text-sm space-y-1">
+                    <div>
+                      <span className="text-gray-500">Area:</span>{" "}
+                      {numbers.km2.toFixed(4)} km²
+                    </div>
+                    <div>
+                      <span className="text-gray-500">Monthly price:</span> £
+                      {numbers.monthly.toFixed(2)}
+                    </div>
+                    <div>
+                      <span className="text-gray-500">
+                        First charge (months × price):
+                      </span>{" "}
+                      £{numbers.total.toFixed(2)}
+                    </div>
                   </div>
-                  <div>
-                    <span className="text-gray-500">Monthly price:</span> £{numbers.monthly.toFixed(2)}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">First charge (months × price):</span> £{numbers.total.toFixed(2)}
-                  </div>
-                </div>
-              )}
+                )}
             </>
           )}
         </div>
