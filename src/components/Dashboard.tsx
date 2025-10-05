@@ -4,7 +4,7 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
-import AreasSponsorList from "../components/AreasSponsorList";
+import AreasSponsorList from "../components/AreasSponsorList"; // shows “Sponsor #1/#2/#3” for each area
 import AnalyticsOverview from "../components/AnalyticsOverview";
 
 type Cleaner = {
@@ -25,10 +25,7 @@ export default function Dashboard() {
   useEffect(() => {
     (async () => {
       try {
-        const {
-          data: { user },
-          error: userErr,
-        } = await supabase.auth.getUser();
+        const { data: { user }, error: userErr } = await supabase.auth.getUser();
         if (userErr) throw userErr;
         if (!user) {
           window.location.hash = "#/login";
@@ -67,19 +64,13 @@ export default function Dashboard() {
   }, []);
 
   if (loading) {
-    return (
-      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        Loading…
-      </main>
-    );
+    return <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">Loading…</main>;
   }
 
   if (err) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card">
-          <div className="card-pad text-red-600">{err}</div>
-        </div>
+        <div className="card"><div className="card-pad text-red-600">{err}</div></div>
       </main>
     );
   }
@@ -87,15 +78,12 @@ export default function Dashboard() {
   if (!userId || !cleaner) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card">
-          <div className="card-pad">No profile found.</div>
-        </div>
+        <div className="card"><div className="card-pad">No profile found.</div></div>
       </main>
     );
   }
 
-  const needsOnboard =
-    !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
+  const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -104,16 +92,12 @@ export default function Dashboard() {
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
-            <p className="muted">
-              Welcome! Add your logo, business name, and address to complete your profile.
-            </p>
+            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
               onSaved={(patch) =>
-                setCleaner((prev) =>
-                  prev ? ({ ...prev, ...patch } as Cleaner) : prev
-                )
+                setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))
               }
             />
           </div>
@@ -149,15 +133,13 @@ export default function Dashboard() {
             <div className="card-pad space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Analytics</h2>
-                <Link to="/analytics" className="text-sm underline">
-                  View full stats →
-                </Link>
+                <Link to="/analytics" className="text-sm underline">View full stats →</Link>
               </div>
               <AnalyticsOverview />
             </div>
           </section>
 
-            {/* Service areas + Sponsor list */}
+          {/* Service areas + Sponsorship actions */}
           <section className="card">
             <div className="card-pad space-y-6">
               <div className="flex items-center justify-between">
@@ -169,9 +151,7 @@ export default function Dashboard() {
 
               <div className="flex items-center justify-between pt-2">
                 <h3 className="text-base font-semibold">Sponsor your areas</h3>
-                <a href="#/sponsorships" className="text-sm underline">
-                  Manage →
-                </a>
+                <a href="#/sponsorships" className="text-sm underline">Manage →</a>
               </div>
               <AreasSponsorList cleanerId={cleaner.id} />
             </div>
