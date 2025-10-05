@@ -25,7 +25,7 @@
     "@eslint/js": "9.33.0",
     "@types/geojson": "7946.0.14",
     "@types/google.maps": "3.58.1",
-    "@types/leaflet.draw": "1.0.6",
+    "@types/leaflet-draw": "^1.0.8",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "@vitejs/plugin-react": "5.0.0",
