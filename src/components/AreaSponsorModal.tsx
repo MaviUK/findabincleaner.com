@@ -47,26 +47,56 @@ export default function AreaSponsorModal({
   // --- Load the service area's GeoJSON when the modal opens ---
   useEffect(() => {
     let cancelled = false;
+
+    async function loadViaTable() {
+      const { data, error, status } = await supabase
+        .from("service_areas")
+        .select("gj")
+        .eq("id", areaId)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.warn("service_areas gj fetch error", status, error);
+        throw error;
+      }
+      if (!data?.gj) throw new Error("This service area has no geometry saved.");
+      return data.gj;
+    }
+
+    async function loadViaRpcFallback() {
+      // Optional RPC fallback if you created:
+      // create or replace function get_service_area_gj(p_area_id uuid)
+      // returns jsonb language sql stable security definer
+      // as $$ select gj from service_areas where id = p_area_id; $$;
+      const { data, error } = await supabase.rpc("get_service_area_gj", {
+        p_area_id: areaId,
+      });
+      if (error) throw error;
+      if (!data) throw new Error("No geometry found for this area.");
+      return data;
+    }
+
     async function loadGJ() {
       if (!open || !areaId) return;
       setLoadingGJ(true);
       setErr(null);
       try {
-        const { data, error } = await supabase
-          .from("service_areas")
-          .select("gj")
-          .eq("id", areaId)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (!data?.gj) throw new Error("This service area has no geometry saved.");
-        if (!cancelled) setAreaGeoJSON(data.gj);
+        let gj: any;
+        try {
+          gj = await loadViaTable();
+        } catch {
+          // Fallback to RPC (helps avoid 400 quirks)
+          gj = await loadViaRpcFallback();
+        }
+        if (!cancelled) setAreaGeoJSON(gj);
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || "Failed to load area geometry.");
       } finally {
         if (!cancelled) setLoadingGJ(false);
       }
     }
+
     loadGJ();
     return () => {
       cancelled = true;
@@ -235,6 +265,13 @@ export default function AreaSponsorModal({
       ? (avail as any).available.coordinates.length > 0
       : true);
 
+  // Safe number extraction for preview block to prevent crashes
+  const km2 = Number((preview as any)?.ok ? (preview as any).area_km2 : NaN);
+  const monthly = Number((preview as any)?.ok ? (preview as any).monthly_price : NaN);
+  const total = Number((preview as any)?.ok ? (preview as any).total_price : NaN);
+  const previewNumbersValid =
+    Number.isFinite(km2) && Number.isFinite(monthly) && Number.isFinite(total);
+
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
       {/* backdrop */}
@@ -293,30 +330,4 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn btn-primary"
                   onClick={goToCheckout}
-                  disabled={!hasAvailable || !areaGeoJSON}
-                >
-                  Continue to checkout
-                </button>
-              </div>
-
-              {preview && "ok" in preview && preview.ok && (
-                <div className="mt-3 text-sm space-y-1">
-                  <div>
-                    <span className="text-gray-500">Area:</span> {preview.area_km2.toFixed(4)} km²
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Monthly price:</span> £{preview.monthly_price.toFixed(2)}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">First charge (months × price):</span> £
-                    {preview.total_price.toFixed(2)}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+                  disabled={!hasAvailable ||
