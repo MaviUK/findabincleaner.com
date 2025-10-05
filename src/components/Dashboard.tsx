@@ -4,10 +4,9 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
+import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
-import MiniSponsorshipMap from "../components/MiniSponsorshipMap";
-import BuyFirstSpotModal from "../components/BuyFirstSpotModal";
-// If you already have this table, keep the import. If not, you can remove the section below.
+// If you already have this table, keep the import. If not, you can remove that section.
 // import SponsorshipsTable from "../components/SponsorshipsTable";
 
 type Cleaner = {
@@ -24,9 +23,6 @@ export default function Dashboard() {
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
-  // Buy-first-spot modal
-  const [showBuy, setShowBuy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -100,7 +96,8 @@ export default function Dashboard() {
     );
   }
 
-  const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
+  const needsOnboard =
+    !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -110,13 +107,16 @@ export default function Dashboard() {
         <section className="card">
           <div className="card-pad space-y-4">
             <p className="muted">
-              Welcome! Add your logo, business name, and address to complete your profile.
+              Welcome! Add your logo, business name, and address to complete your
+              profile.
             </p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
               onSaved={(patch) =>
-                setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))
+                setCleaner((prev) =>
+                  prev ? ({ ...prev, ...patch } as Cleaner) : prev
+                )
               }
             />
           </div>
@@ -137,8 +137,12 @@ export default function Dashboard() {
               )}
 
               <div className="min-w-0">
-                <div className="font-semibold truncate">{cleaner.business_name}</div>
-                <div className="muted truncate">{cleaner.address || "No address yet"}</div>
+                <div className="font-semibold truncate">
+                  {cleaner.business_name}
+                </div>
+                <div className="muted truncate">
+                  {cleaner.address || "No address yet"}
+                </div>
               </div>
 
               <Link to="/settings" className="btn btn-primary justify-self-end">
@@ -160,61 +164,38 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Sponsored placement (map + buy button) */}
+          {/* Service areas (manage) + Sponsor list */}
           <section className="card">
-            <div className="card-pad">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold">Sponsored placement</h2>
+            <div className="card-pad space-y-6">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">Your Service Areas (manage)</h2>
+              </div>
+              <div className="rounded-xl overflow-hidden border">
+                <ServiceAreaEditor cleanerId={cleaner.id} />
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <h3 className="text-base font-semibold">Sponsor your areas</h3>
                 <a href="#/sponsorships" className="text-sm underline">
-                  Manage →
+                  Manage → 
                 </a>
               </div>
-
-              <div className="rounded-xl overflow-hidden border relative">
-                {/* Optional small debug label; remove if you like */}
-                {/* <div className="absolute left-2 top-2 z-[1000] bg-white/80 text-xs px-2 py-1 rounded">debug: map slot</div> */}
-                <MiniSponsorshipMap cleanerId={cleaner.id} />
-              </div>
-
-              <div className="flex justify-end mt-3">
-                <button className="btn btn-primary" onClick={() => setShowBuy(true)}>
-                  Buy First Spot
-                </button>
-              </div>
+              <AreasSponsorList cleanerId={cleaner.id} />
             </div>
           </section>
 
-          {/* My Sponsored Areas (optional table; comment out if you don't have it) */}
-          {/* <section className="card">
+          {/* Optional: My Sponsored Areas table */}
+          {/*
+          <section className="card">
             <div className="card-pad space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
               </div>
               <SponsorshipsTable cleanerId={cleaner.id} />
             </div>
-          </section> */}
-
-          {/* Service areas */}
-          <section className="card">
-            <div className="card-pad">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Your Service Areas</h2>
-              </div>
-              <div className="rounded-xl overflow-hidden border">
-                <ServiceAreaEditor cleanerId={cleaner.id} />
-              </div>
-            </div>
           </section>
+          */}
         </>
-      )}
-
-      {/* Buy First Spot modal */}
-      {showBuy && (
-        <BuyFirstSpotModal
-          open={showBuy}
-          onClose={() => setShowBuy(false)}
-          cleanerId={cleaner.id}
-        />
       )}
     </main>
   );
