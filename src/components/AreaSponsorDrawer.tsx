@@ -1,23 +1,28 @@
-// src/components/AreaSponsorDrawer.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   MapContainer as RLMapContainer,
   TileLayer,
   GeoJSON as RLGeoJSON,
-  Polygon as RLPolygon,
 } from "react-leaflet";
-import type { LatLngExpression } from "leaflet";
+import type { Map as LeafletMap } from "leaflet";
 
 const MapAny = RLMapContainer as any;
 const GeoJSONAny = RLGeoJSON as any;
-const PolygonAny = RLPolygon as any;
 
-type PreviewResult =
-  | { ok: true; final_geojson: any; area_km2: number; monthly_price: number; total_price: number }
-  | { error: string };
+type AvailabilityResponse = {
+  ok: boolean;
+  existing: any;   // GeoJSON (MultiPolygon)
+  available: any;  // GeoJSON (Polygon | MultiPolygon | null)
+};
 
-type Availability =
-  | { ok: true; available: any; existing: any }
+type PreviewResponse =
+  | {
+      ok: true;
+      area_km2: number;
+      monthly_price: number;
+      total_price: number;
+      final_geojson: any | null;
+    }
   | { error: string };
 
 export default function AreaSponsorDrawer({
@@ -25,7 +30,7 @@ export default function AreaSponsorDrawer({
   onClose,
   areaId,
   slot,
-  center, // [lat, lng] to centre the mini map around this area
+  center,
 }: {
   open: boolean;
   onClose: () => void;
@@ -33,182 +38,221 @@ export default function AreaSponsorDrawer({
   slot: 1 | 2 | 3;
   center: [number, number];
 }) {
-  const [avail, setAvail] = useState<Availability | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const mapRef = useRef<LeafletMap | null>(null);
 
-  // drawing
-  const [points, setPoints] = useState<[number, number][]>([]);
-  const polyLatLngs = useMemo<LatLngExpression[]>(() => {
-    return points.map(([lat, lng]) => [lat, lng]) as LatLngExpression[];
-  }, [points]);
+  // data
+  const [avail, setAvail] = useState<AvailabilityResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
-  // live preview
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
+  // pricing preview (for “full available” to start with)
+  const [months, setMonths] = useState<number>(1);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
-  // Reset when open toggles
   useEffect(() => {
     if (!open) {
       setAvail(null);
-      setError(null);
-      setPoints([]);
       setPreview(null);
-      setPreviewing(false);
+      setErr(null);
+      return;
     }
-  }, [open]);
 
-  // Load availability shapes
-  useEffect(() => {
-    if (!open) return;
-    (async () => {
-      setError(null);
-      try {
-        const res = await fetch(`/api/area/availability?area_id=${areaId}&slot=${slot}`);
-        const data = (await res.json()) as Availability;
-        if (!res.ok || (data as any)?.error) {
-          throw new Error((data as any)?.error || "Failed to load availability");
-        }
-        setAvail(data);
-      } catch (e: any) {
-        setError(e?.message || "Failed to load availability");
-      }
-    })();
-  }, [open, areaId, slot]);
-
-  // Build drawn polygon GeoJSON
-  const buildGeoJSON = () => {
-    const ring = points.map(([lat, lng]) => [lng, lat]);
-    if (ring.length > 0) ring.push(ring[0]);
-    return { type: "Polygon", coordinates: [ring] } as const;
-  };
-
-  // Live preview whenever points change
-  useEffect(() => {
     let cancelled = false;
-    async function runPreview() {
-      if (!open || points.length < 3) {
-        setPreview(null);
-        return;
-      }
-      setPreviewing(true);
+    (async () => {
+      setLoading(true);
+      setErr(null);
       try {
-        const res = await fetch("/api/area/preview", {
+        // 1) fetch availability for this area + slot
+        const q = new URLSearchParams({ area_id: areaId, slot: String(slot) });
+        const r1 = await fetch(`/api/area/availability?${q.toString()}`);
+        const data1 = (await r1.json()) as AvailabilityResponse;
+        if (!r1.ok || !data1?.ok) throw new Error("Failed to load availability");
+        if (cancelled) return;
+        setAvail(data1);
+
+        // Fit bounds if we have an available polygon
+        setTimeout(() => {
+          try {
+            if (!mapRef.current) return;
+            const L = (window as any).L;
+            const collection = data1.available || data1.existing;
+            if (collection && L) {
+              const layer = L.geoJSON(collection);
+              const b = layer.getBounds();
+              if (b && b.isValid()) {
+                mapRef.current!.fitBounds(b.pad(0.1));
+              }
+            }
+          } catch {}
+        }, 50);
+
+        // 2) price preview for the full available shape
+        setPreviewing(true);
+        const r2 = await fetch("/api/area/preview", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            area_id: areaId,
+            areaId,
             slot,
-            drawnGeoJSON: buildGeoJSON(),
+            months,
+            // no drawnGeoJSON -> preview “full available”
           }),
         });
-        const data = (await res.json()) as PreviewResult;
-        if (!res.ok || (data as any)?.error) {
-          throw new Error((data as any)?.error || "Preview failed");
+        const data2 = (await r2.json()) as PreviewResponse;
+        if (!r2.ok || (data2 as any)?.error) {
+          // still show the map; just no price
+          if (!cancelled) setPreview({ error: (data2 as any)?.error || "Preview failed" });
+        } else {
+          if (!cancelled) setPreview(data2);
         }
-        if (!cancelled) setPreview(data);
       } catch (e: any) {
-        if (!cancelled) setPreview({ error: e?.message || "Preview failed" });
+        if (!cancelled) setErr(e?.message || "Failed to load");
       } finally {
-        if (!cancelled) setPreviewing(false);
+        if (!cancelled) {
+          setLoading(false);
+          setPreviewing(false);
+        }
       }
-    }
-    runPreview();
+    })();
+
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [points, open, areaId, slot]);
+  }, [open, areaId, slot, months]);
 
-  const isValid = points.length >= 3;
   const billableZero =
-    !preview || (preview as any)?.area_km2 === 0 || (preview as any)?.monthly_price === 0;
-
-  async function handlePurchase() {
-    // Hook to Stripe in the next step
-    alert("Purchase will go to Stripe in the next step. Preview first:\n" + JSON.stringify(preview, null, 2));
-  }
+    !preview ||
+    "error" in preview ||
+    (preview as any)?.area_km2 === 0 ||
+    (preview as any)?.monthly_price === 0;
 
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
+    <div className="fixed inset-0 z-[110] grid place-items-center p-4">
+      {/* backdrop */}
+      <div
+        className="absolute inset-0 bg-black/50"
+        onClick={() => onClose()}
+      />
+
+      {/* panel */}
       <div className="relative w-full max-w-3xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="text-lg font-semibold">Sponsor spot #{slot}</h3>
-          <button className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={onClose}>
+          <h3 className="text-lg font-semibold">
+            Sponsor spot #{slot}
+          </h3>
+          <button
+            className="text-sm px-2 py-1 rounded hover:bg-black/5"
+            onClick={() => onClose()}
+          >
             Close
           </button>
         </div>
 
-        <div className="p-4 space-y-3">
-          {error && <div className="text-sm text-red-600">{error}</div>}
+        <div className="p-4 space-y-4">
+          {err && (
+            <div className="text-sm text-red-600">{err}</div>
+          )}
 
           {/* Map */}
           <div className="rounded-xl overflow-hidden border">
             <MapAny
               style={{ height: 360 }}
-              whenCreated={(map: any) => map.setView(center, 12)}
-              scrollWheelZoom={true}
-              attributionControl={false}
-              zoomControl={true}
-              onClick={(e: any) => {
-                const { lat, lng } = e.latlng;
-                setPoints((prev) => [...prev, [lat, lng]]);
+              whenCreated={(m: LeafletMap) => {
+                mapRef.current = m;
+                m.setView(center, 12);
               }}
+              scrollWheelZoom
+              attributionControl={false}
+              zoomControl
             >
               <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-
-              {/* available (green) + existing (blue) */}
-              {avail && "ok" in avail && avail.available && (
-                <GeoJSONAny data={avail.available} style={{ color: "#16a34a", weight: 2, fillOpacity: 0.2 }} />
+              {avail?.existing && (
+                <GeoJSONAny
+                  data={avail.existing}
+                  style={{ color: "#7c3aed", weight: 2, fillOpacity: 0.05 }}
+                />
               )}
-              {avail && "ok" in avail && avail.existing && (
-                <GeoJSONAny data={avail.existing} style={{ color: "#2563eb", weight: 2, fillOpacity: 0.15 }} />
-              )}
-
-              {/* your drawn polygon */}
-              {points.length > 0 && (
-                <PolygonAny
-                  positions={polyLatLngs}
-                  pathOptions={{ color: "#1f2937", weight: 2, fillOpacity: 0.2 }}
+              {avail?.available && (
+                <GeoJSONAny
+                  data={avail.available}
+                  style={{ color: "#16a34a", weight: 2, fillOpacity: 0.15 }}
                 />
               )}
             </MapAny>
           </div>
 
-          {/* Controls + preview */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-            <div className="text-xs text-gray-600">
-              Points: {points.length} {isValid ? "(ok)" : "(need 3+)"} {previewing && " • previewing…"}
+          {/* Controls */}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-sm">
+              <label className="mr-2">Months</label>
+              <select
+                className="border rounded px-2 py-1 text-sm"
+                value={months}
+                onChange={(e) => setMonths(parseInt(e.target.value, 10) || 1)}
+              >
+                <option value={1}>1</option>
+                <option value={3}>3</option>
+                <option value={6}>6</option>
+                <option value={12}>12</option>
+              </select>
             </div>
-            {preview && "ok" in preview && (
-              <div className="text-sm">
-                Area: {(preview.area_km2 || 0).toFixed(4)} km² • Monthly: £{(preview.monthly_price || 0).toFixed(2)}
-              </div>
-            )}
+
+            <div className="text-sm">
+              {previewing && <span className="text-gray-500">Calculating…</span>}
+              {!previewing && preview && "ok" in preview && (
+                <>
+                  <span className="mr-4">
+                    Area: {preview.area_km2.toFixed(4)} km²
+                  </span>
+                  <span className="mr-2">
+                    Monthly: £{preview.monthly_price.toFixed(2)}
+                  </span>
+                  <span className="font-medium">
+                    Total: £{preview.total_price.toFixed(2)}
+                  </span>
+                </>
+              )}
+              {!previewing && preview && "error" in preview && (
+                <span className="text-red-600">{preview.error}</span>
+              )}
+            </div>
           </div>
 
-          {/* Action buttons */}
+          {/* Actions */}
           <div className="flex items-center justify-end gap-2">
-            <button className="px-3 py-1.5 rounded border" onClick={() => setPoints((p) => p.slice(0, -1))} disabled={points.length === 0}>
-              Undo
-            </button>
-            <button className="px-3 py-1.5 rounded border" onClick={() => setPoints([])} disabled={points.length === 0}>
-              Clear
+            <button
+              className="px-3 py-1.5 rounded border"
+              onClick={() => onClose()}
+            >
+              Cancel
             </button>
             <button
               className="btn btn-primary"
-              disabled={!isValid || billableZero}
-              title={billableZero ? "No billable area in this shape." : undefined}
-              onClick={handlePurchase}
+              disabled={billableZero}
+              onClick={() => {
+                // NEXT STEP: wire this to Stripe checkout
+                // For now, just confirm we can compute price.
+                alert("Looks good! Next step is checkout.");
+              }}
+              title={
+                billableZero
+                  ? "No billable area available for this slot."
+                  : undefined
+              }
             >
-              Purchase
+              Continue to Checkout
             </button>
           </div>
 
+          {loading && (
+            <div className="text-xs text-gray-500">Loading…</div>
+          )}
           <p className="text-xs text-gray-500">
-            Tip: we’ll only charge for the part of your shape that’s actually available for spot #{slot}.
+            Note: You’ll only be charged for the portion of your area that’s
+            actually available for this spot.
           </p>
         </div>
       </div>
