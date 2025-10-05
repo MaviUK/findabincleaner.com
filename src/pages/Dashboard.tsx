@@ -4,10 +4,8 @@ import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
+import AreasSponsorList from "../components/AreasSponsorList"; // shows “Sponsor #1/#2/#3” for each area
 import AnalyticsOverview from "../components/AnalyticsOverview";
-import MiniSponsorshipMap from "../components/MiniSponsorshipMap";   // NEW
-import BuyFirstSpotModal from "../components/BuyFirstSpotModal";     // NEW
-import SponsorshipsTable from "../components/SponsorshipsTable";     // NEW
 
 type Cleaner = {
   id: string;
@@ -23,9 +21,6 @@ export default function Dashboard() {
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
-  // controls the Buy First Spot modal
-  const [buyOpen, setBuyOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -69,11 +64,7 @@ export default function Dashboard() {
   }, []);
 
   if (loading) {
-    return (
-      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        Loading…
-      </main>
-    );
+    return <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">Loading…</main>;
   }
 
   if (err) {
@@ -101,9 +92,7 @@ export default function Dashboard() {
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
-            <p className="muted">
-              Welcome! Add your logo, business name, and address to complete your profile.
-            </p>
+            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
@@ -139,69 +128,36 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Analytics (at-a-glance) */}
+          {/* Analytics */}
           <section className="card">
             <div className="card-pad space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Analytics</h2>
-                <Link to="/analytics" className="text-sm underline">
-                  View full stats →
-                </Link>
+                <Link to="/analytics" className="text-sm underline">View full stats →</Link>
               </div>
               <AnalyticsOverview />
             </div>
           </section>
 
-          {/* Sponsored placement */}
+          {/* Service areas + Sponsorship actions */}
           <section className="card">
-            <div className="card-pad space-y-2">
+            <div className="card-pad space-y-6">
               <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Sponsored placement</h2>
-                <Link to="/settings" className="text-sm underline">
-                  Manage →
-                </Link>
-              </div>
-
-              <MiniSponsorshipMap cleanerId={cleaner.id} />
-
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => setBuyOpen(true)}
-                >
-                  Buy First Spot
-                </button>
-              </div>
-            </div>
-          </section>
-
-          {/* My Sponsored Areas */}
-          <section className="card">
-            <div className="card-pad space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
-              </div>
-              <SponsorshipsTable cleanerId={cleaner.id} />
-            </div>
-          </section>
-
-          {/* Service areas */}
-          <section className="card">
-            <div className="card-pad">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold">Your Service Areas</h2>
+                <h2 className="text-lg font-semibold">Your Service Areas (manage)</h2>
               </div>
               <div className="rounded-xl overflow-hidden border">
                 <ServiceAreaEditor cleanerId={cleaner.id} />
               </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <h3 className="text-base font-semibold">Sponsor your areas</h3>
+                <a href="#/sponsorships" className="text-sm underline">Manage →</a>
+              </div>
+              <AreasSponsorList cleanerId={cleaner.id} />
             </div>
           </section>
         </>
       )}
-
-      {/* Modal */}
-      <BuyFirstSpotModal open={buyOpen} onClose={() => setBuyOpen(false)} cleanerId={cleaner.id} />
     </main>
   );
 }
