@@ -6,8 +6,6 @@ import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
-// If you already have this table, keep the import. If not, you can remove that section.
-// import SponsorshipsTable from "../components/SponsorshipsTable";
 
 type Cleaner = {
   id: string;
@@ -107,8 +105,7 @@ export default function Dashboard() {
         <section className="card">
           <div className="card-pad space-y-4">
             <p className="muted">
-              Welcome! Add your logo, business name, and address to complete your
-              profile.
+              Welcome! Add your logo, business name, and address to complete your profile.
             </p>
             <CleanerOnboard
               userId={userId}
@@ -137,12 +134,8 @@ export default function Dashboard() {
               )}
 
               <div className="min-w-0">
-                <div className="font-semibold truncate">
-                  {cleaner.business_name}
-                </div>
-                <div className="muted truncate">
-                  {cleaner.address || "No address yet"}
-                </div>
+                <div className="font-semibold truncate">{cleaner.business_name}</div>
+                <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
               <Link to="/settings" className="btn btn-primary justify-self-end">
@@ -164,7 +157,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Service areas (manage) + Sponsor list */}
+            {/* Service areas + Sponsor list */}
           <section className="card">
             <div className="card-pad space-y-6">
               <div className="flex items-center justify-between">
@@ -177,24 +170,12 @@ export default function Dashboard() {
               <div className="flex items-center justify-between pt-2">
                 <h3 className="text-base font-semibold">Sponsor your areas</h3>
                 <a href="#/sponsorships" className="text-sm underline">
-                  Manage → 
+                  Manage →
                 </a>
               </div>
               <AreasSponsorList cleanerId={cleaner.id} />
             </div>
           </section>
-
-          {/* Optional: My Sponsored Areas table */}
-          {/*
-          <section className="card">
-            <div className="card-pad space-y-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">My Sponsored Areas</h2>
-              </div>
-              <SponsorshipsTable cleanerId={cleaner.id} />
-            </div>
-          </section>
-          */}
         </>
       )}
     </main>
