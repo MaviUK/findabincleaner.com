@@ -1,6 +1,8 @@
+// src/components/ServiceAreaEditor.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
+import AreaSponsorModal from "./AreaSponsorModal";
 
 /**
  * ServiceAreaEditor
@@ -131,6 +133,11 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const [draftName, setDraftName] = useState<string>("");
   const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
   const [creating, setCreating] = useState<boolean>(false); // show panel as soon as "New Area" is clicked
+
+  // sponsor modal state
+  const [sponsorOpen, setSponsorOpen] = useState(false);
+  const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
+  const [sponsorSlot, setSponsorSlot] = useState<1 | 2 | 3>(1);
 
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
@@ -310,150 +317,199 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
 
   return (
-    <div className="grid md:grid-cols-12 gap-6">
-      {/* Left panel */}
-      <div className="md:col-span-4 space-y-4">
-        <div className="card card-pad">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="font-semibold text-lg">Service Areas</h3>
-            <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
-              + New Area
-            </button>
+    <>
+      <div className="grid md:grid-cols-12 gap-6">
+        {/* Left panel */}
+        <div className="md:col-span-4 space-y-4">
+          <div className="card card-pad">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold text-lg">Service Areas</h3>
+              <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
+                + New Area
+              </button>
+            </div>
+
+            {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
+            {error && (
+              <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
+                {error}
+              </div>
+            )}
+
+            {/* Draft editor */}
+            {(creating || activeAreaId !== null || draftPolys.length > 0) && (
+              <div className="border rounded-lg p-3 mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    className="input w-full"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    placeholder="Area name"
+                  />
+                </div>
+
+                {creating && draftPolys.length === 0 && (
+                  <div className="text-xs text-gray-600 mb-2">
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                  </div>
+                )}
+
+                <div className="text-sm text-gray-600 mb-2">
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
+                </div>
+
+                <div className="flex gap-2">
+                  <button className="btn" onClick={saveDraft} disabled={loading}>
+                    {activeAreaId ? "Save Changes" : "Save Area"}
+                  </button>
+                  <button className="btn" onClick={cancelDraft} disabled={loading}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      draftPolys.forEach((p) => p.setMap(null));
+                      setDraftPolys([]);
+                    }}
+                    disabled={loading || draftPolys.length === 0}
+                  >
+                    Clear Polygons
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* List */}
+            <ul className="space-y-2">
+              {serviceAreas.map((a) => (
+                <li key={a.id} className="border rounded-lg p-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-medium">{a.name}</div>
+                      <div className="text-xs text-gray-500">
+                        {new Date(a.created_at).toLocaleString()}
+                      </div>
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="btn" onClick={() => editArea(a)} disabled={loading}>
+                        Edit
+                      </button>
+                      <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Sponsor buttons */}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setSponsorAreaId(a.id);
+                        setSponsorSlot(1);
+                        setSponsorOpen(true);
+                      }}
+                    >
+                      Sponsor #1
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setSponsorAreaId(a.id);
+                        setSponsorSlot(2);
+                        setSponsorOpen(true);
+                      }}
+                    >
+                      Sponsor #2
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={() => {
+                        setSponsorAreaId(a.id);
+                        setSponsorSlot(3);
+                        setSponsorOpen(true);
+                      }}
+                    >
+                      Sponsor #3
+                    </button>
+                  </div>
+                </li>
+              ))}
+              {!serviceAreas.length && !loading && (
+                <li className="text-sm text-gray-500">
+                  No service areas yet. Click “New Area” to draw one.
+                </li>
+              )}
+            </ul>
           </div>
 
-          {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
-          {error && (
-            <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
-              {error}
-            </div>
-          )}
-
-          {/* Draft editor */}
-          {(creating || activeAreaId !== null || draftPolys.length > 0) && (
-            <div className="border rounded-lg p-3 mb-4">
-              <div className="flex items-center gap-2 mb-2">
-                <input
-                  className="input w-full"
-                  value={draftName}
-                  onChange={(e) => setDraftName(e.target.value)}
-                  placeholder="Area name"
-                />
-              </div>
-
-              {creating && draftPolys.length === 0 && (
-                <div className="text-xs text-gray-600 mb-2">
-                  Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
-                </div>
-              )}
-
-              <div className="text-sm text-gray-600 mb-2">
-                Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
-              </div>
-
-              <div className="flex gap-2">
-                <button className="btn" onClick={saveDraft} disabled={loading}>
-                  {activeAreaId ? "Save Changes" : "Save Area"}
-                </button>
-                <button className="btn" onClick={cancelDraft} disabled={loading}>
-                  Cancel
-                </button>
-                <button
-                  className="btn"
-                  onClick={() => {
-                    draftPolys.forEach((p) => p.setMap(null));
-                    setDraftPolys([]);
-                  }}
-                  disabled={loading || draftPolys.length === 0}
-                >
-                  Clear Polygons
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* List */}
-          <ul className="space-y-2">
-            {serviceAreas.map((a) => (
-              <li key={a.id} className="border rounded-lg p-3 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{a.name}</div>
-                  <div className="text-xs text-gray-500">
-                    {new Date(a.created_at).toLocaleString()}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button className="btn" onClick={() => editArea(a)} disabled={loading}>
-                    Edit
-                  </button>
-                  <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
-                    Delete
-                  </button>
-                </div>
-              </li>
-            ))}
-            {!serviceAreas.length && !loading && (
-              <li className="text-sm text-gray-500">
-                No service areas yet. Click “New Area” to draw one.
-              </li>
-            )}
-          </ul>
+          <div className="card card-pad text-sm text-gray-600">
+            <div className="font-semibold mb-1">Tips</div>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Click “New Area”, then click around the map to draw a polygon. Double-click to finish.</li>
+              <li>Drag the white handles to adjust vertices. Use “Clear Polygons” to redraw before saving.</li>
+              <li>Each saved Service Area may include multiple polygons.</li>
+            </ul>
+          </div>
         </div>
 
-        <div className="card card-pad text-sm text-gray-600">
-          <div className="font-semibold mb-1">Tips</div>
-          <ul className="list-disc pl-5 space-y-1">
-            <li>Click “New Area”, then click around the map to draw a polygon. Double-click to finish.</li>
-            <li>Drag the white handles to adjust vertices. Use “Clear Polygons” to redraw before saving.</li>
-            <li>Each saved Service Area may include multiple polygons.</li>
-          </ul>
+        {/* Map */}
+        <div className="md:col-span-8">
+          {isLoaded ? (
+            <GoogleMap
+              mapContainerStyle={MAP_CONTAINER}
+              center={DEFAULT_CENTER}
+              zoom={DEFAULT_ZOOM}
+              options={{ mapTypeControl: false, streetViewControl: false }}
+              onLoad={onMapLoad}
+            >
+              <DrawingManager
+                onLoad={onDrawingLoad}
+                onPolygonComplete={onPolygonComplete}
+                options={{
+                  drawingMode: null,
+                  drawingControl: true,
+                  drawingControlOptions: {
+                    drawingModes: [google.maps.drawing.OverlayType.POLYGON],
+                  },
+                  polygonOptions: polyStyle,
+                }}
+              />
+
+              {/* Render existing areas as non-editable preview when not in draft mode */}
+              {activeAreaId === null &&
+                serviceAreas.map((a) => {
+                  const gj = a.gj;
+                  if (!gj || gj.type !== "MultiPolygon") return null;
+                  return (gj.coordinates as number[][][][]).map((poly, i) => {
+                    const rings = poly;
+                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    return (
+                      <Polygon
+                        key={`${a.id}-${i}`}
+                        paths={paths}
+                        options={{ ...polyStyle, editable: false, draggable: false }}
+                      />
+                    );
+                  });
+                })}
+            </GoogleMap>
+          ) : (
+            <div className="card card-pad">Loading map…</div>
+          )}
         </div>
       </div>
 
-      {/* Map */}
-      <div className="md:col-span-8">
-        {isLoaded ? (
-          <GoogleMap
-            mapContainerStyle={MAP_CONTAINER}
-            center={DEFAULT_CENTER}
-            zoom={DEFAULT_ZOOM}
-            options={{ mapTypeControl: false, streetViewControl: false }}
-            onLoad={onMapLoad}
-          >
-            <DrawingManager
-              onLoad={onDrawingLoad}
-              onPolygonComplete={onPolygonComplete}
-              options={{
-                drawingMode: null,
-                drawingControl: true,
-                drawingControlOptions: {
-                  drawingModes: [google.maps.drawing.OverlayType.POLYGON],
-                },
-                polygonOptions: polyStyle,
-              }}
-            />
-
-            {/* Render existing areas as non-editable preview when not in draft mode */}
-            {activeAreaId === null &&
-              serviceAreas.map((a) => {
-                const gj = a.gj;
-                if (!gj || gj.type !== "MultiPolygon") return null;
-                return (gj.coordinates as number[][][][]).map((poly, i) => {
-                  const rings = poly;
-                  const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-                  return (
-                    <Polygon
-                      key={`${a.id}-${i}`}
-                      paths={paths}
-                      options={{ ...polyStyle, editable: false, draggable: false }}
-                    />
-                  );
-                });
-              })}
-          </GoogleMap>
-        ) : (
-          <div className="card card-pad">Loading map…</div>
-        )}
-      </div>
-    </div>
+      {/* Sponsor modal (Leaflet-based, separate from Google Map editor) */}
+      {sponsorOpen && sponsorAreaId && (
+        <AreaSponsorModal
+          open={sponsorOpen}
+          onClose={() => setSponsorOpen(false)}
+          cleanerId={serviceAreas.find((a) => a.id === sponsorAreaId)?.cleaner_id || ""}
+          areaId={sponsorAreaId}
+          slot={sponsorSlot}
+        />
+      )}
+    </>
   );
 }
