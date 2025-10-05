@@ -2,24 +2,24 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-// ---------- Types ----------
-type AvailabilityOk = {
-  ok: true;
-  existing: any;   // GeoJSON (MultiPolygon)
-  available: any;  // GeoJSON (Polygon or MultiPolygon)
-};
+type AvailabilityOk = { ok: true; existing: any; available: any };
 type AvailabilityErr = { ok: false; error: string };
 type Availability = AvailabilityOk | AvailabilityErr;
 
 type PreviewOk = {
   ok: true;
-  area_km2: number;
-  monthly_price: number;
-  total_price: number;
+  area_km2: number | string;
+  monthly_price: number | string;
+  total_price: number | string;
   final_geojson: any | null;
 };
 type PreviewErr = { ok: false; error: string };
 type PreviewResult = PreviewOk | PreviewErr;
+
+function toNum(n: unknown): number | null {
+  const x = typeof n === "string" ? Number(n) : (n as number);
+  return Number.isFinite(x) ? x : null;
+}
 
 export default function AreaSponsorModal({
   open,
@@ -41,14 +41,13 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // the service area's stored geometry (we'll send this as drawnGeoJSON)
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
-  // --- Load the service area's GeoJSON when the modal opens ---
+  // load area geometry from Supabase so we can send it to the function
   useEffect(() => {
     let cancelled = false;
-    async function loadGJ() {
+    (async () => {
       if (!open || !areaId) return;
       setLoadingGJ(true);
       setErr(null);
@@ -58,7 +57,6 @@ export default function AreaSponsorModal({
           .select("gj")
           .eq("id", areaId)
           .maybeSingle();
-
         if (error) throw error;
         if (!data?.gj) throw new Error("This service area has no geometry saved.");
         if (!cancelled) setAreaGeoJSON(data.gj);
@@ -67,14 +65,13 @@ export default function AreaSponsorModal({
       } finally {
         if (!cancelled) setLoadingGJ(false);
       }
-    }
-    loadGJ();
+    })();
     return () => {
       cancelled = true;
     };
   }, [open, areaId]);
 
-  // Build URL with cache-buster; call function path directly to bypass SPA.
+  // availability endpoint (cache-busted)
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
@@ -84,12 +81,11 @@ export default function AreaSponsorModal({
     return `/.netlify/functions/area-availability?${qs.toString()}`;
   }, [areaId, slot]);
 
-  // --- Availability check (GET) ---
+  // fetch availability
   useEffect(() => {
     if (!open) return;
-
     let cancelled = false;
-    async function run() {
+    (async () => {
       setLoading(true);
       setErr(null);
       setAvail(null);
@@ -99,39 +95,25 @@ export default function AreaSponsorModal({
           method: "GET",
           headers: { accept: "application/json" },
         });
-
         const ct = res.headers.get("content-type") || "";
         const raw = await res.text().catch(() => "");
-
-        // Debug logs to console so we can inspect easily
         console.log("[area-availability] status:", res.status, res.statusText);
         console.log("[area-availability] content-type:", ct);
         if (raw) console.log("[area-availability] raw:", raw);
 
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-        }
-        if (!ct.includes("application/json")) {
-          throw new Error(`Non-JSON response:\n${raw}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+        if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
 
-        let data: Availability;
-        try {
-          data = JSON.parse(raw);
-        } catch {
-          throw new Error(`Invalid JSON:\n${raw}`);
-        }
-
-        if (!data || (data as AvailabilityErr).ok === false) {
+        const data: Availability = JSON.parse(raw);
+        if (!data || data.ok !== true) {
           const msg =
             (data as AvailabilityErr)?.error ||
             `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
           throw new Error(msg);
         }
-
         if (!cancelled) setAvail(data);
       } catch (e: any) {
-        const msg: string =
+        const msg =
           typeof e?.message === "string" && e.message.startsWith("<")
             ? "Received HTML from server (check Netlify redirects order)."
             : e?.message || "Failed to load availability.";
@@ -139,15 +121,13 @@ export default function AreaSponsorModal({
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-
-    run();
+    })();
     return () => {
       cancelled = true;
     };
   }, [open, availabilityUrl]);
 
-  // --- Price preview (POST) with strong diagnostics ---
+  // preview pricing
   async function runPreview() {
     if (!open) return;
     if (!areaGeoJSON) {
@@ -157,7 +137,6 @@ export default function AreaSponsorModal({
     setPreviewing(true);
     setErr(null);
     setPreview(null);
-
     try {
       const res = await fetch(`/.netlify/functions/area-preview`, {
         method: "POST",
@@ -177,27 +156,16 @@ export default function AreaSponsorModal({
       console.log("[area-preview] content-type:", ct);
       if (raw) console.log("[area-preview] raw:", raw);
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-      }
-      if (!ct.includes("application/json")) {
-        throw new Error(`Non-JSON response:\n${raw}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+      if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
 
-      let data: PreviewResult;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(`Invalid JSON:\n${raw}`);
-      }
-
-      if (!data || (data as PreviewErr).ok === false) {
+      const data: PreviewResult = JSON.parse(raw);
+      if (!data || data.ok !== true) {
         const msg =
           (data as PreviewErr)?.error ||
           `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
         throw new Error(msg);
       }
-
       setPreview(data);
     } catch (e: any) {
       setErr(String(e?.message || e));
@@ -206,15 +174,13 @@ export default function AreaSponsorModal({
     }
   }
 
-  // --- Checkout (POST) ---
+  // checkout
   async function goToCheckout() {
     try {
       if (!areaGeoJSON) {
         setErr("Missing area geometry; please try reloading the page.");
         return;
       }
-
-      // pull supabase token, if available (your function may require auth)
       let token: string | null = null;
       const rawToken = localStorage.getItem("supabase.auth.token");
       if (rawToken) {
@@ -241,32 +207,21 @@ export default function AreaSponsorModal({
 
       const ct = res.headers.get("content-type") || "";
       const raw = await res.text().catch(() => "");
-
       console.log("[checkout] status:", res.status, res.statusText);
       console.log("[checkout] content-type:", ct);
       if (raw) console.log("[checkout] raw:", raw);
 
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-      }
-      if (!ct.includes("application/json")) {
-        throw new Error(`Non-JSON response from checkout:\n${raw}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+      if (!ct.includes("application/json")) throw new Error(`Non-JSON response from checkout:\n${raw}`);
 
-      let data: any;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        throw new Error(`Invalid JSON from checkout:\n${raw}`);
-      }
-
+      const data = JSON.parse(raw);
       if (data?.url) {
-        window.location.href = data.url; // Stripe Checkout
+        window.location.href = data.url;
       } else {
         throw new Error("No checkout URL returned.");
       }
     } catch (e: any) {
-      const msg: string =
+      const msg =
         typeof e?.message === "string" && e.message.startsWith("<")
           ? "Received HTML from server (check Netlify redirects order)."
           : e?.message || "Failed to start checkout.";
@@ -276,36 +231,33 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  // derived helper about availability
+  const okAvail = avail && avail.ok;
   const hasAvailable =
-    (avail as AvailabilityOk | null)?.ok &&
-    (avail as AvailabilityOk | null)?.available &&
-    (Array.isArray((avail as AvailabilityOk).available?.coordinates)
-      ? (avail as AvailabilityOk).available.coordinates.length > 0
-      : true);
+    (okAvail &&
+      (avail as AvailabilityOk).available &&
+      (Array.isArray((avail as AvailabilityOk).available?.coordinates)
+        ? (avail as AvailabilityOk).available.coordinates.length > 0
+        : true)) ||
+    false;
+
+  // Safely coerce preview numbers (avoid toFixed crash)
+  const areaKm2 = preview && preview.ok ? toNum(preview.area_km2) : null;
+  const monthly = preview && preview.ok ? toNum(preview.monthly_price) : null;
+  const total = preview && preview.ok ? toNum(preview.total_price) : null;
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      {/* backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-
-      {/* modal */}
       <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
-          <button
-            type="button"
-            className="text-sm px-2 py-1 rounded hover:bg-black/5"
-            onClick={onClose}
-          >
+          <button type="button" className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={onClose}>
             Close
           </button>
         </div>
 
         <div className="p-4 space-y-3">
-          {(loading || loadingGJ) && (
-            <div className="text-sm text-gray-600">Loading…</div>
-          )}
+          {(loading || loadingGJ) && <div className="text-sm text-gray-600">Loading…</div>}
 
           {!loading && !loadingGJ && err && (
             <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2 whitespace-pre-wrap">
@@ -313,15 +265,13 @@ export default function AreaSponsorModal({
             </div>
           )}
 
-          {!loading && !loadingGJ && !err && avail && (avail as AvailabilityOk).ok && (
+          {!loading && !loadingGJ && !err && okAvail && (
             <>
               <div className="text-sm">
                 <div className="mb-1">
                   <strong>Result:</strong>{" "}
                   {hasAvailable ? (
-                    <span className="text-green-700">
-                      Some part of this area is available for #{slot}.
-                    </span>
+                    <span className="text-green-700">Some part of this area is available for #{slot}.</span>
                   ) : (
                     <span className="text-gray-700">
                       No billable area is currently available for #{slot} inside this Service Area.
@@ -334,12 +284,7 @@ export default function AreaSponsorModal({
               </div>
 
               <div className="flex items-center gap-2 pt-2">
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={runPreview}
-                  disabled={previewing || !areaGeoJSON}
-                >
+                <button type="button" className="btn" onClick={runPreview} disabled={previewing || !areaGeoJSON}>
                   {previewing ? "Calculating…" : "Preview price"}
                 </button>
                 <button
@@ -352,21 +297,19 @@ export default function AreaSponsorModal({
                 </button>
               </div>
 
-              {preview && (preview as PreviewOk).ok && (
+              {preview && preview.ok && (
                 <div className="mt-3 text-sm space-y-1">
                   <div>
                     <span className="text-gray-500">Area:</span>{" "}
-                    {(preview as PreviewOk).area_km2.toFixed(4)} km²
+                    {areaKm2 !== null ? `${areaKm2.toFixed(4)} km²` : "–"}
                   </div>
                   <div>
-                    <span className="text-gray-500">Monthly price:</span> £
-                    {(preview as PreviewOk).monthly_price.toFixed(2)}
+                    <span className="text-gray-500">Monthly price:</span>{" "}
+                    {monthly !== null ? `£${monthly.toFixed(2)}` : "–"}
                   </div>
                   <div>
-                    <span className="text-gray-500">
-                      First charge (months × price):
-                    </span>{" "}
-                    £{(preview as PreviewOk).total_price.toFixed(2)}
+                    <span className="text-gray-500">First charge (months × price):</span>{" "}
+                    {total !== null ? `£${total.toFixed(2)}` : "–"}
                   </div>
                 </div>
               )}
