@@ -145,7 +145,7 @@ export default function AreaSponsorModal({
           area_id: areaId,
           slot,
           months: 1,
-          drawnGeoJSON: areaGeoJSON, // 👈 required by your function
+          drawnGeoJSON: areaGeoJSON, // required by the function
         }),
       });
 
@@ -200,7 +200,7 @@ export default function AreaSponsorModal({
           areaId,
           slot,
           months: 1,
-          drawnGeoJSON: areaGeoJSON, // 👈 pass it here too if your function needs it
+          drawnGeoJSON: areaGeoJSON,
         }),
       });
 
@@ -244,7 +244,11 @@ export default function AreaSponsorModal({
       <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
-          <button className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={onClose}>
+          <button
+            type="button"
+            className="text-sm px-2 py-1 rounded hover:bg-black/5"
+            onClick={onClose}
+          >
             Close
           </button>
         </div>
@@ -277,10 +281,16 @@ export default function AreaSponsorModal({
               </div>
 
               <div className="flex items-center gap-2 pt-2">
-                <button className="btn" onClick={runPreview} disabled={previewing || !areaGeoJSON}>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={runPreview}
+                  disabled={previewing || !areaGeoJSON}
+                >
                   {previewing ? "Calculating…" : "Preview price"}
                 </button>
                 <button
+                  type="button"
                   className="btn btn-primary"
                   onClick={goToCheckout}
                   disabled={!hasAvailable || !areaGeoJSON}
