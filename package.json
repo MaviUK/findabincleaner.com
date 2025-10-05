@@ -37,4 +37,14 @@
     "typescript-eslint": "8.39.1",
     "vite": "7.1.2"
   }
+  {
+  "name": "web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "stripe": "^14.0.0"
+  }
+}
+
 }
