@@ -2,9 +2,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
-type Availability =
-  | { ok: true; existing: any; available: any }
-  | { ok: false; error: string };
+// ---------- Types ----------
+type AvailabilityOk = {
+  ok: true;
+  existing: any;   // GeoJSON (MultiPolygon)
+  available: any;  // GeoJSON (Polygon or MultiPolygon)
+};
+type AvailabilityErr = { ok: false; error: string };
+type Availability = AvailabilityOk | AvailabilityErr;
 
 type PreviewOk = {
   ok: true;
@@ -15,11 +20,6 @@ type PreviewOk = {
 };
 type PreviewErr = { ok: false; error: string };
 type PreviewResult = PreviewOk | PreviewErr;
-
-// user-defined type guard to narrow PreviewResult
-function isPreviewOk(x: PreviewResult): x is PreviewOk {
-  return x.ok === true;
-}
 
 export default function AreaSponsorModal({
   open,
@@ -41,64 +41,40 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // service area geometry we’ll send as drawnGeoJSON
+  // the service area's stored geometry (we'll send this as drawnGeoJSON)
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
   // --- Load the service area's GeoJSON when the modal opens ---
   useEffect(() => {
     let cancelled = false;
-
-    async function loadViaRpc() {
-      const { data, error } = await supabase.rpc("get_service_area_gj", {
-        p_area_id: areaId,
-      });
-      if (error) throw error;
-      if (!data) throw new Error("No geometry found for this area.");
-      return data;
-    }
-
-    async function loadViaTable() {
-      const { data, error, status } = await supabase
-        .from("service_areas")
-        .select("gj")
-        .eq("id", areaId)
-        .limit(1)
-        .maybeSingle();
-      if (error) {
-        console.warn("service_areas gj fetch error", status, error);
-        throw error;
-      }
-      if (!data?.gj) throw new Error("This service area has no geometry saved.");
-      return data.gj;
-    }
-
     async function loadGJ() {
       if (!open || !areaId) return;
       setLoadingGJ(true);
       setErr(null);
       try {
-        let gj: any;
-        try {
-          gj = await loadViaRpc();
-        } catch {
-          gj = await loadViaTable();
-        }
-        if (!cancelled) setAreaGeoJSON(gj);
+        const { data, error } = await supabase
+          .from("service_areas")
+          .select("gj")
+          .eq("id", areaId)
+          .maybeSingle();
+
+        if (error) throw error;
+        if (!data?.gj) throw new Error("This service area has no geometry saved.");
+        if (!cancelled) setAreaGeoJSON(data.gj);
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || "Failed to load area geometry.");
       } finally {
         if (!cancelled) setLoadingGJ(false);
       }
     }
-
     loadGJ();
     return () => {
       cancelled = true;
     };
   }, [open, areaId]);
 
-  // Availability URL (call function path directly to dodge SPA redirects)
+  // Build URL with cache-buster; call function path directly to bypass SPA.
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
@@ -125,17 +101,34 @@ export default function AreaSponsorModal({
         });
 
         const ct = res.headers.get("content-type") || "";
-        if (!res.ok || ct.includes("text/html")) {
-          const text = await res.text().catch(() => "");
-          throw new Error(
-            text || `Availability failed (${res.status} ${res.statusText})`
-          );
+        const raw = await res.text().catch(() => "");
+
+        // Debug logs to console so we can inspect easily
+        console.log("[area-availability] status:", res.status, res.statusText);
+        console.log("[area-availability] content-type:", ct);
+        if (raw) console.log("[area-availability] raw:", raw);
+
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+        }
+        if (!ct.includes("application/json")) {
+          throw new Error(`Non-JSON response:\n${raw}`);
         }
 
-        const data = (await res.json()) as Availability;
-        if (!("ok" in data) || !data.ok) {
-          throw new Error((data as any)?.error || "Availability failed.");
+        let data: Availability;
+        try {
+          data = JSON.parse(raw);
+        } catch {
+          throw new Error(`Invalid JSON:\n${raw}`);
         }
+
+        if (!data || (data as AvailabilityErr).ok === false) {
+          const msg =
+            (data as AvailabilityErr)?.error ||
+            `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
+          throw new Error(msg);
+        }
+
         if (!cancelled) setAvail(data);
       } catch (e: any) {
         const msg: string =
@@ -154,7 +147,7 @@ export default function AreaSponsorModal({
     };
   }, [open, availabilityUrl]);
 
-  // --- Price preview (POST) ---
+  // --- Price preview (POST) with strong diagnostics ---
   async function runPreview() {
     if (!open) return;
     if (!areaGeoJSON) {
@@ -164,10 +157,11 @@ export default function AreaSponsorModal({
     setPreviewing(true);
     setErr(null);
     setPreview(null);
+
     try {
       const res = await fetch(`/.netlify/functions/area-preview`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
           area_id: areaId,
           slot,
@@ -177,25 +171,36 @@ export default function AreaSponsorModal({
       });
 
       const ct = res.headers.get("content-type") || "";
-      if (!res.ok || !ct.includes("application/json")) {
-        const text = await res.text().catch(() => "");
-        throw new Error(
-          text || `Preview failed (${res.status} ${res.statusText})`
-        );
+      const raw = await res.text().catch(() => "");
+
+      console.log("[area-preview] status:", res.status, res.statusText);
+      console.log("[area-preview] content-type:", ct);
+      if (raw) console.log("[area-preview] raw:", raw);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+      }
+      if (!ct.includes("application/json")) {
+        throw new Error(`Non-JSON response:\n${raw}`);
       }
 
-      const data = (await res.json()) as PreviewResult;
-      if (!isPreviewOk(data)) {
-        // narrowed to PreviewErr here
-        throw new Error(data.error || "Preview failed.");
+      let data: PreviewResult;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`Invalid JSON:\n${raw}`);
       }
+
+      if (!data || (data as PreviewErr).ok === false) {
+        const msg =
+          (data as PreviewErr)?.error ||
+          `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
+        throw new Error(msg);
+      }
+
       setPreview(data);
     } catch (e: any) {
-      setErr(
-        typeof e?.message === "string" && e.message.startsWith("<")
-          ? "Received HTML from server (check Netlify redirects order)."
-          : e?.message || "Failed to preview."
-      );
+      setErr(String(e?.message || e));
     } finally {
       setPreviewing(false);
     }
@@ -208,11 +213,13 @@ export default function AreaSponsorModal({
         setErr("Missing area geometry; please try reloading the page.");
         return;
       }
+
+      // pull supabase token, if available (your function may require auth)
       let token: string | null = null;
-      const raw = localStorage.getItem("supabase.auth.token");
-      if (raw) {
+      const rawToken = localStorage.getItem("supabase.auth.token");
+      if (rawToken) {
         try {
-          const parsed = JSON.parse(raw);
+          const parsed = JSON.parse(rawToken);
           token = parsed?.currentSession?.access_token ?? null;
         } catch {}
       }
@@ -233,54 +240,64 @@ export default function AreaSponsorModal({
       });
 
       const ct = res.headers.get("content-type") || "";
-      if (!res.ok || !ct.includes("application/json")) {
-        const text = await res.text().catch(() => "");
-        throw new Error(
-          text || `Checkout failed (${res.status} ${res.statusText})`
-        );
+      const raw = await res.text().catch(() => "");
+
+      console.log("[checkout] status:", res.status, res.statusText);
+      console.log("[checkout] content-type:", ct);
+      if (raw) console.log("[checkout] raw:", raw);
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
+      }
+      if (!ct.includes("application/json")) {
+        throw new Error(`Non-JSON response from checkout:\n${raw}`);
       }
 
-      const data = await res.json();
+      let data: any;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`Invalid JSON from checkout:\n${raw}`);
+      }
+
       if (data?.url) {
-        window.location.href = data.url;
+        window.location.href = data.url; // Stripe Checkout
       } else {
         throw new Error("No checkout URL returned.");
       }
     } catch (e: any) {
-      setErr(
+      const msg: string =
         typeof e?.message === "string" && e.message.startsWith("<")
           ? "Received HTML from server (check Netlify redirects order)."
-          : e?.message || "Failed to start checkout."
-      );
+          : e?.message || "Failed to start checkout.";
+      setErr(msg);
     }
   }
 
   if (!open) return null;
 
+  // derived helper about availability
   const hasAvailable =
-    (avail as any)?.ok &&
-    (avail as any)?.available &&
-    (Array.isArray((avail as any).available?.coordinates)
-      ? (avail as any).available.coordinates.length > 0
+    (avail as AvailabilityOk | null)?.ok &&
+    (avail as AvailabilityOk | null)?.available &&
+    (Array.isArray((avail as AvailabilityOk).available?.coordinates)
+      ? (avail as AvailabilityOk).available.coordinates.length > 0
       : true);
-
-  const numbers =
-    preview && isPreviewOk(preview)
-      ? {
-          km2: Number(preview.area_km2),
-          monthly: Number(preview.monthly_price),
-          total: Number(preview.total_price),
-        }
-      : null;
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
+      {/* backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
 
+      {/* modal */}
       <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
-          <button type="button" className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={onClose}>
+          <button
+            type="button"
+            className="text-sm px-2 py-1 rounded hover:bg-black/5"
+            onClick={onClose}
+          >
             Close
           </button>
         </div>
@@ -296,7 +313,7 @@ export default function AreaSponsorModal({
             </div>
           )}
 
-          {!loading && !loadingGJ && !err && avail && "ok" in avail && avail.ok && (
+          {!loading && !loadingGJ && !err && avail && (avail as AvailabilityOk).ok && (
             <>
               <div className="text-sm">
                 <div className="mb-1">
@@ -335,27 +352,24 @@ export default function AreaSponsorModal({
                 </button>
               </div>
 
-              {numbers &&
-                Number.isFinite(numbers.km2) &&
-                Number.isFinite(numbers.monthly) &&
-                Number.isFinite(numbers.total) && (
-                  <div className="mt-3 text-sm space-y-1">
-                    <div>
-                      <span className="text-gray-500">Area:</span>{" "}
-                      {numbers.km2.toFixed(4)} km²
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Monthly price:</span> £
-                      {numbers.monthly.toFixed(2)}
-                    </div>
-                    <div>
-                      <span className="text-gray-500">
-                        First charge (months × price):
-                      </span>{" "}
-                      £{numbers.total.toFixed(2)}
-                    </div>
+              {preview && (preview as PreviewOk).ok && (
+                <div className="mt-3 text-sm space-y-1">
+                  <div>
+                    <span className="text-gray-500">Area:</span>{" "}
+                    {(preview as PreviewOk).area_km2.toFixed(4)} km²
                   </div>
-                )}
+                  <div>
+                    <span className="text-gray-500">Monthly price:</span> £
+                    {(preview as PreviewOk).monthly_price.toFixed(2)}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">
+                      First charge (months × price):
+                    </span>{" "}
+                    £{(preview as PreviewOk).total_price.toFixed(2)}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
