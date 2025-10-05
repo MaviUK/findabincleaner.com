@@ -51,3 +51,14 @@ status = 200
 from = "/*"
 to = "/index.html"
 status = 200
+
+[[redirects]]
+from = "/api/area/availability"
+to = "/.netlify/functions/area-availability"
+status = 200
+
+[[redirects]]
+from = "/api/area/preview"
+to = "/.netlify/functions/area-preview"
+status = 200
+
