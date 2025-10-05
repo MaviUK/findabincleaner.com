@@ -65,10 +65,7 @@ export default function AreaSponsorModal({
     }
 
     async function loadViaRpcFallback() {
-      // Optional RPC fallback if you created:
-      // create or replace function get_service_area_gj(p_area_id uuid)
-      // returns jsonb language sql stable security definer
-      // as $$ select gj from service_areas where id = p_area_id; $$;
+      // Optional RPC fallback if you created `get_service_area_gj(p_area_id uuid)`
       const { data, error } = await supabase.rpc("get_service_area_gj", {
         p_area_id: areaId,
       });
@@ -86,7 +83,6 @@ export default function AreaSponsorModal({
         try {
           gj = await loadViaTable();
         } catch {
-          // Fallback to RPC (helps avoid 400 quirks)
           gj = await loadViaRpcFallback();
         }
         if (!cancelled) setAreaGeoJSON(gj);
@@ -216,7 +212,9 @@ export default function AreaSponsorModal({
         try {
           const parsed = JSON.parse(raw);
           token = parsed?.currentSession?.access_token ?? null;
-        } catch {}
+        } catch {
+          /* ignore parse errors */
+        }
       }
 
       const res = await fetch(`/.netlify/functions/sponsored-checkout`, {
@@ -291,7 +289,9 @@ export default function AreaSponsorModal({
         </div>
 
         <div className="p-4 space-y-3">
-          {(loading || loadingGJ) && <div className="text-sm text-gray-600">Loading…</div>}
+          {(loading || loadingGJ) && (
+            <div className="text-sm text-gray-600">Loading…</div>
+          )}
 
           {!loading && !loadingGJ && err && (
             <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
@@ -305,7 +305,9 @@ export default function AreaSponsorModal({
                 <div className="mb-1">
                   <strong>Result:</strong>{" "}
                   {hasAvailable ? (
-                    <span className="text-green-700">Some part of this area is available for #{slot}.</span>
+                    <span className="text-green-700">
+                      Some part of this area is available for #{slot}.
+                    </span>
                   ) : (
                     <span className="text-gray-700">
                       No billable area is currently available for #{slot} inside this Service Area.
@@ -330,4 +332,34 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn btn-primary"
                   onClick={goToCheckout}
-                  disabled={!hasAvailable ||
+                  disabled={!hasAvailable || !areaGeoJSON}
+                >
+                  Continue to checkout
+                </button>
+              </div>
+
+              {preview && "ok" in preview && preview.ok && previewNumbersValid && (
+                <div className="mt-3 text-sm space-y-1">
+                  <div>
+                    <span className="text-gray-500">Area:</span>{" "}
+                    {km2.toFixed(4)} km²
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Monthly price:</span>{" "}
+                    £{monthly.toFixed(2)}
+                  </div>
+                  <div>
+                    <span className="text-gray-500">
+                      First charge (months × price):
+                    </span>{" "}
+                    £{total.toFixed(2)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
