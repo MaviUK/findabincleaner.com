@@ -13,7 +13,7 @@ from = "/api/area/preview"
 to   = "/.netlify/functions/area-preview"
 status = 200
 
-# Geo JSON feeds for the mini map
+# Geo JSON feeds for maps
 [[redirects]]
 from = "/api/geo/my-coverage"
 to   = "/.netlify/functions/geo-my-coverage"
@@ -29,7 +29,7 @@ from = "/api/geo/available"
 to   = "/.netlify/functions/geo-available"
 status = 200
 
-# Sponsorship (legacy endpoints, keep if you still use them)
+# Sponsorship (legacy endpoints you still might call)
 [[redirects]]
 from = "/api/sponsored/purchase"
 to   = "/.netlify/functions/sponsored-purchase"
@@ -51,11 +51,29 @@ from = "/api/stripe/webhook"
 to   = "/.netlify/functions/stripe-webhook"
 status = 200
 
-# Optional alias you tried before
+# Optional alias you used before
 [[redirects]]
 from = "/api/geo-my-coverage"
 to   = "/.netlify/functions/geo-my-coverage"
 status = 200
+
+# ------------------------------
+# API headers (disable CDN caching for JSON)
+# ------------------------------
+[[headers]]
+for = "/api/*"
+  [headers.values]
+  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+  Pragma = "no-cache"
+  Expires = "0"
+
+# (If you expose functions directly without the /api redirect)
+[[headers]]
+for = "/.netlify/functions/*"
+  [headers.values]
+  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+  Pragma = "no-cache"
+  Expires = "0"
 
 # ------------------------------
 # SPA catch-all (LAST)
