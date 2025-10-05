@@ -3,22 +3,17 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 type Availability =
-  | {
-      ok: true;
-      existing: any;   // GeoJSON (MultiPolygon)
-      available: any;  // GeoJSON (Polygon or MultiPolygon)
-    }
+  | { ok: true; existing: any; available: any }
   | { ok: false; error: string };
 
-type PreviewResult =
-  | {
-      ok: true;
-      area_km2: number;
-      monthly_price: number;
-      total_price: number;
-      final_geojson: any | null;
-    }
-  | { ok: false; error: string };
+type PreviewOk = {
+  ok: true;
+  area_km2: number;
+  monthly_price: number;
+  total_price: number;
+  final_geojson: any | null;
+};
+type PreviewResult = PreviewOk | { ok: false; error: string };
 
 export default function AreaSponsorModal({
   open,
@@ -40,13 +35,23 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // the service area's stored geometry (we'll send this as drawnGeoJSON)
+  // service area geometry we’ll send as drawnGeoJSON
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
   // --- Load the service area's GeoJSON when the modal opens ---
   useEffect(() => {
     let cancelled = false;
+
+    async function loadViaRpc() {
+      // Prefer an RPC you own: get_service_area_gj(p_area_id uuid)
+      const { data, error } = await supabase.rpc("get_service_area_gj", {
+        p_area_id: areaId,
+      });
+      if (error) throw error;
+      if (!data) throw new Error("No geometry found for this area.");
+      return data;
+    }
 
     async function loadViaTable() {
       const { data, error, status } = await supabase
@@ -55,23 +60,12 @@ export default function AreaSponsorModal({
         .eq("id", areaId)
         .limit(1)
         .maybeSingle();
-
       if (error) {
         console.warn("service_areas gj fetch error", status, error);
         throw error;
       }
       if (!data?.gj) throw new Error("This service area has no geometry saved.");
       return data.gj;
-    }
-
-    async function loadViaRpcFallback() {
-      // Optional RPC fallback if you created `get_service_area_gj(p_area_id uuid)`
-      const { data, error } = await supabase.rpc("get_service_area_gj", {
-        p_area_id: areaId,
-      });
-      if (error) throw error;
-      if (!data) throw new Error("No geometry found for this area.");
-      return data;
     }
 
     async function loadGJ() {
@@ -81,9 +75,9 @@ export default function AreaSponsorModal({
       try {
         let gj: any;
         try {
-          gj = await loadViaTable();
+          gj = await loadViaRpc();
         } catch {
-          gj = await loadViaRpcFallback();
+          gj = await loadViaTable();
         }
         if (!cancelled) setAreaGeoJSON(gj);
       } catch (e: any) {
@@ -99,7 +93,7 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  // Build URL with cache-buster; call function path directly to bypass SPA.
+  // Availability URL (call function path directly to dodge SPA redirects)
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
@@ -128,7 +122,9 @@ export default function AreaSponsorModal({
         const ct = res.headers.get("content-type") || "";
         if (!res.ok || ct.includes("text/html")) {
           const text = await res.text().catch(() => "");
-          throw new Error(text || `Request failed (${res.status})`);
+          throw new Error(
+            text || `Availability failed (${res.status} ${res.statusText})`
+          );
         }
 
         const data = (await res.json()) as Availability;
@@ -171,27 +167,32 @@ export default function AreaSponsorModal({
           area_id: areaId,
           slot,
           months: 1,
-          drawnGeoJSON: areaGeoJSON, // required by the function
+          drawnGeoJSON: areaGeoJSON,
         }),
       });
 
       const ct = res.headers.get("content-type") || "";
-      if (!res.ok || ct.includes("text/html")) {
+      if (!res.ok || !ct.includes("application/json")) {
         const text = await res.text().catch(() => "");
-        throw new Error(text || `Preview failed (${res.status})`);
+        throw new Error(
+          text || `Preview failed (${res.status} ${res.statusText})`
+        );
       }
 
       const data = (await res.json()) as PreviewResult;
-      if (!("ok" in data) || !data.ok) {
-        throw new Error((data as any)?.error || "Preview failed.");
+      if (!("ok" in data)) {
+        throw new Error("Malformed response from preview.");
+      }
+      if (!data.ok) {
+        throw new Error(data.error || "Preview failed.");
       }
       setPreview(data);
     } catch (e: any) {
-      const msg: string =
+      setErr(
         typeof e?.message === "string" && e.message.startsWith("<")
           ? "Received HTML from server (check Netlify redirects order)."
-          : e?.message || "Failed to preview.";
-      setErr(msg);
+          : e?.message || "Failed to preview."
+      );
     } finally {
       setPreviewing(false);
     }
@@ -204,17 +205,13 @@ export default function AreaSponsorModal({
         setErr("Missing area geometry; please try reloading the page.");
         return;
       }
-
-      // pull supabase token, if available (your function may require auth)
       let token: string | null = null;
       const raw = localStorage.getItem("supabase.auth.token");
       if (raw) {
         try {
           const parsed = JSON.parse(raw);
           token = parsed?.currentSession?.access_token ?? null;
-        } catch {
-          /* ignore parse errors */
-        }
+        } catch {}
       }
 
       const res = await fetch(`/.netlify/functions/sponsored-checkout`, {
@@ -233,29 +230,30 @@ export default function AreaSponsorModal({
       });
 
       const ct = res.headers.get("content-type") || "";
-      if (!res.ok || ct.includes("text/html")) {
+      if (!res.ok || !ct.includes("application/json")) {
         const text = await res.text().catch(() => "");
-        throw new Error(text || `Checkout failed (${res.status})`);
+        throw new Error(
+          text || `Checkout failed (${res.status} ${res.statusText})`
+        );
       }
 
       const data = await res.json();
       if (data?.url) {
-        window.location.href = data.url; // Stripe Checkout
+        window.location.href = data.url;
       } else {
         throw new Error("No checkout URL returned.");
       }
     } catch (e: any) {
-      const msg: string =
+      setErr(
         typeof e?.message === "string" && e.message.startsWith("<")
           ? "Received HTML from server (check Netlify redirects order)."
-          : e?.message || "Failed to start checkout.";
-      setErr(msg);
+          : e?.message || "Failed to start checkout."
+      );
     }
   }
 
   if (!open) return null;
 
-  // derived helper about availability
   const hasAvailable =
     (avail as any)?.ok &&
     (avail as any)?.available &&
@@ -263,27 +261,23 @@ export default function AreaSponsorModal({
       ? (avail as any).available.coordinates.length > 0
       : true);
 
-  // Safe number extraction for preview block to prevent crashes
-  const km2 = Number((preview as any)?.ok ? (preview as any).area_km2 : NaN);
-  const monthly = Number((preview as any)?.ok ? (preview as any).monthly_price : NaN);
-  const total = Number((preview as any)?.ok ? (preview as any).total_price : NaN);
-  const previewNumbersValid =
-    Number.isFinite(km2) && Number.isFinite(monthly) && Number.isFinite(total);
+  const numbers =
+    preview && "ok" in preview && preview.ok
+      ? {
+          km2: Number(preview.area_km2),
+          monthly: Number(preview.monthly_price),
+          total: Number(preview.total_price),
+        }
+      : null;
 
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      {/* backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
 
-      {/* modal */}
       <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
-          <button
-            type="button"
-            className="text-sm px-2 py-1 rounded hover:bg-black/5"
-            onClick={onClose}
-          >
+          <button type="button" className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={onClose}>
             Close
           </button>
         </div>
@@ -294,7 +288,7 @@ export default function AreaSponsorModal({
           )}
 
           {!loading && !loadingGJ && err && (
-            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2 whitespace-pre-wrap">
               {err}
             </div>
           )}
@@ -338,21 +332,16 @@ export default function AreaSponsorModal({
                 </button>
               </div>
 
-              {preview && "ok" in preview && preview.ok && previewNumbersValid && (
+              {numbers && Number.isFinite(numbers.km2) && Number.isFinite(numbers.monthly) && Number.isFinite(numbers.total) && (
                 <div className="mt-3 text-sm space-y-1">
                   <div>
-                    <span className="text-gray-500">Area:</span>{" "}
-                    {km2.toFixed(4)} km²
+                    <span className="text-gray-500">Area:</span> {numbers.km2.toFixed(4)} km²
                   </div>
                   <div>
-                    <span className="text-gray-500">Monthly price:</span>{" "}
-                    £{monthly.toFixed(2)}
+                    <span className="text-gray-500">Monthly price:</span> £{numbers.monthly.toFixed(2)}
                   </div>
                   <div>
-                    <span className="text-gray-500">
-                      First charge (months × price):
-                    </span>{" "}
-                    £{total.toFixed(2)}
+                    <span className="text-gray-500">First charge (months × price):</span> £{numbers.total.toFixed(2)}
                   </div>
                 </div>
               )}
