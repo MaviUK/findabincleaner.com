@@ -315,9 +315,9 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
         {/* Map (Google) */}
         <div className="md:col-span-8">
           <GoogleAreaDrawer
-            initialGeoJSON={creating || activeAreaId ? (draftGJ as any) : null}
+            initialGeoJSON={(creating || activeAreaId) ? (draftGJ as any) : null}
             onChange={(gj) => setDraftGJ(gj)}
-            center={{ lat: 54.607868, lng: -5.926437 }}
+            center={[54.607868, -5.926437]}  // <-- tuple, not { lat, lng }
             zoom={11}
           />
         </div>
