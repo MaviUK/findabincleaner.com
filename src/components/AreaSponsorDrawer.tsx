@@ -35,9 +35,7 @@ function gjToGooglePaths(
   const out: Array<Array<{ lat: number; lng: number }[]>> = [];
   if (isPolygon(gj)) {
     const rings = gj.coordinates;
-    out.push(
-      rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })))
-    );
+    out.push(rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng }))));
   } else if (isMultiPolygon(gj)) {
     (gj.coordinates || []).forEach((poly) => {
       const rings = poly;
@@ -135,7 +133,7 @@ export default function AreaSponsorDrawer({
         if (!ct2.includes("application/json")) throw new Error("Non-JSON preview response.");
         const data2: PreviewResponse = JSON.parse(raw2);
         if (!data2?.ok) {
-          setPreview({ ok: false, error: (data2 as PreviewErr)?.error || "Preview failed" });
+          setPreview({ ok: false, error: (data2 as PreviewErr).error || "Preview failed" });
         } else {
           setPreview(data2);
         }
@@ -158,11 +156,9 @@ export default function AreaSponsorDrawer({
   useEffect(() => {
     if (!isLoaded || !mapRef.current || !avail || !avail.ok) return;
     const gmap = mapRef.current;
-
     const shape =
       (avail.available as GeoJSON.Polygon | GeoJSON.MultiPolygon) ||
       (avail.existing as GeoJSON.Polygon | GeoJSON.MultiPolygon);
-
     if (!shape) return;
 
     const bounds = new google.maps.LatLngBounds();
@@ -204,59 +200,52 @@ export default function AreaSponsorDrawer({
 
           {/* Map */}
           <div className="rounded-xl overflow-hidden border">
-            {loadError && (
-              <div className="p-4 text-sm text-red-600">Failed to load Google Maps SDK.</div>
-            )}
-            {!isLoaded && !loadError && (
-              <div className="p-4 text-sm text-gray-600">Loading map…</div>
-            )}
+            {loadError && <div className="p-4 text-sm text-red-600">Failed to load Google Maps SDK.</div>}
+            {!isLoaded && !loadError && <div className="p-4 text-sm text-gray-600">Loading map…</div>}
             {isLoaded && (
               <GoogleMap
                 mapContainerStyle={MAP_STYLE}
                 center={{ lat: center[0], lng: center[1] }}
                 zoom={12}
                 options={{ mapTypeControl: false, streetViewControl: false }}
-                onLoad={(m) => (mapRef.current = m)}
+                onLoad={(m) => {
+                  // IMPORTANT: do not return a value here (must be void)
+                  mapRef.current = m;
+                }}
               >
                 {/* Existing (purple) */}
-                {avail && avail.ok && avail.existing && (
-                  <>
-                    {gjToGooglePaths(avail.existing).map((rings, i) => (
-                      <Polygon
-                        key={`ex-${i}`}
-                        paths={rings}
-                        options={{
-                          strokeColor: "#7c3aed",
-                          strokeOpacity: 0.9,
-                          strokeWeight: 2,
-                          fillColor: "#7c3aed",
-                          fillOpacity: 0.05,
-                          clickable: false,
-                        }}
-                      />
-                    ))}
-                  </>
-                )}
+                {avail && avail.ok && avail.existing &&
+                  gjToGooglePaths(avail.existing).map((rings, i) => (
+                    <Polygon
+                      key={`ex-${i}`}
+                      paths={rings}
+                      options={{
+                        strokeColor: "#7c3aed",
+                        strokeOpacity: 0.9,
+                        strokeWeight: 2,
+                        fillColor: "#7c3aed",
+                        fillOpacity: 0.05,
+                        clickable: false,
+                      }}
+                    />
+                  ))}
 
                 {/* Available (green) */}
-                {avail && avail.ok && avail.available && (
-                  <>
-                    {gjToGooglePaths(avail.available).map((rings, i) => (
-                      <Polygon
-                        key={`av-${i}`}
-                        paths={rings}
-                        options={{
-                          strokeColor: "#16a34a",
-                          strokeOpacity: 0.9,
-                          strokeWeight: 2,
-                          fillColor: "#16a34a",
-                          fillOpacity: 0.15,
-                          clickable: false,
-                        }}
-                      />
-                    ))}
-                  </>
-                )}
+                {avail && avail.ok && avail.available &&
+                  gjToGooglePaths(avail.available).map((rings, i) => (
+                    <Polygon
+                      key={`av-${i}`}
+                      paths={rings}
+                      options={{
+                        strokeColor: "#16a34a",
+                        strokeOpacity: 0.9,
+                        strokeWeight: 2,
+                        fillColor: "#16a34a",
+                        fillOpacity: 0.15,
+                        clickable: false,
+                      }}
+                    />
+                  ))}
               </GoogleMap>
             )}
           </div>
@@ -281,15 +270,9 @@ export default function AreaSponsorDrawer({
               {previewing && <span className="text-gray-500">Calculating…</span>}
               {!previewing && preview && "ok" in preview && preview.ok && (
                 <>
-                  <span className="mr-4">
-                    Area: {areaKm2 !== null ? areaKm2.toFixed(4) : "–"} km²
-                  </span>
-                  <span className="mr-2">
-                    Monthly: £{monthly !== null ? monthly.toFixed(2) : "–"}
-                  </span>
-                  <span className="font-medium">
-                    Total: £{total !== null ? total.toFixed(2) : "–"}
-                  </span>
+                  <span className="mr-4">Area: {areaKm2 !== null ? areaKm2.toFixed(4) : "–"} km²</span>
+                  <span className="mr-2">Monthly: £{monthly !== null ? monthly.toFixed(2) : "–"}</span>
+                  <span className="font-medium">Total: £{total !== null ? total.toFixed(2) : "–"}</span>
                 </>
               )}
               {!previewing && preview && "ok" in preview && !preview.ok && (
@@ -307,8 +290,7 @@ export default function AreaSponsorDrawer({
               className="btn btn-primary"
               disabled={billableZero}
               onClick={() => {
-                // Hook up to your checkout when ready (same as AreaSponsorModal).
-                // fetch('/.netlify/functions/sponsored-checkout', { ... })
+                // Hook up to your checkout the same way as AreaSponsorModal when ready.
                 alert("Looks good! Next step is checkout.");
               }}
               title={billableZero ? "No billable area available for this slot." : undefined}
