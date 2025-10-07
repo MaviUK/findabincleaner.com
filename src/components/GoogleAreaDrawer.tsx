@@ -1,262 +1,263 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GoogleMap, Polygon } from "@react-google-maps/api";
-
-// ---------- Types ----------
-type GJPoly = GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
+// src/components/GoogleAreaDrawer.tsx
+import { useEffect, useMemo, useRef, useState } from "react";
+import { GoogleMap, DrawingManager, Polygon, useJsApiLoader } from "@react-google-maps/api";
 
 type Props = {
-  initialGeoJSON?: GJPoly;
-  onChange: (gj: GJPoly) => void;
-  center?: google.maps.LatLngLiteral;
+  initialGeoJSON?: GeoJSON.Polygon | GeoJSON.MultiPolygon | null;
+  onChange: (gj: GeoJSON.Polygon | GeoJSON.MultiPolygon | null) => void;
+  center?: [number, number];
   zoom?: number;
 };
 
-// ---------- GeoJSON <-> Google helpers ----------
-function gjToPaths(gj: GJPoly): google.maps.LatLngLiteral[][] {
-  if (!gj) return [];
+// Helpers
+const MAP_STYLE = { width: "100%", height: "420px" } as const;
+const DEFAULT_CENTER: [number, number] = [54.59, -5.7];
+const DEFAULT_ZOOM = 12;
 
-  if (gj.type === "Polygon") {
-    const ring = gj.coordinates[0] ?? [];
-    return [ring.map(([lng, lat]) => ({ lat, lng }))];
-  }
-  if (gj.type === "MultiPolygon") {
-    return gj.coordinates.map((poly) =>
-      (poly[0] ?? []).map(([lng, lat]) => ({ lat, lng }))
-    );
-  }
-  return [];
+function isPolygon(gj: any): gj is GeoJSON.Polygon {
+  return gj && gj.type === "Polygon";
+}
+function isMultiPolygon(gj: any): gj is GeoJSON.MultiPolygon {
+  return gj && gj.type === "MultiPolygon";
 }
 
-function pathsToGJ(paths: google.maps.LatLngLiteral[][]): GJPoly {
-  if (!paths.length || !paths[0]?.length) return null;
-
-  if (paths.length === 1) {
-    const ring = paths[0].map(({ lat, lng }) => [lng, lat]);
-    // ensure closed ring
-    if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
-      ring.push(ring[0]);
-    }
-    return { type: "Polygon", coordinates: [ring] } as GeoJSON.Polygon;
+/** Convert google MVC path to a closed GeoJSON ring [lng,lat][] */
+function pathToRing(path: google.maps.MVCArray<google.maps.LatLng>): number[][] {
+  const ring: number[][] = [];
+  for (let i = 0; i < path.getLength(); i++) {
+    const pt = path.getAt(i);
+    ring.push([+pt.lng().toFixed(6), +pt.lat().toFixed(6)]);
   }
+  // close ring if needed
+  if (
+    ring.length &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+  ) {
+    ring.push([ring[0][0], ring[0][1]]);
+  }
+  return ring;
+}
 
-  const mps = paths.map((p) => {
-    const ring = p.map(({ lat, lng }) => [lng, lat]);
-    if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
-      ring.push(ring[0]);
+/** Serialize current drawn polygons to GeoJSON (Polygon or MultiPolygon) */
+function serializePolysToGeoJSON(polys: google.maps.Polygon[]): GeoJSON.Polygon | GeoJSON.MultiPolygon | null {
+  if (!polys.length) return null;
+
+  const polyRings: number[][][][] = polys.map((poly) => {
+    const rings: number[][][] = [];
+    const paths = poly.getPaths();
+    for (let i = 0; i < paths.getLength(); i++) {
+      rings.push(pathToRing(paths.getAt(i)));
     }
-    return [ring];
+    return rings; // Polygon = LinearRing[]
   });
-  return { type: "MultiPolygon", coordinates: mps } as GeoJSON.MultiPolygon;
+
+  if (polyRings.length === 1) {
+    return { type: "Polygon", coordinates: polyRings[0] } as GeoJSON.Polygon;
+  }
+  return { type: "MultiPolygon", coordinates: polyRings } as GeoJSON.MultiPolygon;
 }
 
-// ---------- Component ----------
+/** Convert GeoJSON Polygon/MultiPolygon to arrays of google paths */
+function gjToGooglePaths(
+  gj: GeoJSON.Polygon | GeoJSON.MultiPolygon
+): Array<Array<{ lat: number; lng: number }[]>> {
+  const out: Array<Array<{ lat: number; lng: number }[]>> = [];
+  if (isPolygon(gj)) {
+    const rings = gj.coordinates;
+    out.push(rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng }))));
+  } else if (isMultiPolygon(gj)) {
+    (gj.coordinates || []).forEach((poly) => {
+      const rings = poly;
+      out.push(rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng }))));
+    });
+  }
+  return out;
+}
+
+/** Attach listeners so edits trigger re-emit */
+function attachEditListeners(poly: google.maps.Polygon, onAnyChange: () => void) {
+  const paths = poly.getPaths();
+  for (let i = 0; i < paths.getLength(); i++) {
+    const path = paths.getAt(i);
+    path.addListener("set_at", onAnyChange);
+    path.addListener("insert_at", onAnyChange);
+    path.addListener("remove_at", onAnyChange);
+  }
+}
+
 export default function GoogleAreaDrawer({
-  initialGeoJSON,
+  initialGeoJSON = null,
   onChange,
-  center = { lat: 54.59, lng: -5.7 },
-  zoom = 12,
+  center = DEFAULT_CENTER,
+  zoom = DEFAULT_ZOOM,
 }: Props) {
-  const [paths, setPaths] = useState<google.maps.LatLngLiteral[][]>(() =>
-    gjToPaths(initialGeoJSON ?? null)
-  );
+  const libraries = useMemo(() => ["drawing"] as ("drawing")[], []);
+  const { isLoaded, loadError } = useJsApiLoader({
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
+    libraries,
+  });
 
-  const [drawing, setDrawing] = useState(false);      // click-to-add mode
-  const [tempPath, setTempPath] = useState<google.maps.LatLngLiteral[]>([]);
   const mapRef = useRef<google.maps.Map | null>(null);
+  const drawingRef = useRef<google.maps.drawing.DrawingManager | null>(null);
 
-  // seed from initial
-  useEffect(() => {
-    setPaths(gjToPaths(initialGeoJSON ?? null));
-  }, [initialGeoJSON]);
+  // keep track of drawn/loaded polygons
+  const [polys, setPolys] = useState<google.maps.Polygon[]>([]);
 
-  // push changes up anytime 'paths' is edited
-  useEffect(() => {
-    onChange(pathsToGJ(paths));
-  }, [paths, onChange]);
-
-  const onLoad = useCallback((map: google.maps.Map) => {
-    mapRef.current = map;
-  }, []);
-
-  // While drawing: add point on map click
-  const handleMapClick = useCallback(
-    (e: google.maps.MapMouseEvent) => {
-      if (!drawing) return;
-      const latLng = e.latLng;
-      if (!latLng) return;
-      setTempPath((prev) => [...prev, { lat: latLng.lat(), lng: latLng.lng() }]);
-    },
-    [drawing]
-  );
-
-  // Double click ends drawing if we have >= 3 points
-  const handleMapDblClick = useCallback(
-    (e: google.maps.MapMouseEvent) => {
-      if (!drawing) return;
-      e.domEvent.preventDefault();
-      e.domEvent.stopPropagation();
-
-      if (tempPath.length >= 3) {
-        setPaths((prev) => (prev.length ? [...prev, tempPath] : [tempPath]));
-        setTempPath([]);
-        setDrawing(false);
-      }
-    },
-    [drawing, tempPath]
-  );
-
-  // Edits from vertex dragging
-  const handlePathSetAt = useCallback(
-    (polyIdx: number) =>
-      (_: number) => {
-        const poly = polygonRefs.current[polyIdx];
-        const newPaths = polygonRefs.current.map((p) => {
-          const arr: google.maps.LatLngLiteral[] = [];
-          if (!p?.getPath) return arr;
-          const mvc = p.getPath();
-          for (let i = 0; i < mvc.getLength(); i++) {
-            const ll = mvc.getAt(i);
-            arr.push({ lat: ll.lat(), lng: ll.lng() });
-          }
-          return arr;
-        });
-        setPaths(newPaths);
-      },
-    []
-  );
-
-  // Allow deleting a vertex with right-click (contextmenu)
-  const handleRightClick = useCallback(
-    (polyIdx: number) =>
-      (e: google.maps.PolyMouseEvent) => {
-        const path = [...paths[polyIdx]];
-        const ll = e.latLng;
-        if (!ll) return;
-        const i = path.findIndex((p) => Math.abs(p.lat - ll.lat()) < 1e-7 && Math.abs(p.lng - ll.lng()) < 1e-7);
-        if (i > -1) {
-          path.splice(i, 1);
-          const copy = paths.slice();
-          copy[polyIdx] = path;
-          setPaths(copy);
-        }
-      },
-    [paths]
-  );
-
-  // Refs to polygons to read live vertices after drag-edit
-  const polygonRefs = useRef<google.maps.Polygon[]>([]);
-  polygonRefs.current = [];
-
-  const setPolyRef = (idx: number) => (ref: google.maps.Polygon | null) => {
-    if (ref) polygonRefs.current[idx] = ref;
+  // emit helper
+  const emitGeoJSON = () => {
+    const gj = serializePolysToGeoJSON(polys);
+    onChange(gj);
   };
 
-  // map options tuned for drawing
-  const mapOptions = useMemo<google.maps.MapOptions>(
-    () => ({
-      disableDefaultUI: true,
-      zoomControl: true,
-      draggableCursor: drawing ? "crosshair" : undefined,
-      disableDoubleClickZoom: drawing, // let dbl-click finish shape
-      mapTypeControl: false,
-      streetViewControl: false,
-      fullscreenControl: false,
-    }),
-    [drawing]
-  );
+  // Clear all polygons from map
+  const clearAll = () => {
+    polys.forEach((p) => p.setMap(null));
+    setPolys([]);
+    onChange(null);
+  };
+
+  // Seed initial geometry (once map is ready)
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current) return;
+    if (!initialGeoJSON) {
+      clearAll();
+      return;
+    }
+
+    // Build polygons from initial GeoJSON (editable)
+    const toAdd: google.maps.Polygon[] = [];
+    const sets = gjToGooglePaths(initialGeoJSON);
+    sets.forEach((rings) => {
+      const gp = new google.maps.Polygon({
+        paths: rings,
+        strokeColor: "#2563eb",
+        strokeOpacity: 0.9,
+        strokeWeight: 2,
+        fillColor: "#2563eb",
+        fillOpacity: 0.08,
+        editable: true,
+        draggable: false,
+        map: mapRef.current!,
+      });
+      attachEditListeners(gp, emitGeoJSON);
+      toAdd.push(gp);
+    });
+
+    // Fit bounds
+    const bounds = new google.maps.LatLngBounds();
+    sets.forEach((rings) =>
+      rings.forEach((ring) => ring.forEach((pt) => bounds.extend(new google.maps.LatLng(pt.lat, pt.lng))))
+    );
+    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 40);
+
+    setPolys((prev) => {
+      // remove previous
+      prev.forEach((p) => p.setMap(null));
+      return toAdd;
+    });
+
+    // Emit the initial value (normalized)
+    onChange(serializePolysToGeoJSON(toAdd));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoaded, initialGeoJSON]);
+
+  // When a new polygon is completed from the drawing manager
+  const handlePolygonComplete = (poly: google.maps.Polygon) => {
+    poly.setEditable(true);
+    attachEditListeners(poly, emitGeoJSON);
+    // Stop continuous drawing
+    drawingRef.current?.setDrawingMode(null);
+
+    setPolys((prev) => {
+      const next = [...prev, poly];
+      // emit after state update microtask
+      queueMicrotask(() => onChange(serializePolysToGeoJSON(next)));
+      return next;
+    });
+  };
+
+  // Remove all polygons if component unmounts
+  useEffect(() => {
+    return () => {
+      polys.forEach((p) => p.setMap(null));
+    };
+  }, [polys]);
+
+  if (loadError) {
+    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
+  }
+
+  if (!isLoaded) {
+    return <div className="card card-pad">Loading map…</div>;
+  }
 
   return (
-    <div className="relative w-full">
-      {/* Simple controls */}
-      <div className="absolute z-10 top-2 left-2 flex gap-2">
-        {!drawing ? (
-          <button
-            type="button"
-            className="px-3 py-1 rounded bg-white shadow border"
-            onClick={() => {
-              setTempPath([]);
-              setDrawing(true);
-            }}
-          >
-            Draw polygon
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="px-3 py-1 rounded bg-white shadow border"
-            onClick={() => {
-              setTempPath([]);
-              setDrawing(false);
-            }}
-          >
-            Cancel
-          </button>
-        )}
-
-        <button
-          type="button"
-          className="px-3 py-1 rounded bg-white shadow border"
-          onClick={() => {
-            setPaths([]);
-            setTempPath([]);
-            onChange(null);
-          }}
-        >
-          Clear
-        </button>
-      </div>
-
+    <div className="space-y-2">
       <GoogleMap
-        onLoad={onLoad}
-        onClick={handleMapClick}
-        onDblClick={handleMapDblClick}
-        center={center}
+        mapContainerStyle={MAP_STYLE}
+        center={{ lat: center[0], lng: center[1] }}
         zoom={zoom}
-        options={mapOptions}
-        mapContainerStyle={{ height: 420, width: "100%" }}
+        options={{ mapTypeControl: false, streetViewControl: false }}
+        onLoad={(m) => {
+          // IMPORTANT: must return void here
+          mapRef.current = m;
+        }}
       >
-        {/* Existing polygons (each editable) */}
-        {paths.map((p, idx) => (
-          <Polygon
-            key={idx}
-            ref={setPolyRef(idx)}
-            paths={p}
-            options={{
+        {/* Existing polygons (editable) */}
+        {polys.length === 0 && initialGeoJSON &&
+          gjToGooglePaths(initialGeoJSON).map((rings, i) => (
+            <Polygon
+              key={`seed-${i}`}
+              paths={rings}
+              options={{
+                strokeColor: "#2563eb",
+                strokeOpacity: 0.9,
+                strokeWeight: 2,
+                fillColor: "#2563eb",
+                fillOpacity: 0.08,
+                editable: false, // the seeded ones are replaced by actual polygon instances above
+                clickable: false,
+                draggable: false,
+              }}
+            />
+          ))}
+
+        {/* Drawing tools */}
+        <DrawingManager
+          onLoad={(dm) => {
+            drawingRef.current = dm;
+          }}
+          onPolygonComplete={handlePolygonComplete}
+          options={{
+            drawingMode: null,
+            drawingControl: true,
+            drawingControlOptions: {
+              drawingModes: [google.maps.drawing.OverlayType.POLYGON],
+            },
+            polygonOptions: {
               strokeColor: "#2563eb",
-              fillColor: "#2563eb",
-              fillOpacity: 0.2,
               strokeOpacity: 0.9,
               strokeWeight: 2,
+              fillColor: "#2563eb",
+              fillOpacity: 0.08,
               editable: true,
               draggable: false,
-              zIndex: 1,
-            }}
-            onMouseUp={handlePathSetAt(idx)} // fires after vertex drag
-            onRightClick={handleRightClick(idx)} // quick vertex delete
-          />
-        ))}
-
-        {/* Temp drawing path while in drawing mode */}
-        {drawing && tempPath.length > 0 && (
-          <Polygon
-            paths={tempPath}
-            options={{
-              strokeColor: "#16a34a",
-              fillColor: "#16a34a",
-              fillOpacity: 0.15,
-              strokeOpacity: 0.8,
-              strokeWeight: 2,
-              editable: false,
-              zIndex: 2,
-            }}
-          />
-        )}
+            },
+          }}
+        />
       </GoogleMap>
 
-      <div className="mt-2 text-xs text-gray-600">
-        {drawing
-          ? "Click to add points; double-click to finish the polygon."
-          : "Drag vertices to adjust shape. Right-click a vertex to remove it."}
+      <div className="flex gap-2">
+        <button
+          type="button"
+          className="btn"
+          onClick={() => drawingRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON)}
+        >
+          Draw Polygon
+        </button>
+        <button type="button" className="btn" onClick={clearAll}>
+          Clear
+        </button>
       </div>
     </div>
   );
