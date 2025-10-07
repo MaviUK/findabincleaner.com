@@ -1,29 +1,53 @@
+// src/components/AreaSponsorDrawer.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  MapContainer as RLMapContainer,
-  TileLayer,
-  GeoJSON as RLGeoJSON,
-} from "react-leaflet";
-import type { Map as LeafletMap } from "leaflet";
+import { GoogleMap, Polygon, useJsApiLoader } from "@react-google-maps/api";
 
-const MapAny = RLMapContainer as any;
-const GeoJSONAny = RLGeoJSON as any;
+type AvailabilityOk = { ok: true; existing: any; available: any | null };
+type AvailabilityErr = { ok: false; error: string };
+type AvailabilityResponse = AvailabilityOk | AvailabilityErr;
 
-type AvailabilityResponse = {
-  ok: boolean;
-  existing: any;   // GeoJSON (MultiPolygon)
-  available: any;  // GeoJSON (Polygon | MultiPolygon | null)
+type PreviewOk = {
+  ok: true;
+  area_km2: number | string;
+  monthly_price: number | string;
+  total_price: number | string;
+  final_geojson: any | null;
 };
+type PreviewErr = { ok: false; error: string };
+type PreviewResponse = PreviewOk | PreviewErr;
 
-type PreviewResponse =
-  | {
-      ok: true;
-      area_km2: number;
-      monthly_price: number;
-      total_price: number;
-      final_geojson: any | null;
-    }
-  | { error: string };
+function toNum(n: unknown): number | null {
+  const x = typeof n === "string" ? Number(n) : (n as number);
+  return Number.isFinite(x) ? (x as number) : null;
+}
+
+function isMultiPolygon(gj: any): gj is GeoJSON.MultiPolygon {
+  return gj && gj.type === "MultiPolygon";
+}
+function isPolygon(gj: any): gj is GeoJSON.Polygon {
+  return gj && gj.type === "Polygon";
+}
+
+/** Convert GeoJSON Polygon/MultiPolygon to array(s) of Google Map paths */
+function gjToGooglePaths(
+  gj: GeoJSON.Polygon | GeoJSON.MultiPolygon
+): Array<Array<{ lat: number; lng: number }[]>> {
+  const out: Array<Array<{ lat: number; lng: number }[]>> = [];
+  if (isPolygon(gj)) {
+    const rings = gj.coordinates;
+    out.push(
+      rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })))
+    );
+  } else if (isMultiPolygon(gj)) {
+    (gj.coordinates || []).forEach((poly) => {
+      const rings = poly;
+      out.push(rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng }))));
+    });
+  }
+  return out;
+}
+
+const MAP_STYLE = { width: "100%", height: "360px" } as const;
 
 export default function AreaSponsorDrawer({
   open,
@@ -38,18 +62,34 @@ export default function AreaSponsorDrawer({
   slot: 1 | 2 | 3;
   center: [number, number];
 }) {
-  const mapRef = useRef<LeafletMap | null>(null);
+  const { isLoaded, loadError } = useJsApiLoader({
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
+    libraries: [],
+  });
+
+  const mapRef = useRef<google.maps.Map | null>(null);
 
   // data
   const [avail, setAvail] = useState<AvailabilityResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // pricing preview (for “full available” to start with)
+  // pricing preview
   const [months, setMonths] = useState<number>(1);
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [previewing, setPreviewing] = useState(false);
 
+  // Build URLs (bypass SPA)
+  const availabilityUrl = useMemo(() => {
+    const qs = new URLSearchParams({
+      area_id: areaId,
+      slot: String(slot),
+      t: String(Date.now()),
+    });
+    return `/.netlify/functions/area-availability?${qs.toString()}`;
+  }, [areaId, slot]);
+
+  // Load availability + initial preview
   useEffect(() => {
     if (!open) {
       setAvail(null);
@@ -63,48 +103,41 @@ export default function AreaSponsorDrawer({
       setLoading(true);
       setErr(null);
       try {
-        // 1) fetch availability for this area + slot
-        const q = new URLSearchParams({ area_id: areaId, slot: String(slot) });
-        const r1 = await fetch(`/api/area/availability?${q.toString()}`);
-        const data1 = (await r1.json()) as AvailabilityResponse;
-        if (!r1.ok || !data1?.ok) throw new Error("Failed to load availability");
+        // 1) Availability
+        const r1 = await fetch(availabilityUrl, {
+          method: "GET",
+          headers: { accept: "application/json" },
+        });
+        const ct1 = r1.headers.get("content-type") || "";
+        const raw1 = await r1.text().catch(() => "");
+        if (!r1.ok) throw new Error(`HTTP ${r1.status}\n${raw1}`);
+        if (!ct1.includes("application/json")) throw new Error("Non-JSON availability response.");
+        const data1: AvailabilityResponse = JSON.parse(raw1);
+        if (!data1?.ok) throw new Error((data1 as AvailabilityErr)?.error || "Availability failed.");
         if (cancelled) return;
         setAvail(data1);
 
-        // Fit bounds if we have an available polygon
-        setTimeout(() => {
-          try {
-            if (!mapRef.current) return;
-            const L = (window as any).L;
-            const collection = data1.available || data1.existing;
-            if (collection && L) {
-              const layer = L.geoJSON(collection);
-              const b = layer.getBounds();
-              if (b && b.isValid()) {
-                mapRef.current!.fitBounds(b.pad(0.1));
-              }
-            }
-          } catch {}
-        }, 50);
-
-        // 2) price preview for the full available shape
+        // 2) Preview (full available)
         setPreviewing(true);
-        const r2 = await fetch("/api/area/preview", {
+        const r2 = await fetch(`/.netlify/functions/area-preview`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "content-type": "application/json", accept: "application/json" },
           body: JSON.stringify({
-            areaId,
+            area_id: areaId,
             slot,
             months,
-            // no drawnGeoJSON -> preview “full available”
+            // no drawnGeoJSON -> preview full available
           }),
         });
-        const data2 = (await r2.json()) as PreviewResponse;
-        if (!r2.ok || (data2 as any)?.error) {
-          // still show the map; just no price
-          if (!cancelled) setPreview({ error: (data2 as any)?.error || "Preview failed" });
+        const ct2 = r2.headers.get("content-type") || "";
+        const raw2 = await r2.text().catch(() => "");
+        if (!r2.ok) throw new Error(`HTTP ${r2.status}\n${raw2}`);
+        if (!ct2.includes("application/json")) throw new Error("Non-JSON preview response.");
+        const data2: PreviewResponse = JSON.parse(raw2);
+        if (!data2?.ok) {
+          setPreview({ ok: false, error: (data2 as PreviewErr)?.error || "Preview failed" });
         } else {
-          if (!cancelled) setPreview(data2);
+          setPreview(data2);
         }
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || "Failed to load");
@@ -119,69 +152,113 @@ export default function AreaSponsorDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open, areaId, slot, months]);
+  }, [open, areaId, slot, months, availabilityUrl]);
+
+  // Fit bounds when map & data ready
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || !avail || !avail.ok) return;
+    const gmap = mapRef.current;
+
+    const shape =
+      (avail.available as GeoJSON.Polygon | GeoJSON.MultiPolygon) ||
+      (avail.existing as GeoJSON.Polygon | GeoJSON.MultiPolygon);
+
+    if (!shape) return;
+
+    const bounds = new google.maps.LatLngBounds();
+    const polys = gjToGooglePaths(shape);
+    polys.forEach((rings) =>
+      rings.forEach((ring) => ring.forEach((pt) => bounds.extend(new google.maps.LatLng(pt.lat, pt.lng))))
+    );
+    if (!bounds.isEmpty()) gmap.fitBounds(bounds, 40);
+  }, [isLoaded, avail]);
 
   const billableZero =
     !preview ||
-    "error" in preview ||
-    (preview as any)?.area_km2 === 0 ||
-    (preview as any)?.monthly_price === 0;
+    !("ok" in preview && preview.ok) ||
+    toNum((preview as PreviewOk).area_km2) === 0 ||
+    toNum((preview as PreviewOk).monthly_price) === 0;
 
   if (!open) return null;
+
+  const areaKm2 = preview && "ok" in preview && preview.ok ? toNum(preview.area_km2) : null;
+  const monthly = preview && "ok" in preview && preview.ok ? toNum(preview.monthly_price) : null;
+  const total = preview && "ok" in preview && preview.ok ? toNum(preview.total_price) : null;
 
   return (
     <div className="fixed inset-0 z-[110] grid place-items-center p-4">
       {/* backdrop */}
-      <div
-        className="absolute inset-0 bg-black/50"
-        onClick={() => onClose()}
-      />
+      <div className="absolute inset-0 bg-black/50" onClick={() => onClose()} />
 
       {/* panel */}
       <div className="relative w-full max-w-3xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="text-lg font-semibold">
-            Sponsor spot #{slot}
-          </h3>
-          <button
-            className="text-sm px-2 py-1 rounded hover:bg-black/5"
-            onClick={() => onClose()}
-          >
+          <h3 className="text-lg font-semibold">Sponsor spot #{slot}</h3>
+          <button className="text-sm px-2 py-1 rounded hover:bg-black/5" onClick={() => onClose()}>
             Close
           </button>
         </div>
 
         <div className="p-4 space-y-4">
-          {err && (
-            <div className="text-sm text-red-600">{err}</div>
-          )}
+          {err && <div className="text-sm text-red-600 whitespace-pre-wrap">{err}</div>}
 
           {/* Map */}
           <div className="rounded-xl overflow-hidden border">
-            <MapAny
-              style={{ height: 360 }}
-              whenCreated={(m: LeafletMap) => {
-                mapRef.current = m;
-                m.setView(center, 12);
-              }}
-              scrollWheelZoom
-              attributionControl={false}
-              zoomControl
-            >
-              <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-              {avail?.existing && (
-                <GeoJSONAny
-                  data={avail.existing}
-                  style={{ color: "#7c3aed", weight: 2, fillOpacity: 0.05 }}
-                />
-              )}
-              {avail?.available && (
-                <GeoJSONAny
-                  data={avail.available}
-                  style={{ color: "#16a34a", weight: 2, fillOpacity: 0.15 }}
-                />
-              )}
-            </MapAny>
+            {loadError && (
+              <div className="p-4 text-sm text-red-600">Failed to load Google Maps SDK.</div>
+            )}
+            {!isLoaded && !loadError && (
+              <div className="p-4 text-sm text-gray-600">Loading map…</div>
+            )}
+            {isLoaded && (
+              <GoogleMap
+                mapContainerStyle={MAP_STYLE}
+                center={{ lat: center[0], lng: center[1] }}
+                zoom={12}
+                options={{ mapTypeControl: false, streetViewControl: false }}
+                onLoad={(m) => (mapRef.current = m)}
+              >
+                {/* Existing (purple) */}
+                {avail && avail.ok && avail.existing && (
+                  <>
+                    {gjToGooglePaths(avail.existing).map((rings, i) => (
+                      <Polygon
+                        key={`ex-${i}`}
+                        paths={rings}
+                        options={{
+                          strokeColor: "#7c3aed",
+                          strokeOpacity: 0.9,
+                          strokeWeight: 2,
+                          fillColor: "#7c3aed",
+                          fillOpacity: 0.05,
+                          clickable: false,
+                        }}
+                      />
+                    ))}
+                  </>
+                )}
+
+                {/* Available (green) */}
+                {avail && avail.ok && avail.available && (
+                  <>
+                    {gjToGooglePaths(avail.available).map((rings, i) => (
+                      <Polygon
+                        key={`av-${i}`}
+                        paths={rings}
+                        options={{
+                          strokeColor: "#16a34a",
+                          strokeOpacity: 0.9,
+                          strokeWeight: 2,
+                          fillColor: "#16a34a",
+                          fillOpacity: 0.15,
+                          clickable: false,
+                        }}
+                      />
+                    ))}
+                  </>
+                )}
+              </GoogleMap>
+            )}
           </div>
 
           {/* Controls */}
@@ -202,57 +279,47 @@ export default function AreaSponsorDrawer({
 
             <div className="text-sm">
               {previewing && <span className="text-gray-500">Calculating…</span>}
-              {!previewing && preview && "ok" in preview && (
+              {!previewing && preview && "ok" in preview && preview.ok && (
                 <>
                   <span className="mr-4">
-                    Area: {preview.area_km2.toFixed(4)} km²
+                    Area: {areaKm2 !== null ? areaKm2.toFixed(4) : "–"} km²
                   </span>
                   <span className="mr-2">
-                    Monthly: £{preview.monthly_price.toFixed(2)}
+                    Monthly: £{monthly !== null ? monthly.toFixed(2) : "–"}
                   </span>
                   <span className="font-medium">
-                    Total: £{preview.total_price.toFixed(2)}
+                    Total: £{total !== null ? total.toFixed(2) : "–"}
                   </span>
                 </>
               )}
-              {!previewing && preview && "error" in preview && (
-                <span className="text-red-600">{preview.error}</span>
+              {!previewing && preview && "ok" in preview && !preview.ok && (
+                <span className="text-red-600">{(preview as PreviewErr).error}</span>
               )}
             </div>
           </div>
 
           {/* Actions */}
           <div className="flex items-center justify-end gap-2">
-            <button
-              className="px-3 py-1.5 rounded border"
-              onClick={() => onClose()}
-            >
+            <button className="px-3 py-1.5 rounded border" onClick={() => onClose()}>
               Cancel
             </button>
             <button
               className="btn btn-primary"
               disabled={billableZero}
               onClick={() => {
-                // NEXT STEP: wire this to Stripe checkout
-                // For now, just confirm we can compute price.
+                // Hook up to your checkout when ready (same as AreaSponsorModal).
+                // fetch('/.netlify/functions/sponsored-checkout', { ... })
                 alert("Looks good! Next step is checkout.");
               }}
-              title={
-                billableZero
-                  ? "No billable area available for this slot."
-                  : undefined
-              }
+              title={billableZero ? "No billable area available for this slot." : undefined}
             >
               Continue to Checkout
             </button>
           </div>
 
-          {loading && (
-            <div className="text-xs text-gray-500">Loading…</div>
-          )}
+          {loading && <div className="text-xs text-gray-500">Loading…</div>}
           <p className="text-xs text-gray-500">
-            Note: You’ll only be charged for the portion of your area that’s
-            actually available for this spot.
+            Note: You’ll only be charged for the portion of your area that’s actually available for this spot.
           </p>
         </div>
       </div>
