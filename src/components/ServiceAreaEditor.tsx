@@ -1,7 +1,7 @@
 // src/components/ServiceAreaEditor.tsx
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
-import AreaDrawer from "./AreaDrawer";
+import GoogleAreaDrawer from "./GoogleAreaDrawer";
 import AreaSponsorModal from "./AreaSponsorModal";
 
 /** DB row type (unchanged) */
@@ -88,7 +88,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setCreating(true);
     setActiveAreaId(null);
     setDraftName("New Service Area");
-    setDraftGJ(null); // AreaDrawer starts empty
+    setDraftGJ(null); // GoogleAreaDrawer starts empty
   }, []);
 
   // Edit existing
@@ -181,9 +181,17 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     setDraftName("");
   }, []);
 
-  const roughArea = useMemo(() => (draftGJ ? fmtAreaKm2(draftGJ.type === "Polygon"
-    ? { type: "MultiPolygon", coordinates: [draftGJ.coordinates] }
-    : draftGJ) : ""), [draftGJ]);
+  const roughArea = useMemo(
+    () =>
+      draftGJ
+        ? fmtAreaKm2(
+            draftGJ.type === "Polygon"
+              ? { type: "MultiPolygon", coordinates: [draftGJ.coordinates] }
+              : draftGJ
+          )
+        : "",
+    [draftGJ]
+  );
 
   return (
     <>
@@ -304,12 +312,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           </div>
         </div>
 
-        {/* Map (Leaflet) */}
+        {/* Map (Google) */}
         <div className="md:col-span-8">
-          <AreaDrawer
-            initialGeoJSON={(creating || activeAreaId) ? (draftGJ as any) : null}
+          <GoogleAreaDrawer
+            initialGeoJSON={creating || activeAreaId ? (draftGJ as any) : null}
             onChange={(gj) => setDraftGJ(gj)}
-            center={[54.607868, -5.926437]}
+            center={{ lat: 54.607868, lng: -5.926437 }}
             zoom={11}
           />
         </div>
