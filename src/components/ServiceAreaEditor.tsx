@@ -1,10 +1,21 @@
 // src/components/ServiceAreaEditor.tsx
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
-import GoogleAreaDrawer from "./GoogleAreaDrawer";
 import AreaSponsorModal from "./AreaSponsorModal";
 
-/** DB row type (unchanged) */
+/**
+ * ServiceAreaEditor
+ * - Draw, edit, name, save, list, delete coverage areas (MultiPolygon GeoJSON in service_areas.gj)
+ * - RPCs used:
+ *    list_service_areas(p_cleaner_id)
+ *    insert_service_area(p_cleaner_id, p_gj, p_name)
+ *    update_service_area(p_area_id, p_gj, p_name)   // owner inferred via auth.uid() in SQL
+ *    delete_service_area(p_area_id)                 // owner inferred via auth.uid() in SQL
+ * - Tailwind helpers expected: card, card-pad, btn, input, etc.
+ */
+
+// ---- Types ----
 export interface ServiceAreaRow {
   id: string;
   cleaner_id: string;
@@ -13,29 +24,60 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-// Simple pretty area helper (optional visual only)
-function fmtAreaKm2(multi: any) {
-  try {
-    if (!multi || multi.type !== "MultiPolygon") return "";
-    // very rough planar area; server is source of truth for billing anyway
-    let sum = 0;
-    (multi.coordinates as number[][][][]).forEach((poly) => {
-      const ring = poly[0]; // outer ring only for rough display
-      for (let i = 1; i < ring.length; i++) {
-        const [x1, y1] = ring[i - 1];
-        const [x2, y2] = ring[i];
-        sum += x1 * y2 - x2 * y1;
-      }
-    });
-    const km2 = Math.abs(sum) * 0.000001; // bogus scale; display only
-    return `${km2.toFixed(2)} km²`;
-  } catch {
-    return "";
+// Typings fix for @react-google-maps/api
+type Libraries = ("drawing" | "geometry" | "places")[];
+
+const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
+const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
+const DEFAULT_ZOOM = 10;
+
+// Polygon style
+const polyStyle: google.maps.PolygonOptions = {
+  strokeWeight: 2,
+  strokeOpacity: 0.9,
+  fillOpacity: 0.2,
+  clickable: true,
+  editable: true,
+  draggable: false,
+};
+
+// Helpers
+const round = (n: number, p = 5) => Number(n.toFixed(p));
+
+// Convert a Google path into a closed GeoJSON ring
+function pathToGeoJSONRing(
+  path: google.maps.MVCArray<google.maps.LatLng> | google.maps.LatLng[]
+): number[][] {
+  const ring: number[][] = [];
+  const len = (path as any).getLength ? (path as any).getLength() : (path as google.maps.LatLng[]).length;
+  for (let i = 0; i < len; i++) {
+    const pt: google.maps.LatLng = (path as any).getAt ? (path as any).getAt(i) : (path as google.maps.LatLng[])[i];
+    ring.push([round(pt.lng()), round(pt.lat())]);
   }
+  if (
+    ring.length &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+  ) {
+    ring.push([ring[0][0], ring[0][1]]);
+  }
+  return ring;
+}
+
+// Build a MultiPolygon GeoJSON from drawn polygons
+function makeMultiPolygon(polys: google.maps.Polygon[]): any {
+  // MultiPolygon = Polygon[]; Polygon = LinearRing[]; LinearRing = [lng,lat][]
+  const coordinates: number[][][][] = polys.map((poly) => {
+    const rings: number[][][] = [];
+    const paths = poly.getPaths();
+    for (let i = 0; i < paths.getLength(); i++) {
+      rings.push(pathToGeoJSONRing(paths.getAt(i)));
+    }
+    return rings;
+  });
+  return { type: "MultiPolygon", coordinates };
 }
 
 // Normalize MultiPolygon for rough duplicate detection
-const round = (n: number, p = 5) => Number(n.toFixed(p));
 function normalizeMultiPolygon(multi: any): string {
   if (!multi || multi.type !== "MultiPolygon") return "";
   const polys = (multi.coordinates as number[][][][]).map((rings: number[][][]) =>
@@ -48,7 +90,40 @@ function normalizeMultiPolygon(multi: any): string {
   return polys.sort().join("||");
 }
 
+// Compute area (m²) for a Google polygon (outer - holes)
+function polygonAreaMeters(p: google.maps.Polygon): number {
+  let area = 0;
+  const paths = p.getPaths();
+  for (let i = 0; i < paths.getLength(); i++) {
+    const path = paths.getAt(i);
+    const arr: google.maps.LatLng[] = [];
+    for (let j = 0; j < path.getLength(); j++) arr.push(path.getAt(j));
+    const ringArea = google.maps.geometry.spherical.computeArea(arr);
+    area += i === 0 ? Math.abs(ringArea) : -Math.abs(ringArea);
+  }
+  return Math.max(0, area);
+}
+
+function totalAreaMeters(polys: google.maps.Polygon[]): number {
+  return polys.reduce((sum, p) => sum + polygonAreaMeters(p), 0);
+}
+
+function fmtArea(m2: number) {
+  const hectares = m2 / 10_000;
+  const km2 = m2 / 1_000_000;
+  return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
+}
+
+// ---------------- Component ----------------
 export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) {
+  const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
+  const { isLoaded, loadError } = useJsApiLoader({
+    googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
+    libraries,
+  });
+
+  const mapRef = useRef<google.maps.Map | null>(null);
+  const drawingMgrRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -56,15 +131,23 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   // draft / edit state
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState<string>("");
-  const [draftGJ, setDraftGJ] = useState<GeoJSON.Polygon | GeoJSON.MultiPolygon | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
+  const [creating, setCreating] = useState<boolean>(false); // show panel as soon as "New Area" is clicked
 
-  // sponsor modal
+  // sponsor modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
   const [sponsorSlot, setSponsorSlot] = useState<1 | 2 | 3>(1);
 
-  // Load areas
+  const resetDraft = useCallback(() => {
+    draftPolys.forEach((p) => p.setMap(null));
+    setDraftPolys([]);
+    setDraftName("");
+    setActiveAreaId(null);
+    setCreating(false);
+  }, [draftPolys]);
+
+  // Fetch areas
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -83,35 +166,64 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     fetchAreas();
   }, [fetchAreas]);
 
-  // Start new
+  const onMapLoad = useCallback((map: google.maps.Map) => {
+    mapRef.current = map;
+  }, []);
+
+  const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
+    drawingMgrRef.current = dm;
+  }, []);
+
+  // When user completes a polygon via DrawingManager
+  const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
+    poly.setOptions(polyStyle);
+    poly.setEditable(true);
+    // stop auto-starting another polygon
+    drawingMgrRef.current?.setDrawingMode(null);
+    setDraftPolys((prev) => [...prev, poly]);
+  }, []);
+
+  // Start a new area
   const startNewArea = useCallback(() => {
-    setCreating(true);
-    setActiveAreaId(null);
+    resetDraft();
+    setCreating(true); // show panel immediately
     setDraftName("New Service Area");
-    setDraftGJ(null); // GoogleAreaDrawer starts empty
-  }, []);
+    setTimeout(
+      () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
+      0
+    );
+  }, [resetDraft]);
 
-  // Edit existing
-  const editArea = useCallback((area: ServiceAreaRow) => {
-    setCreating(true);
-    setActiveAreaId(area.id);
-    setDraftName(area.name);
-    setDraftGJ(area.gj || null);
-  }, []);
+  // Edit an existing area -> load polygons onto map
+  const editArea = useCallback(
+    (area: ServiceAreaRow) => {
+      resetDraft();
+      setActiveAreaId(area.id);
+      setDraftName(area.name);
+      const gj = area.gj;
+      if (!gj || gj.type !== "MultiPolygon") return;
+      const newPolys: google.maps.Polygon[] = [];
+      (gj.coordinates as number[][][][]).forEach((poly) => {
+        const rings = poly; // Polygon = rings
+        const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+        const gpoly = new google.maps.Polygon({ paths, ...polyStyle, editable: true });
+        gpoly.setMap(mapRef.current);
+        newPolys.push(gpoly);
+      });
+      setDraftPolys(newPolys);
+    },
+    [resetDraft]
+  );
 
-  // Save
+  // Validate & Save (insert or update)
   const saveDraft = useCallback(async () => {
-    if (!draftGJ) {
+    if (!draftPolys.length) {
       setError("Draw at least one polygon.");
       return;
     }
-    // Convert Polygon -> MultiPolygon for storage consistency
-    const multi =
-      draftGJ.type === "Polygon"
-        ? { type: "MultiPolygon", coordinates: [draftGJ.coordinates] }
-        : draftGJ;
+    const multi = makeMultiPolygon(draftPolys);
 
-    // Duplicate detection
+    // Duplicate detection against existing (simple heuristic)
     const newKey = normalizeMultiPolygon(multi);
     const dup = serviceAreas.find((a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId);
     if (dup) {
@@ -119,10 +231,17 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
       return;
     }
 
+    const areaM2 = totalAreaMeters(draftPolys);
+    if (areaM2 < 50) {
+      setError("Area is too small to be valid.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
       if (activeAreaId) {
+        // update (server checks ownership via auth.uid())
         const { error } = await supabase.rpc("update_service_area", {
           p_area_id: activeAreaId,
           p_gj: multi,
@@ -138,60 +257,64 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
         if (error) throw error;
       }
       await fetchAreas();
+      resetDraft();
       setCreating(false);
-      setActiveAreaId(null);
-      setDraftGJ(null);
-      setDraftName("");
     } catch (e: any) {
       setError(e.message || "Failed to save area");
     } finally {
       setLoading(false);
     }
-  }, [activeAreaId, cleanerId, draftGJ, draftName, fetchAreas, serviceAreas]);
+  }, [activeAreaId, cleanerId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
 
-  // Delete
   const deleteArea = useCallback(
     async (area: ServiceAreaRow) => {
       if (!confirm(`Delete “${area.name}”?`)) return;
       setLoading(true);
       setError(null);
       try {
+        // delete (server checks ownership via auth.uid())
         const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
         if (error) throw error;
-        if (activeAreaId === area.id) {
-          setCreating(false);
-          setActiveAreaId(null);
-          setDraftGJ(null);
-          setDraftName("");
-        }
-        await fetchAreas();
+        if (activeAreaId === area.id) resetDraft();
+        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id)); // optimistic remove
+        await fetchAreas(); // final refresh
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
       } finally {
         setLoading(false);
       }
     },
-    [activeAreaId, fetchAreas]
+    [activeAreaId, fetchAreas, resetDraft]
   );
 
   const cancelDraft = useCallback(() => {
+    resetDraft();
     setCreating(false);
-    setActiveAreaId(null);
-    setDraftGJ(null);
-    setDraftName("");
-  }, []);
+  }, [resetDraft]);
 
-  const roughArea = useMemo(
-    () =>
-      draftGJ
-        ? fmtAreaKm2(
-            draftGJ.type === "Polygon"
-              ? { type: "MultiPolygon", coordinates: [draftGJ.coordinates] }
-              : draftGJ
-          )
-        : "",
-    [draftGJ]
+  // Center map on first area if available
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || !serviceAreas.length) return;
+    const first = serviceAreas[0];
+    const gj = first.gj;
+    if (!gj || gj.type !== "MultiPolygon") return;
+    const bounds = new google.maps.LatLngBounds();
+    (gj.coordinates as number[][][][]).forEach((poly) => {
+      const rings = poly;
+      rings.forEach((ring) =>
+        ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng)))
+      );
+    });
+    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
+  }, [isLoaded, serviceAreas]);
+
+  const totalDraftArea = useMemo(
+    () => (isLoaded ? totalAreaMeters(draftPolys) : 0),
+    [isLoaded, draftPolys]
   );
+
+  if (loadError)
+    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
 
   return (
     <>
@@ -201,7 +324,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           <div className="card card-pad">
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-lg">Service Areas</h3>
-              <button className="btn" onClick={startNewArea} disabled={loading}>
+              <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
                 + New Area
               </button>
             </div>
@@ -213,7 +336,8 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
               </div>
             )}
 
-            {(creating || activeAreaId !== null) && (
+            {/* Draft editor */}
+            {(creating || activeAreaId !== null || draftPolys.length > 0) && (
               <div className="border rounded-lg p-3 mb-4">
                 <div className="flex items-center gap-2 mb-2">
                   <input
@@ -224,16 +348,32 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                   />
                 </div>
 
+                {creating && draftPolys.length === 0 && (
+                  <div className="text-xs text-gray-600 mb-2">
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                  </div>
+                )}
+
                 <div className="text-sm text-gray-600 mb-2">
-                  {roughArea && <>Coverage: {roughArea}</>}
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
                 </div>
 
                 <div className="flex gap-2">
-                  <button className="btn" onClick={saveDraft} disabled={loading || !draftGJ}>
+                  <button className="btn" onClick={saveDraft} disabled={loading}>
                     {activeAreaId ? "Save Changes" : "Save Area"}
                   </button>
                   <button className="btn" onClick={cancelDraft} disabled={loading}>
                     Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      draftPolys.forEach((p) => p.setMap(null));
+                      setDraftPolys([]);
+                    }}
+                    disabled={loading || draftPolys.length === 0}
+                  >
+                    Clear Polygons
                   </button>
                 </div>
               </div>
@@ -307,23 +447,60 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
             <div className="font-semibold mb-1">Tips</div>
             <ul className="list-disc pl-5 space-y-1">
               <li>Click “New Area”, then click around the map to draw a polygon. Double-click to finish.</li>
-              <li>Drag the white handles to adjust vertices. You can save multiple polygons in one area.</li>
+              <li>Drag the white handles to adjust vertices. Use “Clear Polygons” to redraw before saving.</li>
+              <li>Each saved Service Area may include multiple polygons.</li>
             </ul>
           </div>
         </div>
 
-        {/* Map (Google) */}
+        {/* Map */}
         <div className="md:col-span-8">
-          <GoogleAreaDrawer
-            initialGeoJSON={(creating || activeAreaId) ? (draftGJ as any) : null}
-            onChange={(gj) => setDraftGJ(gj)}
-            center={[54.607868, -5.926437]}  // <-- tuple, not { lat, lng }
-            zoom={11}
-          />
+          {isLoaded ? (
+            <GoogleMap
+              mapContainerStyle={MAP_CONTAINER}
+              center={DEFAULT_CENTER}
+              zoom={DEFAULT_ZOOM}
+              options={{ mapTypeControl: false, streetViewControl: false }}
+              onLoad={onMapLoad}
+            >
+              <DrawingManager
+                onLoad={onDrawingLoad}
+                onPolygonComplete={onPolygonComplete}
+                options={{
+                  drawingMode: null,
+                  drawingControl: true,
+                  drawingControlOptions: {
+                    drawingModes: [google.maps.drawing.OverlayType.POLYGON],
+                  },
+                  polygonOptions: polyStyle,
+                }}
+              />
+
+              {/* Render existing areas as non-editable preview when not in draft mode */}
+              {activeAreaId === null &&
+                serviceAreas.map((a) => {
+                  const gj = a.gj;
+                  if (!gj || gj.type !== "MultiPolygon") return null;
+                  return (gj.coordinates as number[][][][]).map((poly, i) => {
+                    const rings = poly;
+                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    return (
+                      <Polygon
+                        key={`${a.id}-${i}`}
+                        paths={paths}
+                        options={{ ...polyStyle, editable: false, draggable: false }}
+                      />
+                    );
+                  });
+                })}
+            </GoogleMap>
+          ) : (
+            <div className="card card-pad">Loading map…</div>
+          )}
         </div>
       </div>
 
-      {/* Sponsor modal */}
+      {/* Sponsor modal (Leaflet-based, separate from Google Map editor) */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
