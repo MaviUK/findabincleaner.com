@@ -43,7 +43,7 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // (loaded for future use; preview doesn’t need it now)
+  // (loaded for potential future use)
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
@@ -84,14 +84,12 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  /** Build availability URL (cache-busted) — include cleaner_id so the backend can
-   * exclude your own records from the “blockers” set.
-   */
+  /** Build availability URL — include cleaner_id (exclude self) */
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
-      cleaner_id: cleanerId, // <-- IMPORTANT
+      cleaner_id: cleanerId,
       t: String(Date.now()),
     });
     return `/.netlify/functions/area-availability?${qs.toString()}`;
@@ -147,7 +145,7 @@ export default function AreaSponsorModal({
     };
   }, [open, availabilityUrl]);
 
-  /** Preview pricing — let the DB compute billable portion; do not send a clip */
+  /** Preview pricing — send cleanerId so DB excludes your own records */
   async function runPreview() {
     if (!open) return;
     setPreviewing(true);
@@ -163,6 +161,7 @@ export default function AreaSponsorModal({
           slot,
           months: 1,
           drawnGeoJSON: null,
+          cleanerId, // <-- IMPORTANT
         }),
       });
 
@@ -191,7 +190,7 @@ export default function AreaSponsorModal({
     }
   }
 
-  /** Stripe checkout (still not sending a clip) */
+  /** Stripe checkout — also pass cleanerId */
   async function goToCheckout() {
     try {
       let token: string | null = null;
@@ -254,13 +253,11 @@ export default function AreaSponsorModal({
         : true)) ||
     false;
 
-  // numbers from preview (may still be null if backend found zero)
   const areaKm2 = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).area_km2) : null;
   const monthly = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).monthly_price) : null;
   const total = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).total_price) : null;
 
-  // Final gating: allow billing if either availability says there is area OR
-  // preview computed a positive billable area.
+  // Allow billing if availability shows some area OR the preview computed a positive area.
   const canBill = availHasArea || (areaKm2 !== null && areaKm2 > 0);
 
   return (
