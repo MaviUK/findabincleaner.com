@@ -168,12 +168,12 @@ export default function AreaSponsorModal({
       const res = await fetch(`/.netlify/functions/area-preview`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          areaId: areaId,
-          slot,
-          months: 1,
-          drawnGeoJSON: areaGeoJSON,
-        }),
+       body: JSON.stringify({
+  areaId: areaId,
+   slot,
+   months: 1,
+  drawnGeoJSON: null, // <-- let the DB compute using the available area
+ }),
       });
 
       const ct = res.headers.get("content-type") || "";
