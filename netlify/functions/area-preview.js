@@ -38,10 +38,10 @@ export default async (req) => {
     // Always call the 3-arg overload to avoid integer/smallint ambiguity.
     // SQL signature: get_area_preview(area_id uuid, slot smallint, drawn_geojson jsonb)
     const { data, error } = await supabase.rpc('get_area_preview', {
-      area_id,
-      slot,
-      drawn_geojson: drawnGeoJSON, // jsonb or null
-    });
+  _area_id: area_id,           // <-- match SQL arg name
+  _slot: slot,                 // <-- match SQL arg name
+  _drawn_geojson: drawnGeoJSON // <-- match SQL arg name
+});
 
     if (error) throw error;
 
