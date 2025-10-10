@@ -9,26 +9,24 @@ type Availability = AvailabilityOk | AvailabilityErr;
 
 type PreviewOk = {
   ok: true;
-  area_km2: number | string;
-  monthly_price: number | string;
-  total_price: number | string;
+  area_km2: number | string | null;
+  monthly_price: number | string | null;
+  total_price: number | string | null;
   final_geojson: any | null;
+  months?: number | string | null;
 };
 type PreviewErr = { ok: false; error: string };
 type PreviewResult = PreviewOk | PreviewErr;
 
 /** Safe numeric coerce */
 function toNum(n: unknown): number | null {
-  const x = typeof n === "string" ? Number(n) : (n as number);
-  return Number.isFinite(x) ? x : null;
-}
-
-/** Basic emptiness check for common Polygon/MultiPolygon JSON shapes */
-function isEmptyGeoJSON(g: any): boolean {
-  if (!g) return true;
-  if (g.type === "Polygon") return !Array.isArray(g.coordinates) || g.coordinates.length === 0;
-  if (g.type === "MultiPolygon") return !Array.isArray(g.coordinates) || g.coordinates.length === 0;
-  return false;
+  if (n == null) return null;
+  if (typeof n === "number") return Number.isFinite(n) ? n : null;
+  if (typeof n === "string") {
+    const x = Number(n);
+    return Number.isFinite(x) ? x : null;
+  }
+  return null;
 }
 
 export default function AreaSponsorModal({
@@ -93,12 +91,12 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  /** Build availability URL (cache-busted) — includes cleaner_id */
+  /** Build availability URL (include cleaner_id to avoid overlap with your own slots) */
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
-      cleaner_id: cleanerId, // exclude this cleaner in the RPC
+      cleaner_id: cleanerId || "",
       t: String(Date.now()),
     });
     return `/.netlify/functions/area-availability?${qs.toString()}`;
@@ -171,10 +169,10 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
         body: JSON.stringify({
-          area_id: areaId,
+          areaId: areaId,
           slot,
           months: 1,
-          drawnGeoJSON: areaGeoJSON, // server normalizes Feature/FC/Geometry
+          drawnGeoJSON: areaGeoJSON,
         }),
       });
 
@@ -196,7 +194,21 @@ export default function AreaSponsorModal({
           `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
         throw new Error(msg);
       }
-      setPreview(data);
+
+      // Normalize numeric fields before putting in state
+      if (data.ok) {
+        const normalized: PreviewOk = {
+          ok: true,
+          final_geojson: (data as PreviewOk).final_geojson ?? null,
+          area_km2: toNum((data as PreviewOk).area_km2),
+          monthly_price: toNum((data as PreviewOk).monthly_price),
+          total_price: toNum((data as PreviewOk).total_price),
+          months: (data as PreviewOk).months ?? 1,
+        };
+        setPreview(normalized);
+      } else {
+        setPreview(data);
+      }
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -264,14 +276,19 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   /** Derived state */
-  const okAvail = avail && (avail as any).ok === true;
-  const availableGJ = okAvail ? (avail as AvailabilityOk).available : null;
-  const hasAvailable = okAvail && !isEmptyGeoJSON(availableGJ);
+  const okAvail = !!avail && (avail as AvailabilityOk).ok === true;
+  const hasAvailable =
+    (okAvail &&
+      (avail as AvailabilityOk).available &&
+      (Array.isArray((avail as AvailabilityOk).available?.coordinates)
+        ? (avail as AvailabilityOk).available.coordinates.length > 0
+        : true)) ||
+    false;
 
-  // Coerce preview numbers (avoid toFixed on undefined)
-  const areaKm2 = preview && preview.ok ? toNum(preview.area_km2) : null;
-  const monthly = preview && preview.ok ? toNum(preview.monthly_price) : null;
-  const total = preview && preview.ok ? toNum(preview.total_price) : null;
+  // Coerced preview numbers (avoid toFixed on undefined)
+  const areaKm2 = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).area_km2) : null;
+  const monthly = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).monthly_price) : null;
+  const total = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).total_price) : null;
 
   /** ---------- UI ---------- */
   return (
@@ -342,7 +359,7 @@ export default function AreaSponsorModal({
                 </button>
               </div>
 
-              {preview && preview.ok && (
+              {preview && (preview as PreviewOk).ok && (
                 <div className="mt-3 text-sm space-y-1">
                   <div>
                     <span className="text-gray-500">Area:</span>{" "}
