@@ -13,20 +13,15 @@ type PreviewOk = {
   monthly_price: number | string | null;
   total_price: number | string | null;
   final_geojson: any | null;
-  months?: number | string | null;
+  months?: number;
 };
 type PreviewErr = { ok: false; error: string };
 type PreviewResult = PreviewOk | PreviewErr;
 
 /** Safe numeric coerce */
 function toNum(n: unknown): number | null {
-  if (n == null) return null;
-  if (typeof n === "number") return Number.isFinite(n) ? n : null;
-  if (typeof n === "string") {
-    const x = Number(n);
-    return Number.isFinite(x) ? x : null;
-  }
-  return null;
+  const x = typeof n === "string" ? Number(n) : (n as number);
+  return Number.isFinite(x) ? x : null;
 }
 
 export default function AreaSponsorModal({
@@ -49,7 +44,7 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // geometry for the selected service area (sent to the functions)
+  // geometry for the selected service area (for potential future clip use)
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
@@ -91,16 +86,17 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  /** Build availability URL (include cleaner_id to avoid overlap with your own slots) */
+  /** Build availability URL (cache-busted) */
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
-      cleaner_id: cleanerId || "",
+      // cleaner_id is optional; include if you want to exclude the owner’s own geometry
+      // cleaner_id: cleanerId,
       t: String(Date.now()),
     });
     return `/.netlify/functions/area-availability?${qs.toString()}`;
-  }, [areaId, slot, cleanerId]);
+  }, [areaId, slot /*, cleanerId*/]);
 
   /** Fetch availability on open */
   useEffect(() => {
@@ -153,13 +149,13 @@ export default function AreaSponsorModal({
     };
   }, [open, availabilityUrl]);
 
-  /** Preview pricing */
+  /** Preview pricing
+   * IMPORTANT: Do NOT send drawn geometry for now. Let the DB compute the
+   * billable portion itself. (We keep areaGeoJSON loaded for potential
+   * future “clip” use but we pass null here.)
+   */
   async function runPreview() {
     if (!open) return;
-    if (!areaGeoJSON) {
-      setErr("Missing area geometry; please try reloading the page.");
-      return;
-    }
     setPreviewing(true);
     setErr(null);
     setPreview(null);
@@ -168,12 +164,12 @@ export default function AreaSponsorModal({
       const res = await fetch(`/.netlify/functions/area-preview`, {
         method: "POST",
         headers: { "content-type": "application/json", accept: "application/json" },
-       body: JSON.stringify({
-  areaId: areaId,
-   slot,
-   months: 1,
-  drawnGeoJSON: null, // <-- let the DB compute using the available area
- }),
+        body: JSON.stringify({
+          areaId: areaId,
+          slot,
+          months: 1,
+          drawnGeoJSON: null, // <-- key change
+        }),
       });
 
       const ct = res.headers.get("content-type") || "";
@@ -194,21 +190,7 @@ export default function AreaSponsorModal({
           `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
         throw new Error(msg);
       }
-
-      // Normalize numeric fields before putting in state
-      if (data.ok) {
-        const normalized: PreviewOk = {
-          ok: true,
-          final_geojson: (data as PreviewOk).final_geojson ?? null,
-          area_km2: toNum((data as PreviewOk).area_km2),
-          monthly_price: toNum((data as PreviewOk).monthly_price),
-          total_price: toNum((data as PreviewOk).total_price),
-          months: (data as PreviewOk).months ?? 1,
-        };
-        setPreview(normalized);
-      } else {
-        setPreview(data);
-      }
+      setPreview(data);
     } catch (e: any) {
       setErr(String(e?.message || e));
     } finally {
@@ -219,11 +201,6 @@ export default function AreaSponsorModal({
   /** Stripe checkout */
   async function goToCheckout() {
     try {
-      if (!areaGeoJSON) {
-        setErr("Missing area geometry; please try reloading the page.");
-        return;
-      }
-
       // Optional auth token (if your function enforces auth)
       let token: string | null = null;
       const rawToken = localStorage.getItem("supabase.auth.token");
@@ -245,7 +222,8 @@ export default function AreaSponsorModal({
           areaId,
           slot,
           months: 1,
-          drawnGeoJSON: areaGeoJSON,
+          // for checkout we also don’t pass a clip for now
+          drawnGeoJSON: null,
         }),
       });
 
@@ -276,7 +254,7 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   /** Derived state */
-  const okAvail = !!avail && (avail as AvailabilityOk).ok === true;
+  const okAvail = avail && avail.ok;
   const hasAvailable =
     (okAvail &&
       (avail as AvailabilityOk).available &&
@@ -285,7 +263,7 @@ export default function AreaSponsorModal({
         : true)) ||
     false;
 
-  // Coerced preview numbers (avoid toFixed on undefined)
+  // Coerce preview numbers (avoid toFixed on undefined)
   const areaKm2 = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).area_km2) : null;
   const monthly = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).monthly_price) : null;
   const total = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).total_price) : null;
@@ -345,7 +323,7 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn"
                   onClick={runPreview}
-                  disabled={previewing || !areaGeoJSON}
+                  disabled={previewing /* areaGeoJSON no longer required */}
                 >
                   {previewing ? "Calculating…" : "Preview price"}
                 </button>
@@ -353,7 +331,7 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn btn-primary"
                   onClick={goToCheckout}
-                  disabled={!hasAvailable || !areaGeoJSON}
+                  disabled={!hasAvailable}
                 >
                   Continue to checkout
                 </button>
