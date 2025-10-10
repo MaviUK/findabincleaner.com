@@ -1,14 +1,19 @@
-// netlify/functions/area-preview.js
+// /netlify/functions/area-preview.js
 import { createClient } from '@supabase/supabase-js';
 
+// Service-role client (RLS bypass for RPCs)
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE // RLS bypass for RPC
+  process.env.SUPABASE_SERVICE_ROLE
 );
+
+// simple helpers
+const toNum = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
+const clamp2 = (n) => (typeof n === 'number' ? Math.round(n * 100) / 100 : n);
 
 export default async (req) => {
   try {
-    // We expect POST with JSON body
+    // we only accept POST with JSON
     if (req.method !== 'POST') {
       return new Response(JSON.stringify({ error: 'Use POST with JSON body' }), {
         status: 405,
@@ -16,19 +21,25 @@ export default async (req) => {
       });
     }
 
-    // Read JSON (no query-string expected here)
-    let body = {};
+    // parse body
+    let body = null;
     try {
       body = await req.json();
     } catch {
-      // keep empty
+      // keep body as null; will fail validation below
     }
 
-    const area_id = body.areaId || body.area_id;
-    const slot = Number(body.slot ?? 1);
-    const months = Number(body.months ?? 1);
+    const area_id = body?.areaId || body?.area_id;
+    const slot = Number(body?.slot ?? 1) || 1;
+    const months = Math.max(1, Number(body?.months ?? 1) || 1);
+
+    // IMPORTANT: treat drawn geometry as optional, and only pass it if it looks like GeoJSON
+    const drawnGeoJSONRaw =
+      body?.drawnGeoJSON ?? body?.drawn_geojson ?? body?._drawn_geojson ?? null;
     const drawnGeoJSON =
-      body.drawnGeoJSON ?? body.drawn_geojson ?? null; // may be null
+      drawnGeoJSONRaw && typeof drawnGeoJSONRaw === 'object' && drawnGeoJSONRaw.type
+        ? drawnGeoJSONRaw
+        : null;
 
     if (!area_id || !slot) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
@@ -37,64 +48,38 @@ export default async (req) => {
       });
     }
 
-    // Call SQL function — always pass all 3 named args to avoid ambiguity
+    // Call the SQL function. It has the signature:
+    // get_area_preview(_area_id uuid, _slot integer, _drawn_geojson jsonb)
     const { data, error } = await supabase.rpc('get_area_preview', {
-      _area_id: area_id,   // match SQL arg name
-      _slot: slot,         // match SQL arg name
-      _drawn_geojson: drawnGeoJSON, // match SQL arg name
+      _area_id: area_id,
+      _slot: slot,
+      _drawn_geojson: drawnGeoJSON, // may be null
     });
 
     if (error) throw error;
 
-    // Expecting (from SQL):
-    //  final_geojson jsonb, area_km2 numeric, monthly_price numeric, total_price numeric
-    let {
-      final_geojson,
-      area_km2,
-      monthly_price,
-      total_price,
-    } = data || {};
+    // Expecting SQL to return: { final_geojson, area_km2, monthly_price, total_price }
+    // But we’ll compute prices if they’re missing.
+    const area_km2 = toNum(data?.area_km2);
 
-    // Defensive coercion
-    const toNum = (v) => {
-      if (v == null) return null;
-      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
-      const n = Number(v);
-      return Number.isFinite(n) ? n : null;
-    };
+    // pricing env (strings -> numbers)
+    const RATE = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 1);
+    const MIN = Number(process.env.MIN_PRICE_PER_MONTH ?? 1);
 
-    area_km2 = toNum(area_km2);
+    let monthly_price = toNum(data?.monthly_price);
+    let total_price = toNum(data?.total_price);
 
-    // If SQL didn’t compute prices, compute here from env
-    const RATE = toNum(process.env.RATE_PER_KM2_PER_MONTH) ?? 1;
-    const MIN  = toNum(process.env.MIN_PRICE_PER_MONTH) ?? 1;
-
-    if (monthly_price == null) {
-      if (area_km2 == null) {
-        monthly_price = null;
-      } else {
-        const calc = Math.max(MIN, area_km2 * RATE);
-        monthly_price = Math.round(calc * 100) / 100;
-      }
-    } else {
-      monthly_price = toNum(monthly_price);
+    if (monthly_price === null && area_km2 !== null) {
+      monthly_price = Math.max(MIN, clamp2(area_km2 * RATE));
     }
-
-    if (total_price == null) {
-      total_price = monthly_price == null ? null : Math.round((monthly_price * months) * 100) / 100;
-    } else {
-      total_price = toNum(total_price);
-    }
-
-    // Some drivers serialize jsonb as string; try to parse to object if that happens
-    if (typeof final_geojson === 'string') {
-      try { final_geojson = JSON.parse(final_geojson); } catch {}
+    if (total_price === null && monthly_price !== null) {
+      total_price = clamp2(monthly_price * months);
     }
 
     return new Response(
       JSON.stringify({
         ok: true,
-        final_geojson,
+        final_geojson: data?.final_geojson ?? null,
         area_km2,
         monthly_price,
         total_price,
