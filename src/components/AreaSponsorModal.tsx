@@ -1,4 +1,3 @@
-// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -44,7 +43,7 @@ export default function AreaSponsorModal({
   const [previewing, setPreviewing] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
 
-  // geometry for the selected service area (for potential future clip use)
+  // (loaded for future use; preview doesn’t need it now)
   const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
   const [loadingGJ, setLoadingGJ] = useState(false);
 
@@ -73,7 +72,6 @@ export default function AreaSponsorModal({
       }
     }
 
-    // reset state when (re)opening
     if (open) {
       setErr(null);
       setAvail(null);
@@ -86,17 +84,18 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  /** Build availability URL (cache-busted) */
+  /** Build availability URL (cache-busted) — include cleaner_id so the backend can
+   * exclude your own records from the “blockers” set.
+   */
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
-      // cleaner_id is optional; include if you want to exclude the owner’s own geometry
-      // cleaner_id: cleanerId,
+      cleaner_id: cleanerId, // <-- IMPORTANT
       t: String(Date.now()),
     });
     return `/.netlify/functions/area-availability?${qs.toString()}`;
-  }, [areaId, slot /*, cleanerId*/]);
+  }, [areaId, slot, cleanerId]);
 
   /** Fetch availability on open */
   useEffect(() => {
@@ -117,7 +116,6 @@ export default function AreaSponsorModal({
         const ct = res.headers.get("content-type") || "";
         const raw = await res.text().catch(() => "");
 
-        // Dev logs
         console.log("[area-availability] status:", res.status, res.statusText);
         console.log("[area-availability] content-type:", ct);
         if (raw) console.log("[area-availability] raw:", raw);
@@ -149,11 +147,7 @@ export default function AreaSponsorModal({
     };
   }, [open, availabilityUrl]);
 
-  /** Preview pricing
-   * IMPORTANT: Do NOT send drawn geometry for now. Let the DB compute the
-   * billable portion itself. (We keep areaGeoJSON loaded for potential
-   * future “clip” use but we pass null here.)
-   */
+  /** Preview pricing — let the DB compute billable portion; do not send a clip */
   async function runPreview() {
     if (!open) return;
     setPreviewing(true);
@@ -168,14 +162,13 @@ export default function AreaSponsorModal({
           areaId: areaId,
           slot,
           months: 1,
-          drawnGeoJSON: null, // <-- key change
+          drawnGeoJSON: null,
         }),
       });
 
       const ct = res.headers.get("content-type") || "";
       const raw = await res.text().catch(() => "");
 
-      // Dev logs
       console.log("[area-preview] status:", res.status, res.statusText);
       console.log("[area-preview] content-type:", ct);
       if (raw) console.log("[area-preview] raw:", raw);
@@ -198,10 +191,9 @@ export default function AreaSponsorModal({
     }
   }
 
-  /** Stripe checkout */
+  /** Stripe checkout (still not sending a clip) */
   async function goToCheckout() {
     try {
-      // Optional auth token (if your function enforces auth)
       let token: string | null = null;
       const rawToken = localStorage.getItem("supabase.auth.token");
       if (rawToken) {
@@ -222,7 +214,6 @@ export default function AreaSponsorModal({
           areaId,
           slot,
           months: 1,
-          // for checkout we also don’t pass a clip for now
           drawnGeoJSON: null,
         }),
       });
@@ -238,7 +229,7 @@ export default function AreaSponsorModal({
 
       const data = JSON.parse(raw);
       if (data?.url) {
-        window.location.href = data.url; // Stripe Checkout
+        window.location.href = data.url;
       } else {
         throw new Error("No checkout URL returned.");
       }
@@ -255,7 +246,7 @@ export default function AreaSponsorModal({
 
   /** Derived state */
   const okAvail = avail && avail.ok;
-  const hasAvailable =
+  const availHasArea =
     (okAvail &&
       (avail as AvailabilityOk).available &&
       (Array.isArray((avail as AvailabilityOk).available?.coordinates)
@@ -263,18 +254,18 @@ export default function AreaSponsorModal({
         : true)) ||
     false;
 
-  // Coerce preview numbers (avoid toFixed on undefined)
+  // numbers from preview (may still be null if backend found zero)
   const areaKm2 = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).area_km2) : null;
   const monthly = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).monthly_price) : null;
   const total = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).total_price) : null;
 
-  /** ---------- UI ---------- */
+  // Final gating: allow billing if either availability says there is area OR
+  // preview computed a positive billable area.
+  const canBill = availHasArea || (areaKm2 !== null && areaKm2 > 0);
+
   return (
     <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-
-      {/* Modal */}
       <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
@@ -288,9 +279,7 @@ export default function AreaSponsorModal({
         </div>
 
         <div className="p-4 space-y-3">
-          {(loading || loadingGJ) && (
-            <div className="text-sm text-gray-600">Loading…</div>
-          )}
+          {(loading || loadingGJ) && <div className="text-sm text-gray-600">Loading…</div>}
 
           {!loading && !loadingGJ && err && (
             <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2 whitespace-pre-wrap">
@@ -303,7 +292,7 @@ export default function AreaSponsorModal({
               <div className="text-sm">
                 <div className="mb-1">
                   <strong>Result:</strong>{" "}
-                  {hasAvailable ? (
+                  {canBill ? (
                     <span className="text-green-700">
                       Some part of this area is available for #{slot}.
                     </span>
@@ -323,7 +312,7 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn"
                   onClick={runPreview}
-                  disabled={previewing /* areaGeoJSON no longer required */}
+                  disabled={previewing}
                 >
                   {previewing ? "Calculating…" : "Preview price"}
                 </button>
@@ -331,7 +320,7 @@ export default function AreaSponsorModal({
                   type="button"
                   className="btn btn-primary"
                   onClick={goToCheckout}
-                  disabled={!hasAvailable}
+                  disabled={!canBill}
                 >
                   Continue to checkout
                 </button>
