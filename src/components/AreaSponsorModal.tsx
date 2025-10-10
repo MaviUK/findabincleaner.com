@@ -23,6 +23,15 @@ function toNum(n: unknown): number | null {
   return Number.isFinite(x) ? x : null;
 }
 
+/** Basic emptiness check for common Polygon/MultiPolygon JSON shapes */
+function isEmptyGeoJSON(g: any): boolean {
+  if (!g) return true;
+  if (g.type === "Polygon") return !Array.isArray(g.coordinates) || g.coordinates.length === 0;
+  if (g.type === "MultiPolygon") return !Array.isArray(g.coordinates) || g.coordinates.length === 0;
+  // treat anything else we don’t expect as empty (safer for UI state)
+  return false;
+}
+
 export default function AreaSponsorModal({
   open,
   onClose,
@@ -85,15 +94,16 @@ export default function AreaSponsorModal({
     };
   }, [open, areaId]);
 
-  /** Build availability URL (cache-busted) */
+  /** Build availability URL (cache-busted) — now includes cleaner_id */
   const availabilityUrl = useMemo(() => {
     const qs = new URLSearchParams({
       area_id: areaId,
       slot: String(slot),
+      cleaner_id: cleanerId,    // <<< important: exclude this cleaner in the RPC
       t: String(Date.now()),
     });
     return `/.netlify/functions/area-availability?${qs.toString()}`;
-  }, [areaId, slot]);
+  }, [areaId, slot, cleanerId]);
 
   /** Fetch availability on open */
   useEffect(() => {
@@ -255,14 +265,9 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   /** Derived state */
-  const okAvail = avail && avail.ok;
-  const hasAvailable =
-    (okAvail &&
-      (avail as AvailabilityOk).available &&
-      (Array.isArray((avail as AvailabilityOk).available?.coordinates)
-        ? (avail as AvailabilityOk).available.coordinates.length > 0
-        : true)) ||
-    false;
+  const okAvail = avail && (avail as any).ok === true;
+  const availableGJ = okAvail ? (avail as AvailabilityOk).available : null;
+  const hasAvailable = okAvail && !isEmptyGeoJSON(availableGJ);
 
   // Coerce preview numbers (avoid toFixed on undefined)
   const areaKm2 = preview && preview.ok ? toNum(preview.area_km2) : null;
