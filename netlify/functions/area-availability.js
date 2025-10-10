@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
+  process.env.SUPABASE_SERVICE_ROLE // RLS bypass for RPC
 );
 
 export default async (req) => {
@@ -11,8 +11,8 @@ export default async (req) => {
     const url = new URL(req.url);
     const area_id = url.searchParams.get('area_id') || '';
     const slot = parseInt(url.searchParams.get('slot') || '1', 10);
-    // optional: if you ever want to exclude a cleaner's own sponsorships
-    const exclude_cleaner = url.searchParams.get('exclude_cleaner'); // may be null
+    // Optional: exclude this cleaner's own sponsorships from the "existing" union.
+    const cleaner_id = url.searchParams.get('cleaner_id');
 
     if (!area_id || Number.isNaN(slot)) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
@@ -21,11 +21,11 @@ export default async (req) => {
       });
     }
 
-    // IMPORTANT: always send _exclude_cleaner, even when null, to disambiguate overloads
+    // Always include _exclude_cleaner to disambiguate overloaded SQL functions.
     const { data, error } = await supabase.rpc('get_area_availability', {
       _area_id: area_id,
       _slot: slot,
-      _exclude_cleaner: exclude_cleaner || null,
+      _exclude_cleaner: cleaner_id || null,
     });
 
     if (error) throw error;
@@ -37,7 +37,7 @@ export default async (req) => {
       },
     });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message || 'failed' }), {
+    return new Response(JSON.stringify({ error: e?.message || 'failed' }), {
       status: 500,
       headers: { 'content-type': 'application/json' },
     });
