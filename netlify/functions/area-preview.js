@@ -1,19 +1,13 @@
-// /netlify/functions/area-preview.js
+// netlify/functions/area-preview.js
 import { createClient } from '@supabase/supabase-js';
 
-// Service-role client (RLS bypass for RPCs)
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
+  process.env.SUPABASE_SERVICE_ROLE // RLS bypass for RPC
 );
-
-// simple helpers
-const toNum = (n) => (typeof n === 'number' && Number.isFinite(n) ? n : null);
-const clamp2 = (n) => (typeof n === 'number' ? Math.round(n * 100) / 100 : n);
 
 export default async (req) => {
   try {
-    // we only accept POST with JSON
     if (req.method !== 'POST') {
       return new Response(JSON.stringify({ error: 'Use POST with JSON body' }), {
         status: 405,
@@ -21,25 +15,21 @@ export default async (req) => {
       });
     }
 
-    // parse body
+    // Read JSON body
     let body = null;
     try {
       body = await req.json();
     } catch {
-      // keep body as null; will fail validation below
+      body = {};
     }
 
-    const area_id = body?.areaId || body?.area_id;
-    const slot = Number(body?.slot ?? 1) || 1;
-    const months = Math.max(1, Number(body?.months ?? 1) || 1);
+    const area_id = body.areaId || body.area_id;
+    const slot = Number(body.slot ?? 1);
+    const months = Number(body.months ?? 1);
+    const drawnGeoJSON = body.drawnGeoJSON ?? null;
 
-    // IMPORTANT: treat drawn geometry as optional, and only pass it if it looks like GeoJSON
-    const drawnGeoJSONRaw =
-      body?.drawnGeoJSON ?? body?.drawn_geojson ?? body?._drawn_geojson ?? null;
-    const drawnGeoJSON =
-      drawnGeoJSONRaw && typeof drawnGeoJSONRaw === 'object' && drawnGeoJSONRaw.type
-        ? drawnGeoJSONRaw
-        : null;
+    // NEW: optional cleaner to exclude (prevents “self-blocking”)
+    const excludeCleaner = body.cleanerId || body.cleaner_id || null;
 
     if (!area_id || !slot) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
@@ -48,49 +38,24 @@ export default async (req) => {
       });
     }
 
-    // Call the SQL function. It has the signature:
-    // get_area_preview(_area_id uuid, _slot integer, _drawn_geojson jsonb)
+    // Always call the 3-arg version (and include the cleaner exclusion)
+    // Expecting: { final_geojson, area_km2, monthly_price, total_price }
     const { data, error } = await supabase.rpc('get_area_preview', {
       _area_id: area_id,
       _slot: slot,
-      _drawn_geojson: drawnGeoJSON, // may be null
+      _drawn_geojson: drawnGeoJSON,   // may be null
+      _exclude_cleaner: excludeCleaner // may be null; disambiguates overloaded fn
     });
 
     if (error) throw error;
 
-    // Expecting SQL to return: { final_geojson, area_km2, monthly_price, total_price }
-    // But we’ll compute prices if they’re missing.
-    const area_km2 = toNum(data?.area_km2);
-
-    // pricing env (strings -> numbers)
-    const RATE = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 1);
-    const MIN = Number(process.env.MIN_PRICE_PER_MONTH ?? 1);
-
-    let monthly_price = toNum(data?.monthly_price);
-    let total_price = toNum(data?.total_price);
-
-    if (monthly_price === null && area_km2 !== null) {
-      monthly_price = Math.max(MIN, clamp2(area_km2 * RATE));
-    }
-    if (total_price === null && monthly_price !== null) {
-      total_price = clamp2(monthly_price * months);
-    }
-
     return new Response(
       JSON.stringify({
         ok: true,
-        final_geojson: data?.final_geojson ?? null,
-        area_km2,
-        monthly_price,
-        total_price,
+        ...(data || {}),
         months,
       }),
-      {
-        headers: {
-          'content-type': 'application/json',
-          'access-control-allow-origin': '*',
-        },
-      }
+      { headers: { 'content-type': 'application/json' } }
     );
   } catch (e) {
     return new Response(JSON.stringify({ error: e?.message || 'failed' }), {
