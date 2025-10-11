@@ -14,9 +14,7 @@ function readNumberEnv(name, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
-// Price helpers
 function toPounds(n) {
-  // keep as number; formatting happens in the UI
   return Math.round(n * 100) / 100;
 }
 
@@ -30,20 +28,11 @@ export default async (req) => {
     }
 
     let body = {};
-    try {
-      body = await req.json();
-    } catch {
-      // keep empty
-    }
+    try { body = await req.json(); } catch {}
 
-    const areaId = body.areaId || body.area_id || null;
-    const slot = Number(body.slot ?? body.months ?? 1) || 1;
-
-    // drawnGeoJSON may be object or string; normalize to object (or null)
-    let drawnGeoJSON = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
-    if (typeof drawnGeoJSON === 'string') {
-      try { drawnGeoJSON = JSON.parse(drawnGeoJSON); } catch { drawnGeoJSON = null; }
-    }
+    const areaId         = body.areaId || body.area_id;
+    const slot           = Number(body.slot ?? body.months ?? 1) || 1;
+    const drawnGeoJSON   = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
     const excludeCleaner = body.cleanerId ?? body.excludeCleaner ?? null;
 
     if (!areaId || !slot) {
@@ -53,7 +42,7 @@ export default async (req) => {
       });
     }
 
-    // Call SQL preview (4-arg)
+    // Call SQL preview
     const { data, error } = await supabase.rpc('get_area_preview', {
       _area_id: areaId,
       _slot: slot,
@@ -68,35 +57,34 @@ export default async (req) => {
       });
     }
 
-    // ⚠️ Supabase returns an array for RETURNS TABLE. Normalize to a single row.
-    const row = Array.isArray(data) ? (data[0] || {}) : (data || {});
+    // Normalize and compute pricing
+    const area_km2 = Number(data?.area_km2 ?? 0);
+    const months   = Number(slot) || 1;
 
-    // Prefer SQL’s values if present; otherwise compute pricing here
-    const months = Number(row.months ?? slot) || 1;
-    const area_km2 = Number(row.area_km2 ?? 0);
-
-    // Pricing inputs (env). If missing, we’ll pass through SQL prices if present.
     const RATE = readNumberEnv('RATE_PER_KM2_PER_MONTH', null);
     const MIN  = readNumberEnv('MIN_PRICE_PER_MONTH', null);
 
-    let monthly_price = null;
-    let total_price = null;
+    const hasGeom =
+      data?.final_geojson &&
+      typeof data.final_geojson === 'object' &&
+      Array.isArray(data.final_geojson.coordinates) &&
+      data.final_geojson.coordinates.length > 0;
 
-    if (Number.isFinite(row.monthly_price)) {
-      monthly_price = Number(row.monthly_price);
-      total_price   = Number(row.total_price ?? months * monthly_price);
-    } else if (Number.isFinite(area_km2) && area_km2 > 0 && Number.isFinite(RATE) && Number.isFinite(MIN)) {
+    // <- Force ok based on area or non-empty geometry
+    const ok = (Number.isFinite(area_km2) && area_km2 > 0) || hasGeom;
+
+    let monthly_price = null;
+    let total_price   = null;
+    if (ok && Number.isFinite(RATE) && Number.isFinite(MIN)) {
       const rawMonthly = Math.max(MIN, area_km2 * RATE);
       monthly_price = toPounds(rawMonthly);
       total_price   = toPounds(rawMonthly * months);
     }
 
-    const ok = !!row.ok && area_km2 > 0;
-
     return new Response(
       JSON.stringify({
         ok,
-        final_geojson: row.final_geojson ?? null,
+        final_geojson: data?.final_geojson ?? null,
         area_km2: Number.isFinite(area_km2) ? area_km2 : 0,
         months,
         monthly_price,
