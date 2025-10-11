@@ -1,3 +1,4 @@
+// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
@@ -122,7 +123,7 @@ export default function AreaSponsorModal({
         if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
 
         const data: Availability = JSON.parse(raw);
-        if (!data || data.ok !== true) {
+        if (!data || (data as any).ok !== true) {
           const msg =
             (data as AvailabilityErr)?.error ||
             `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
@@ -161,7 +162,7 @@ export default function AreaSponsorModal({
           slot,
           months: 1,
           drawnGeoJSON: null,
-          cleanerId, // <-- IMPORTANT
+          cleanerId, // <-- IMPORTANT (exclude own areas when calculating availability)
         }),
       });
 
@@ -176,7 +177,7 @@ export default function AreaSponsorModal({
       if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
 
       const data: PreviewResult = JSON.parse(raw);
-      if (!data || data.ok !== true) {
+      if (!data || (data as any).ok !== true) {
         const msg =
           (data as PreviewErr)?.error ||
           `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
@@ -228,7 +229,7 @@ export default function AreaSponsorModal({
 
       const data = JSON.parse(raw);
       if (data?.url) {
-        window.location.href = data.url;
+        window.location.href = data.url; // to Stripe
       } else {
         throw new Error("No checkout URL returned.");
       }
@@ -244,7 +245,7 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   /** Derived state */
-  const okAvail = avail && avail.ok;
+  const okAvail = avail && (avail as any).ok;
   const availHasArea =
     (okAvail &&
       (avail as AvailabilityOk).available &&
@@ -318,6 +319,7 @@ export default function AreaSponsorModal({
                   className="btn btn-primary"
                   onClick={goToCheckout}
                   disabled={!canBill}
+                  title={!canBill ? "This slot currently has no billable area." : undefined}
                 >
                   Continue to checkout
                 </button>
