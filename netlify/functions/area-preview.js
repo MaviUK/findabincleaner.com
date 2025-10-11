@@ -6,6 +6,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE // RLS bypass for RPC
 );
 
+// Simple money helpers
+const toPennies = (n) => Math.round(Number(n) * 100);
+const fromPennies = (p) => Math.round(Number(p)) / 100;
+
 export default async (req) => {
   try {
     if (req.method !== 'POST') {
@@ -17,15 +21,12 @@ export default async (req) => {
 
     // Parse JSON body
     let body = {};
-    try {
-      body = await req.json();
-    } catch {}
+    try { body = await req.json(); } catch {}
 
-    const area_id = body.areaId ?? body.area_id;
+    const area_id = body.areaId ?? body.area_id ?? null;
     const slot = Number(body.slot ?? 1);
-    const months = Number(body.months ?? 1);
+    const months = Math.max(1, Number(body.months ?? 1));
     const drawnGeoJSON = body.drawnGeoJSON ?? null;
-    // Optional: cleaner to exclude from the clip (prevents self-blocking)
     const excludeCleaner = body.cleanerId ?? body.cleaner_id ?? null;
 
     if (!area_id || !slot) {
@@ -35,53 +36,57 @@ export default async (req) => {
       });
     }
 
-    // Helper: make an RPC call with given args
-    const callPreview = (argsObj) =>
-      supabase.rpc('get_area_preview', argsObj);
+    // Call get_area_preview; try 4-arg first, then 3-arg (handles schema cache/overload)
+    const callPreview = (args) => supabase.rpc('get_area_preview', args);
 
-    // First, try the 4-arg signature (…,_exclude_cleaner)
-    let data, error;
-
-    ({ data, error } = await callPreview({
+    let { data, error } = await callPreview({
       _area_id: area_id,
       _slot: slot,
-      _drawn_geojson: drawnGeoJSON,    // may be null
+      _drawn_geojson: drawnGeoJSON,
       _exclude_cleaner: excludeCleaner, // may be null
-    }));
+    });
 
-    // If the function isn’t found (schema cache still has the 3-arg version),
-    // fall back to the 3-arg call without _exclude_cleaner.
-    const notFoundMsg =
-      error?.message && /could not find the function .*get_area_preview/i.test(error.message);
+    const errMsg = String(error?.message || '');
+    const looksMissing = /could not find the function .*get_area_preview/i.test(errMsg);
+    const looksAmbiguous = /could not choose the best candidate function/i.test(errMsg);
 
-    if (error && notFoundMsg) {
+    if (error && (looksMissing || looksAmbiguous)) {
       ({ data, error } = await callPreview({
         _area_id: area_id,
         _slot: slot,
         _drawn_geojson: drawnGeoJSON,
       }));
     }
-
-    // Some deployments return a “could not choose best candidate function” error
-    // when both versions exist during cache churn — retry with 3-arg too.
-    const ambiguousMsg =
-      error?.message && /could not choose the best candidate function/i.test(error.message);
-
-    if (error && ambiguousMsg) {
-      ({ data, error } = await callPreview({
-        _area_id: area_id,
-        _slot: slot,
-        _drawn_geojson: drawnGeoJSON,
-      }));
-    }
-
     if (error) throw error;
+
+    // Normalize fields coming back from SQL
+    const final_geojson = data?.final_geojson ?? null;
+    const rawKm2 = data?.area_km2;
+    const area_km2 = Number.isFinite(Number(rawKm2)) ? Number(rawKm2) : null;
+
+    // Compute prices (server-side) so the UI can just display them
+    let monthly_price = null;
+    let total_price = null;
+    if (area_km2 && area_km2 > 0) {
+      const RATE = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 0);   // e.g. 15
+      const MIN  = Number(process.env.MIN_PRICE_PER_MONTH ?? 0);      // e.g. 1
+
+      const perMonth = Math.max(
+        toPennies(MIN),
+        toPennies(area_km2 * RATE)
+      );
+      monthly_price = fromPennies(perMonth);
+      total_price = fromPennies(perMonth * months);
+    }
 
     return new Response(
       JSON.stringify({
         ok: true,
-        ...(data || {}),
-        months,
+        final_geojson,
+        area_km2,
+        monthly_price,
+        total_price,
+        months
       }),
       {
         headers: {
