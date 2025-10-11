@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
+  process.env.SUPABASE_SERVICE_ROLE // RLS bypass for RPC
 );
 
 export default async (req) => {
@@ -15,60 +15,51 @@ export default async (req) => {
       });
     }
 
+    // parse JSON (no query-string inputs here)
     let body = {};
-    try { body = await req.json(); } catch {}
+    try { body = await req.json(); } catch (_) {}
 
-    const area_id = body.areaId || body.area_id;
-    const slot = Number(body.slot ?? body.months ?? 1);
-    const drawnGeoJSON = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
-    const excludeCleaner = body.excludeCleaner ?? body._exclude_cleaner ?? null;
+    // accept either areaId/slot or area_id/slot
+    const area_id = body.area_id || body.areaId;
+    const slot    = body.slot != null ? Number(body.slot) : Number(body?.slot);
+    // optional cleaner (for “exclude me” preview during edits)
+    const cleaner_id = body.cleaner_id || body.cleanerId || null;
 
-    if (!area_id || !slot) {
+    // IMPORTANT: pass GeoJSON as an object (jsonb), not a string
+    let drawn = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
+    if (typeof drawn === 'string') {
+      try { drawn = JSON.parse(drawn); } catch { drawn = null; }
+    }
+
+    if (!area_id || !Number.isFinite(slot)) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
         status: 400,
         headers: { 'content-type': 'application/json' },
       });
     }
 
-    // IMPORTANT: pass ALL 4 named args, even when exclude is null
+    // Call the 4-arg overload explicitly by name
     const { data, error } = await supabase.rpc('get_area_preview', {
-      _area_id: area_id,
-      _slot: slot,
-      _drawn_geojson: drawnGeoJSON,  // note the leading underscore and *_geojson*
-      _exclude_cleaner: excludeCleaner, // may be null
+      _area_id: area_id,          // uuid
+      _slot: slot,                // integer
+      _drawn_geojson: drawn,      // jsonb (null OK)
+      _exclude_cleaner: cleaner_id // uuid (null OK)
     });
 
-    if (error) throw error;
+    if (error) {
+      // bubble up SQL errors verbatim so we can see them in the console
+      throw error;
+    }
 
-    // data should contain final_geojson & area_km2 (from SQL).
-    // If you compute pricing in JS, do it here:
-    const km2 = Number(data?.area_km2 ?? 0);
-    const rate = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 1);
-    const min = Number(process.env.MIN_PRICE_PER_MONTH ?? 1);
-    const months = Number(body.months ?? 1);
-    const monthly_price = km2 > 0 ? Math.max(rate * km2, min) : min;
-    const total_price = monthly_price * months;
-
+    // data is: { final_geojson, area_km2, monthly_price, total_price }
     return new Response(
-      JSON.stringify({
-        ok: true,
-        final_geojson: data?.final_geojson ?? null,
-        area_km2: km2,
-        monthly_price,
-        total_price,
-        months,
-      }),
-      {
-        headers: {
-          'content-type': 'application/json',
-          'access-control-allow-origin': '*',
-        },
-      }
+      JSON.stringify({ ok: true, ...data }),
+      { headers: { 'content-type': 'application/json', 'access-control-allow-origin': '*' } }
     );
   } catch (e) {
-    return new Response(JSON.stringify({ error: e?.message || 'failed' }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
+    return new Response(
+      JSON.stringify({ error: e?.message || 'failed' }),
+      { status: 500, headers: { 'content-type': 'application/json' } }
+    );
   }
-};
+}
