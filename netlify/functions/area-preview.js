@@ -57,20 +57,21 @@ export default async (req) => {
       });
     }
 
-    // Normalize and compute pricing
-    const area_km2 = Number(data?.area_km2 ?? 0);
+    // 🔧 NEW: normalize the RPC result (TABLE return => array of rows)
+    const row = Array.isArray(data) ? (data[0] || {}) : (data || {});
+
+    const area_km2 = Number(row.area_km2 ?? 0);
     const months   = Number(slot) || 1;
 
     const RATE = readNumberEnv('RATE_PER_KM2_PER_MONTH', null);
     const MIN  = readNumberEnv('MIN_PRICE_PER_MONTH', null);
 
     const hasGeom =
-      data?.final_geojson &&
-      typeof data.final_geojson === 'object' &&
-      Array.isArray(data.final_geojson.coordinates) &&
-      data.final_geojson.coordinates.length > 0;
+      row.final_geojson &&
+      typeof row.final_geojson === 'object' &&
+      Array.isArray(row.final_geojson.coordinates) &&
+      row.final_geojson.coordinates.length > 0;
 
-    // <- Force ok based on area or non-empty geometry
     const ok = (Number.isFinite(area_km2) && area_km2 > 0) || hasGeom;
 
     let monthly_price = null;
@@ -84,7 +85,7 @@ export default async (req) => {
     return new Response(
       JSON.stringify({
         ok,
-        final_geojson: data?.final_geojson ?? null,
+        final_geojson: row.final_geojson ?? null,
         area_km2: Number.isFinite(area_km2) ? area_km2 : 0,
         months,
         monthly_price,
