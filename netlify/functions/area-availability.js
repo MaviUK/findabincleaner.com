@@ -9,8 +9,8 @@ const supabase = createClient(
 export default async (req) => {
   try {
     const url = new URL(req.url);
-    const area_id   = url.searchParams.get('area_id');
-    const slot      = parseInt(url.searchParams.get('slot') || '1', 10);
+    const area_id    = url.searchParams.get('area_id');
+    const slot       = parseInt(url.searchParams.get('slot') || '1', 10);
     const cleaner_id = url.searchParams.get('cleaner_id'); // optional
 
     if (!area_id || !slot) {
@@ -25,18 +25,21 @@ export default async (req) => {
       _slot: slot,
       _exclude_cleaner: cleaner_id || null,
     });
-
     if (error) throw error;
 
-    // Normalize RETURNS TABLE to a single row
+    // Supabase RPC (RETURNS TABLE) -> array
     const row = Array.isArray(data) ? (data[0] || {}) : (data || {});
-    const ok = !!row.ok;
 
-    return new Response(JSON.stringify({
-      ok,
-      existing: row.existing ?? null,
-      available: row.available ?? null
-    }), {
+    // Tolerate multiple SQL column name variants
+    const existing =
+      row.existing ?? row.existing_gj ?? row.existing_geojson ?? null;
+    const available =
+      row.available ?? row.available_gj ?? row.available_geojson ?? null;
+
+    // Prefer SQL 'ok' if provided; otherwise infer from available geometry presence
+    const ok = typeof row.ok === 'boolean' ? row.ok : !!available;
+
+    return new Response(JSON.stringify({ ok, existing, available }), {
       headers: {
         'content-type': 'application/json',
         'access-control-allow-origin': '*',
