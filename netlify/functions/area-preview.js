@@ -1,13 +1,10 @@
+// netlify/functions/area-preview.js
 import { createClient } from '@supabase/supabase-js';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
-
-// money helpers
-const toPennies = (n) => Math.round(Number(n) * 100);
-const fromPennies = (p) => Math.round(Number(p)) / 100;
 
 export default async (req) => {
   try {
@@ -21,10 +18,10 @@ export default async (req) => {
     let body = {};
     try { body = await req.json(); } catch {}
 
-    const area_id = body.areaId ?? body.area_id ?? null;
-    const slot = Number(body.slot ?? 1);
-    const months = Math.max(1, Number(body.months ?? 1));
-    const drawnGeoJSON = body.drawnGeoJSON ?? null;   // MultiPolygon from UI
+    const area_id = body.areaId || body.area_id;
+    const slot = Number(body.slot ?? body.months ?? 1);
+    const drawnGeoJSON = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
+    const excludeCleaner = body.excludeCleaner ?? body._exclude_cleaner ?? null;
 
     if (!area_id || !slot) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
@@ -33,46 +30,30 @@ export default async (req) => {
       });
     }
 
-    // IMPORTANT:
-    // 1) Force the 3-arg signature you verified in SQL:
-    //    get_area_preview(_area_id uuid, _slot int, _drawn_geojson jsonb)
-    // 2) Stringify GeoJSON so Postgres reliably casts to jsonb.
+    // IMPORTANT: pass ALL 4 named args, even when exclude is null
     const { data, error } = await supabase.rpc('get_area_preview', {
       _area_id: area_id,
       _slot: slot,
-      _drawn_geojson: drawnGeoJSON ? JSON.stringify(drawnGeoJSON) : null,
+      _drawn_geojson: drawnGeoJSON,  // note the leading underscore and *_geojson*
+      _exclude_cleaner: excludeCleaner, // may be null
     });
 
     if (error) throw error;
 
-    // Echo a bit to help diagnose if needed
-    // (Remove this when happy.)
-    // console.log('RPC row:', data);
-
-    const final_geojson = data?.final_geojson ?? null;
-    const rawKm2 = data?.area_km2;
-    const area_km2 = Number.isFinite(Number(rawKm2)) ? Number(rawKm2) : null;
-
-    // Compute pricing server-side so UI just renders numbers
-    let monthly_price = null;
-    let total_price = null;
-    if (area_km2 && area_km2 > 0) {
-      const RATE = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 0);
-      const MIN  = Number(process.env.MIN_PRICE_PER_MONTH ?? 0);
-
-      const perMonth = Math.max(
-        toPennies(MIN),
-        toPennies(area_km2 * RATE)
-      );
-      monthly_price = fromPennies(perMonth);
-      total_price = fromPennies(perMonth * months);
-    }
+    // data should contain final_geojson & area_km2 (from SQL).
+    // If you compute pricing in JS, do it here:
+    const km2 = Number(data?.area_km2 ?? 0);
+    const rate = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 1);
+    const min = Number(process.env.MIN_PRICE_PER_MONTH ?? 1);
+    const months = Number(body.months ?? 1);
+    const monthly_price = km2 > 0 ? Math.max(rate * km2, min) : min;
+    const total_price = monthly_price * months;
 
     return new Response(
       JSON.stringify({
         ok: true,
-        final_geojson,
-        area_km2,
+        final_geojson: data?.final_geojson ?? null,
+        area_km2: km2,
         monthly_price,
         total_price,
         months,
