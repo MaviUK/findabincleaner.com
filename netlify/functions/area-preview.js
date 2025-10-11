@@ -16,7 +16,7 @@ function readNumberEnv(name, fallback = null) {
 
 // Price helpers
 function toPounds(n) {
-  // keep as number; formatting to "£" happens in the UI
+  // keep as number; formatting happens in the UI
   return Math.round(n * 100) / 100;
 }
 
@@ -36,9 +36,14 @@ export default async (req) => {
       // keep empty
     }
 
-    const areaId = body.areaId || body.area_id; // UI may send either
+    const areaId = body.areaId || body.area_id || null;
     const slot = Number(body.slot ?? body.months ?? 1) || 1;
-    const drawnGeoJSON = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
+
+    // drawnGeoJSON may be object or string; normalize to object (or null)
+    let drawnGeoJSON = body.drawnGeoJSON ?? body.drawn_geojson ?? null;
+    if (typeof drawnGeoJSON === 'string') {
+      try { drawnGeoJSON = JSON.parse(drawnGeoJSON); } catch { drawnGeoJSON = null; }
+    }
     const excludeCleaner = body.cleanerId ?? body.excludeCleaner ?? null;
 
     if (!areaId || !slot) {
@@ -48,7 +53,7 @@ export default async (req) => {
       });
     }
 
-    // Call SQL preview (new 4-arg signature)
+    // Call SQL preview (4-arg)
     const { data, error } = await supabase.rpc('get_area_preview', {
       _area_id: areaId,
       _slot: slot,
@@ -63,37 +68,39 @@ export default async (req) => {
       });
     }
 
-    // data should at least have: final_geojson, area_km2 (number)
-    const area_km2 = Number(data?.area_km2 ?? 0);
-    const months = Number(slot) || 1;
+    // ⚠️ Supabase returns an array for RETURNS TABLE. Normalize to a single row.
+    const row = Array.isArray(data) ? (data[0] || {}) : (data || {});
 
-    // Read pricing inputs
+    // Prefer SQL’s values if present; otherwise compute pricing here
+    const months = Number(row.months ?? slot) || 1;
+    const area_km2 = Number(row.area_km2 ?? 0);
+
+    // Pricing inputs (env). If missing, we’ll pass through SQL prices if present.
     const RATE = readNumberEnv('RATE_PER_KM2_PER_MONTH', null);
-    const MIN = readNumberEnv('MIN_PRICE_PER_MONTH', null);
-
-    // Decide if we can price
-    const canPrice = Number.isFinite(area_km2) && area_km2 > 0 && Number.isFinite(RATE) && Number.isFinite(MIN);
+    const MIN  = readNumberEnv('MIN_PRICE_PER_MONTH', null);
 
     let monthly_price = null;
     let total_price = null;
 
-    if (canPrice) {
+    if (Number.isFinite(row.monthly_price)) {
+      monthly_price = Number(row.monthly_price);
+      total_price   = Number(row.total_price ?? months * monthly_price);
+    } else if (Number.isFinite(area_km2) && area_km2 > 0 && Number.isFinite(RATE) && Number.isFinite(MIN)) {
       const rawMonthly = Math.max(MIN, area_km2 * RATE);
       monthly_price = toPounds(rawMonthly);
-      total_price = toPounds(rawMonthly * months);
+      total_price   = toPounds(rawMonthly * months);
     }
 
-    // UI logic: treat >0 km² as “some part available”
-    const ok = area_km2 > 0;
+    const ok = !!row.ok && area_km2 > 0;
 
     return new Response(
       JSON.stringify({
         ok,
-        final_geojson: data?.final_geojson ?? null,
+        final_geojson: row.final_geojson ?? null,
         area_km2: Number.isFinite(area_km2) ? area_km2 : 0,
         months,
-        monthly_price, // number or null (if pricing envs not set correctly)
-        total_price,   // number or null
+        monthly_price,
+        total_price,
       }),
       {
         headers: {
