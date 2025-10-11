@@ -1,6 +1,6 @@
 // src/pages/Dashboard.tsx
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
@@ -16,11 +16,50 @@ type Cleaner = {
   subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
 };
 
+function useHashQuery() {
+  // HashRouter puts query in the hash (e.g. #/dashboard?checkout=success&checkout_session=cs_...)
+  const { hash } = useLocation();
+  return useMemo(() => {
+    const qIndex = hash.indexOf("?");
+    const search = qIndex >= 0 ? hash.slice(qIndex) : "";
+    return new URLSearchParams(search);
+  }, [hash]);
+}
+
 export default function Dashboard() {
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  // banner + refresh signal after Stripe redirect
+  const qs = useHashQuery();
+  const navigate = useNavigate();
+  const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
+  const [sponsorshipVersion, setSponsorshipVersion] = useState(0); // bump to make children refetch
+
+  // Handle ?checkout=success/cancel (and optional checkout_session)
+  useEffect(() => {
+    const status = qs.get("checkout");
+    const session = qs.get("checkout_session");
+    if (status === "success") {
+      setBanner({
+        kind: "success",
+        msg: "Payment completed. Your sponsorship will appear shortly.",
+      });
+      setSponsorshipVersion((v) => v + 1);
+      // Clean the URL hash so banner doesn’t reappear on refresh
+      const clean = window.location.hash.replace(/\?[^#]*/g, "");
+      // Slight delay to avoid interfering with initial render
+      setTimeout(() => navigate(clean, { replace: true }), 0);
+    } else if (status === "cancel") {
+      setBanner({ kind: "error", msg: "Checkout cancelled." });
+      const clean = window.location.hash.replace(/\?[^#]*/g, "");
+      setTimeout(() => navigate(clean, { replace: true }), 0);
+    }
+    // `session` is available if you ever want to fetch Stripe session details
+    void session;
+  }, [qs, navigate]);
 
   useEffect(() => {
     (async () => {
@@ -89,6 +128,15 @@ export default function Dashboard() {
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
       <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
+      {banner && (
+        <section className={`rounded-lg border ${banner.kind === "success" ? "border-green-200 bg-green-50 text-green-800" : "border-red-200 bg-red-50 text-red-800"}`}>
+          <div className="px-4 py-3 flex items-start justify-between gap-4">
+            <div className="text-sm">{banner.msg}</div>
+            <button className="text-xs opacity-70 hover:opacity-100" onClick={() => setBanner(null)}>Dismiss</button>
+          </div>
+        </section>
+      )}
+
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
@@ -146,14 +194,16 @@ export default function Dashboard() {
                 <h2 className="text-lg font-semibold">Your Service Areas (manage)</h2>
               </div>
               <div className="rounded-xl overflow-hidden border">
-                <ServiceAreaEditor cleanerId={cleaner.id} />
+                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint Gold/Silver/Bronze */}
+                <ServiceAreaEditor cleanerId={cleaner.id} sponsorshipVersion={sponsorshipVersion} />
               </div>
 
               <div className="flex items-center justify-between pt-2">
                 <h3 className="text-base font-semibold">Sponsor your areas</h3>
                 <a href="#/sponsorships" className="text-sm underline">Manage →</a>
               </div>
-              <AreasSponsorList cleanerId={cleaner.id} />
+              {/* Also pass version so buttons re-check availability */}
+              <AreasSponsorList cleanerId={cleaner.id} sponsorshipVersion={sponsorshipVersion} />
             </div>
           </section>
         </>
