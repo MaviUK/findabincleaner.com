@@ -7,12 +7,6 @@ import AreaSponsorModal from "./AreaSponsorModal";
 /**
  * ServiceAreaEditor
  * - Draw, edit, name, save, list, delete coverage areas (MultiPolygon GeoJSON in service_areas.gj)
- * - RPCs used:
- *    list_service_areas(p_cleaner_id)
- *    insert_service_area(p_cleaner_id, p_gj, p_name)
- *    update_service_area(p_area_id, p_gj, p_name)   // owner inferred via auth.uid() in SQL
- *    delete_service_area(p_area_id)                 // owner inferred via auth.uid() in SQL
- * - Tailwind helpers expected: card, card-pad, btn, input, etc.
  */
 
 // ---- Types ----
@@ -24,6 +18,21 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
+// Sponsorship state returned by /.netlify/functions/area-sponsorship
+type SlotState = {
+  slot: 1 | 2 | 3;
+  taken: boolean;
+  status: string | null;
+  owner_business_id: string | null;
+};
+type SponsorshipState = {
+  area_id: string;
+  slots: SlotState[];
+  paint: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
+};
+
+type SponsorshipMap = Record<string, SponsorshipState | undefined>;
+
 // Typings fix for @react-google-maps/api
 type Libraries = ("drawing" | "geometry" | "places")[];
 
@@ -31,11 +40,11 @@ const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
 const DEFAULT_ZOOM = 10;
 
-// Polygon style
+// Base polygon style; fill/stroke are applied per-area from sponsorship
 const polyStyle: google.maps.PolygonOptions = {
   strokeWeight: 2,
   strokeOpacity: 0.9,
-  fillOpacity: 0.2,
+  fillOpacity: 0.35,
   clickable: true,
   editable: true,
   draggable: false,
@@ -54,10 +63,7 @@ function pathToGeoJSONRing(
     const pt: google.maps.LatLng = (path as any).getAt ? (path as any).getAt(i) : (path as google.maps.LatLng[])[i];
     ring.push([round(pt.lng()), round(pt.lat())]);
   }
-  if (
-    ring.length &&
-    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
-  ) {
+  if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
     ring.push([ring[0][0], ring[0][1]]);
   }
   return ring;
@@ -115,7 +121,13 @@ function fmtArea(m2: number) {
 }
 
 // ---------------- Component ----------------
-export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) {
+export default function ServiceAreaEditor({
+  cleanerId,
+  sponsorshipVersion = 0,
+}: {
+  cleanerId: string;
+  sponsorshipVersion?: number;
+}) {
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
@@ -125,6 +137,7 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   const mapRef = useRef<google.maps.Map | null>(null);
   const drawingMgrRef = useRef<google.maps.drawing.DrawingManager | null>(null);
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaRow[]>([]);
+  const [sponsorship, setSponsorship] = useState<SponsorshipMap>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -165,6 +178,32 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
   useEffect(() => {
     fetchAreas();
   }, [fetchAreas]);
+
+  // Fetch sponsorship state for the loaded areas (and whenever version bumps)
+  const fetchSponsorship = useCallback(async (areaIds: string[]) => {
+    if (!areaIds.length) return;
+    try {
+      const res = await fetch("/.netlify/functions/area-sponsorship", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ areaIds }),
+      });
+      if (!res.ok) throw new Error(`sponsorship ${res.status}`);
+      const json: { areas: SponsorshipState[] } = await res.json();
+      const map: SponsorshipMap = {};
+      for (const s of json.areas) map[s.area_id] = s;
+      setSponsorship(map);
+    } catch (e) {
+      // non-fatal: just skip paint/disable
+      console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
+      setSponsorship({});
+    }
+  }, []);
+
+  useEffect(() => {
+    // whenever areas load or version changes (e.g., after checkout)
+    fetchSponsorship(serviceAreas.map((a) => a.id));
+  }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
   const onMapLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map;
@@ -313,6 +352,15 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
     [isLoaded, draftPolys]
   );
 
+  // Helpers for slot render
+  function slotInfo(areaId: string, slot: 1 | 2 | 3): SlotState | undefined {
+    const s = sponsorship[areaId];
+    return s?.slots.find((x) => x.slot === slot);
+  }
+  function areaPaint(areaId: string) {
+    return sponsorship[areaId]?.paint;
+  }
+
   if (loadError)
     return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
 
@@ -381,60 +429,85 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
 
             {/* List */}
             <ul className="space-y-2">
-              {serviceAreas.map((a) => (
-                <li key={a.id} className="border rounded-lg p-3">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="font-medium">{a.name}</div>
-                      <div className="text-xs text-gray-500">
-                        {new Date(a.created_at).toLocaleString()}
+              {serviceAreas.map((a) => {
+                const s1 = slotInfo(a.id, 1);
+                const s2 = slotInfo(a.id, 2);
+                const s3 = slotInfo(a.id, 3);
+
+                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === cleanerId;
+                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === cleanerId;
+                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === cleanerId;
+
+                const dis1 = !!s1?.taken && !mine1;
+                const dis2 = !!s2?.taken && !mine2;
+                const dis3 = !!s3?.taken && !mine3;
+
+                return (
+                  <li key={a.id} className="border rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-medium">{a.name}</div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(a.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="btn" onClick={() => editArea(a)} disabled={loading}>
+                          Edit
+                        </button>
+                        <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
+                          Delete
+                        </button>
                       </div>
                     </div>
-                    <div className="flex gap-2">
-                      <button className="btn" onClick={() => editArea(a)} disabled={loading}>
-                        Edit
+
+                    {/* Sponsor buttons */}
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => {
+                          if (dis1) return;
+                          setSponsorAreaId(a.id);
+                          setSponsorSlot(1);
+                          setSponsorOpen(true);
+                        }}
+                        disabled={dis1}
+                        title={s1?.taken ? `Status: ${s1?.status || "taken"}` : "Available"}
+                      >
+                        {s1?.taken ? (mine1 ? "Manage #1" : "Taken #1") : "Sponsor #1"}
                       </button>
-                      <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
-                        Delete
+
+                      <button
+                        className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => {
+                          if (dis2) return;
+                          setSponsorAreaId(a.id);
+                          setSponsorSlot(2);
+                          setSponsorOpen(true);
+                        }}
+                        disabled={dis2}
+                        title={s2?.taken ? `Status: ${s2?.status || "taken"}` : "Available"}
+                      >
+                        {s2?.taken ? (mine2 ? "Manage #2" : "Taken #2") : "Sponsor #2"}
+                      </button>
+
+                      <button
+                        className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => {
+                          if (dis3) return;
+                          setSponsorAreaId(a.id);
+                          setSponsorSlot(3);
+                          setSponsorOpen(true);
+                        }}
+                        disabled={dis3}
+                        title={s3?.taken ? `Status: ${s3?.status || "taken"}` : "Available"}
+                      >
+                        {s3?.taken ? (mine3 ? "Manage #3" : "Taken #3") : "Sponsor #3"}
                       </button>
                     </div>
-                  </div>
-
-                  {/* Sponsor buttons */}
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setSponsorAreaId(a.id);
-                        setSponsorSlot(1);
-                        setSponsorOpen(true);
-                      }}
-                    >
-                      Sponsor #1
-                    </button>
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setSponsorAreaId(a.id);
-                        setSponsorSlot(2);
-                        setSponsorOpen(true);
-                      }}
-                    >
-                      Sponsor #2
-                    </button>
-                    <button
-                      className="btn"
-                      onClick={() => {
-                        setSponsorAreaId(a.id);
-                        setSponsorSlot(3);
-                        setSponsorOpen(true);
-                      }}
-                    >
-                      Sponsor #3
-                    </button>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
               {!serviceAreas.length && !loading && (
                 <li className="text-sm text-gray-500">
                   No service areas yet. Click “New Area” to draw one.
@@ -444,6 +517,21 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
           </div>
 
           <div className="card card-pad text-sm text-gray-600">
+            <div className="font-semibold mb-1">Legend</div>
+            <div className="flex items-center gap-4 mb-3">
+              <span className="inline-flex items-center gap-1">
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }} />
+                Gold (Slot #1)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }} />
+                Silver (Slot #2)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }} />
+                Bronze (Slot #3)
+              </span>
+            </div>
             <div className="font-semibold mb-1">Tips</div>
             <ul className="list-disc pl-5 space-y-1">
               <li>Click “New Area”, then click around the map to draw a polygon. Double-click to finish.</li>
@@ -476,21 +564,24 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
                 }}
               />
 
-              {/* Render existing areas as non-editable preview when not in draft mode */}
+              {/* Render existing areas as non-editable preview when not in draft mode, with paint */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
                   if (!gj || gj.type !== "MultiPolygon") return null;
+                  const paint = areaPaint(a.id);
+                  const style: google.maps.PolygonOptions = {
+                    ...polyStyle,
+                    editable: false,
+                    draggable: false,
+                    // Use sponsorship paint if available, otherwise default grey
+                    fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
+                    strokeColor: paint?.stroke ?? "#555",
+                  };
                   return (gj.coordinates as number[][][][]).map((poly, i) => {
                     const rings = poly;
                     const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-                    return (
-                      <Polygon
-                        key={`${a.id}-${i}`}
-                        paths={paths}
-                        options={{ ...polyStyle, editable: false, draggable: false }}
-                      />
-                    );
+                    return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
                   });
                 })}
             </GoogleMap>
@@ -500,12 +591,12 @@ export default function ServiceAreaEditor({ cleanerId }: { cleanerId: string }) 
         </div>
       </div>
 
-      {/* Sponsor modal (Leaflet-based, separate from Google Map editor) */}
+      {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
           onClose={() => setSponsorOpen(false)}
-          cleanerId={serviceAreas.find((a) => a.id === sponsorAreaId)?.cleaner_id || ""}
+          cleanerId={cleanerId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
         />
