@@ -32,7 +32,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // banner + refresh signal after Stripe redirect
+  // Banner + refresh signal after Stripe redirect
   const qs = useHashQuery();
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
@@ -41,30 +41,44 @@ export default function Dashboard() {
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
     const status = qs.get("checkout");
-    const session = qs.get("checkout_session");
+    const checkoutSession = qs.get("checkout_session");
+
+    async function postVerify() {
+      if (!checkoutSession) return;
+      try {
+        await fetch("/.netlify/functions/stripe-postverify", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ checkout_session: checkoutSession }),
+        });
+      } catch {
+        // Non-fatal; webhook may still complete
+      }
+    }
+
     if (status === "success") {
-      setBanner({
-        kind: "success",
-        msg: "Payment completed. Your sponsorship will appear shortly.",
+      // Attempt to write the purchase immediately so UI updates are instant
+      postVerify().finally(() => {
+        setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
+        setSponsorshipVersion((v) => v + 1);
+        // Clean the URL so the banner doesn't re-trigger on refresh
+        const clean = window.location.hash.replace(/\?[^#]*/g, "");
+        setTimeout(() => navigate(clean, { replace: true }), 0);
       });
-      setSponsorshipVersion((v) => v + 1);
-      // Clean the URL hash so banner doesn’t reappear on refresh
-      const clean = window.location.hash.replace(/\?[^#]*/g, "");
-      // Slight delay to avoid interfering with initial render
-      setTimeout(() => navigate(clean, { replace: true }), 0);
     } else if (status === "cancel") {
       setBanner({ kind: "error", msg: "Checkout cancelled." });
       const clean = window.location.hash.replace(/\?[^#]*/g, "");
       setTimeout(() => navigate(clean, { replace: true }), 0);
     }
-    // `session` is available if you ever want to fetch Stripe session details
-    void session;
   }, [qs, navigate]);
 
   useEffect(() => {
     (async () => {
       try {
-        const { data: { user }, error: userErr } = await supabase.auth.getUser();
+        const {
+          data: { user },
+          error: userErr,
+        } = await supabase.auth.getUser();
         if (userErr) throw userErr;
         if (!user) {
           window.location.hash = "#/login";
@@ -103,13 +117,19 @@ export default function Dashboard() {
   }, []);
 
   if (loading) {
-    return <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">Loading…</main>;
+    return (
+      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
+        Loading…
+      </main>
+    );
   }
 
   if (err) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card"><div className="card-pad text-red-600">{err}</div></div>
+        <div className="card">
+          <div className="card-pad text-red-600">{err}</div>
+        </div>
       </main>
     );
   }
@@ -117,7 +137,9 @@ export default function Dashboard() {
   if (!userId || !cleaner) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        <div className="card"><div className="card-pad">No profile found.</div></div>
+        <div className="card">
+          <div className="card-pad">No profile found.</div>
+        </div>
       </main>
     );
   }
@@ -129,10 +151,21 @@ export default function Dashboard() {
       <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
 
       {banner && (
-        <section className={`rounded-lg border ${banner.kind === "success" ? "border-green-200 bg-green-50 text-green-800" : "border-red-200 bg-red-50 text-red-800"}`}>
+        <section
+          className={`rounded-lg border ${
+            banner.kind === "success"
+              ? "border-green-200 bg-green-50 text-green-800"
+              : "border-red-200 bg-red-50 text-red-800"
+          }`}
+        >
           <div className="px-4 py-3 flex items-start justify-between gap-4">
             <div className="text-sm">{banner.msg}</div>
-            <button className="text-xs opacity-70 hover:opacity-100" onClick={() => setBanner(null)}>Dismiss</button>
+            <button
+              className="text-xs opacity-70 hover:opacity-100"
+              onClick={() => setBanner(null)}
+            >
+              Dismiss
+            </button>
           </div>
         </section>
       )}
@@ -140,7 +173,9 @@ export default function Dashboard() {
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
-            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
+            <p className="muted">
+              Welcome! Add your logo, business name, and address to complete your profile.
+            </p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
@@ -181,7 +216,9 @@ export default function Dashboard() {
             <div className="card-pad space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Analytics</h2>
-                <Link to="/analytics" className="text-sm underline">View full stats →</Link>
+                <Link to="/analytics" className="text-sm underline">
+                  View full stats →
+                </Link>
               </div>
               <AnalyticsOverview />
             </div>
@@ -193,17 +230,27 @@ export default function Dashboard() {
               <div className="flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Your Service Areas (manage)</h2>
               </div>
+
               <div className="rounded-xl overflow-hidden border">
                 {/* Pass sponsorshipVersion so the editor/map can refetch & repaint Gold/Silver/Bronze */}
-                <ServiceAreaEditor cleanerId={cleaner.id} sponsorshipVersion={sponsorshipVersion} />
+                <ServiceAreaEditor
+                  cleanerId={cleaner.id}
+                  sponsorshipVersion={sponsorshipVersion}
+                />
               </div>
 
               <div className="flex items-center justify-between pt-2">
                 <h3 className="text-base font-semibold">Sponsor your areas</h3>
-                <a href="#/sponsorships" className="text-sm underline">Manage →</a>
+                <a href="#/sponsorships" className="text-sm underline">
+                  Manage →
+                </a>
               </div>
+
               {/* Also pass version so buttons re-check availability */}
-              <AreasSponsorList cleanerId={cleaner.id} sponsorshipVersion={sponsorshipVersion} />
+              <AreasSponsorList
+                cleanerId={cleaner.id}
+                sponsorshipVersion={sponsorshipVersion}
+              />
             </div>
           </section>
         </>
