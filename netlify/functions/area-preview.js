@@ -15,21 +15,18 @@ export default async (req) => {
       });
     }
 
-    // Read JSON body
-    let body = null;
+    // Parse JSON body
+    let body = {};
     try {
       body = await req.json();
-    } catch {
-      body = {};
-    }
+    } catch {}
 
-    const area_id = body.areaId || body.area_id;
+    const area_id = body.areaId ?? body.area_id;
     const slot = Number(body.slot ?? 1);
     const months = Number(body.months ?? 1);
     const drawnGeoJSON = body.drawnGeoJSON ?? null;
-
-    // NEW: optional cleaner to exclude (prevents “self-blocking”)
-    const excludeCleaner = body.cleanerId || body.cleaner_id || null;
+    // Optional: cleaner to exclude from the clip (prevents self-blocking)
+    const excludeCleaner = body.cleanerId ?? body.cleaner_id ?? null;
 
     if (!area_id || !slot) {
       return new Response(JSON.stringify({ error: 'area_id and slot are required' }), {
@@ -38,14 +35,45 @@ export default async (req) => {
       });
     }
 
-    // Always call the 3-arg version (and include the cleaner exclusion)
-    // Expecting: { final_geojson, area_km2, monthly_price, total_price }
-    const { data, error } = await supabase.rpc('get_area_preview', {
+    // Helper: make an RPC call with given args
+    const callPreview = (argsObj) =>
+      supabase.rpc('get_area_preview', argsObj);
+
+    // First, try the 4-arg signature (…,_exclude_cleaner)
+    let data, error;
+
+    ({ data, error } = await callPreview({
       _area_id: area_id,
       _slot: slot,
-      _drawn_geojson: drawnGeoJSON,   // may be null
-      _exclude_cleaner: excludeCleaner // may be null; disambiguates overloaded fn
-    });
+      _drawn_geojson: drawnGeoJSON,    // may be null
+      _exclude_cleaner: excludeCleaner, // may be null
+    }));
+
+    // If the function isn’t found (schema cache still has the 3-arg version),
+    // fall back to the 3-arg call without _exclude_cleaner.
+    const notFoundMsg =
+      error?.message && /could not find the function .*get_area_preview/i.test(error.message);
+
+    if (error && notFoundMsg) {
+      ({ data, error } = await callPreview({
+        _area_id: area_id,
+        _slot: slot,
+        _drawn_geojson: drawnGeoJSON,
+      }));
+    }
+
+    // Some deployments return a “could not choose best candidate function” error
+    // when both versions exist during cache churn — retry with 3-arg too.
+    const ambiguousMsg =
+      error?.message && /could not choose the best candidate function/i.test(error.message);
+
+    if (error && ambiguousMsg) {
+      ({ data, error } = await callPreview({
+        _area_id: area_id,
+        _slot: slot,
+        _drawn_geojson: drawnGeoJSON,
+      }));
+    }
 
     if (error) throw error;
 
@@ -55,7 +83,12 @@ export default async (req) => {
         ...(data || {}),
         months,
       }),
-      { headers: { 'content-type': 'application/json' } }
+      {
+        headers: {
+          'content-type': 'application/json',
+          'access-control-allow-origin': '*',
+        },
+      }
     );
   } catch (e) {
     return new Response(JSON.stringify({ error: e?.message || 'failed' }), {
