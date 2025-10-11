@@ -9,8 +9,8 @@ const supabase = createClient(
 export default async (req) => {
   try {
     const url = new URL(req.url);
-    const area_id = url.searchParams.get('area_id');
-    const slot = parseInt(url.searchParams.get('slot') || '1', 10);
+    const area_id   = url.searchParams.get('area_id');
+    const slot      = parseInt(url.searchParams.get('slot') || '1', 10);
     const cleaner_id = url.searchParams.get('cleaner_id'); // optional
 
     if (!area_id || !slot) {
@@ -20,7 +20,6 @@ export default async (req) => {
       });
     }
 
-    // Disambiguate overloaded SQL by always sending the exclude arg.
     const { data, error } = await supabase.rpc('get_area_availability', {
       _area_id: area_id,
       _slot: slot,
@@ -29,7 +28,15 @@ export default async (req) => {
 
     if (error) throw error;
 
-    return new Response(JSON.stringify({ ok: true, ...data }), {
+    // Normalize RETURNS TABLE to a single row
+    const row = Array.isArray(data) ? (data[0] || {}) : (data || {});
+    const ok = !!row.ok;
+
+    return new Response(JSON.stringify({
+      ok,
+      existing: row.existing ?? null,
+      available: row.available ?? null
+    }), {
       headers: {
         'content-type': 'application/json',
         'access-control-allow-origin': '*',
