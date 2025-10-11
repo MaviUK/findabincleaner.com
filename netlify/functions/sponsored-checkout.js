@@ -6,100 +6,130 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
+  process.env.SUPABASE_SERVICE_ROLE // server-side key
 );
 
+// ---------- helpers ----------
 function toPence(gbpNumber) {
-  return Math.round(Number(gbpNumber) * 100);
+  const n = Number(gbpNumber);
+  return Math.round(Number.isFinite(n) ? n * 100 : 0);
 }
 
+function readNumberEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) return fallback;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+// ---------- handler ----------
 export default async (req) => {
   if (req.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405, headers: { 'content-type': 'text/plain' } });
+    return json({ error: 'Method not allowed' }, 405);
   }
 
   try {
-    const { cleanerId, areaId, slot, months = 1, drawnGeoJSON } = await req.json();
+    const {
+      cleanerId,
+      areaId,
+      slot,
+      months = 1,
+      drawnGeoJSON, // optional; if omitted we use the saved geometry
+    } = await req.json();
 
     if (!cleanerId || !areaId || !slot) {
-      return new Response(JSON.stringify({ error: 'cleanerId, areaId, slot required' }), {
-        status: 400,
-        headers: { 'content-type': 'application/json' },
-      });
+      return json({ error: 'cleanerId, areaId, slot required' }, 400);
     }
 
-    // 1) Recompute preview on the server (4-arg signature)
+    // 1) Recompute the preview on the server (always send all 4 args)
     const { data, error } = await supabase.rpc('get_area_preview', {
       _area_id: areaId,
       _slot: Number(slot),
       _drawn_geojson: drawnGeoJSON ?? null,
-      _exclude_cleaner: null, // <-- IMPORTANT: match current SQL signature
+      _exclude_cleaner: null, // explicit to disambiguate function overloads
     });
+
     if (error) {
       console.error('[checkout] get_area_preview error:', error);
-      return new Response(JSON.stringify({ error: 'Failed to compute area/price' }), {
-        status: 500,
-        headers: { 'content-type': 'application/json' },
-      });
+      return json({ error: 'Failed to compute area/price' }, 500);
     }
 
-    const area_km2 = Number(data?.area_km2 ?? 0);
+    // get_area_preview returns a single row object
+    const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
-    // 2) Pricing from env (with sane fallbacks)
-    const RATE = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 15);
-    const MIN  = Number(process.env.MIN_PRICE_PER_MONTH ?? 1);
+    // 2) Pricing inputs from env (plain numbers only)
+    const RATE = readNumberEnv('RATE_PER_KM2_PER_MONTH', 15); // £/km²/month
+    const MIN  = readNumberEnv('MIN_PRICE_PER_MONTH', 1);     // £/month minimum
 
-    const canPrice = Number.isFinite(area_km2) && area_km2 > 0 && Number.isFinite(RATE) && Number.isFinite(MIN);
+    // Decide if we can price. If you want to allow min price even for 0 area,
+    // keep the area_km2 check out of canPrice (as below).
+    const canPrice = Number.isFinite(RATE) && Number.isFinite(MIN) && Number.isFinite(area_km2);
+
     if (!canPrice) {
-      return new Response(JSON.stringify({ error: 'Pricing unavailable (check env vars & area size)' }), {
-        status: 400,
-        headers: { 'content-type': 'application/json' },
-      });
+      // Helpful diagnostics while you’re configuring env vars / data
+      return json(
+        {
+          error: 'Pricing unavailable (check env vars & area size)',
+          debug: { area_km2, RATE, MIN },
+        },
+        400
+      );
     }
 
-    const monthly_price = Math.max(MIN, area_km2 * RATE);
-    const total_price   = monthly_price * Math.max(1, Number(months));
+    // Price calculation (always charge at least MIN)
+    const monthsInt = Math.max(1, Number(months));
+    const monthly_price = Math.max(MIN, Math.max(0, area_km2) * RATE);
+    const total_price   = monthly_price * monthsInt;
 
-    // 3) Build URLs from env
-    const site = (process.env.PUBLIC_SITE_URL || '').replace(/\/+$/, '') || 'http://localhost:5173';
+    // Convert to pence for Stripe
+    const unit_amount = toPence(monthly_price);
 
-    // 4) Create checkout
+    // 3) Build site URLs
+    const site =
+      (process.env.PUBLIC_SITE_URL && String(process.env.PUBLIC_SITE_URL).replace(/\/+$/, '')) ||
+      'http://localhost:5173';
+
+    // 4) Create Stripe Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
       line_items: [
         {
           price_data: {
             currency: 'gbp',
-            unit_amount: toPence(monthly_price), // pence
+            unit_amount, // pence
             product_data: {
               name: `Area sponsorship #${slot}`,
-              description: `Area: ${area_km2.toFixed(4)} km²  •  £${monthly_price.toFixed(2)}/month`,
+              description: `Area: ${area_km2.toFixed(4)} km² • £${monthly_price.toFixed(
+                2
+              )}/month`,
             },
           },
-          quantity: Math.max(1, Number(months)),
+          quantity: monthsInt, // Stripe multiplies unit_amount by this
         },
       ],
       metadata: {
         cleanerId,
         areaId,
         slot: String(slot),
-        months: String(months),
+        months: String(monthsInt),
         area_km2: area_km2.toFixed(6),
         monthly_price: monthly_price.toFixed(2),
         total_price: total_price.toFixed(2),
       },
       success_url: `${site}/#/dashboard?checkout=success`,
-      cancel_url:  `${site}/#/dashboard?checkout=cancel`,
+      cancel_url: `${site}/#/dashboard?checkout=cancel`,
     });
 
-    return new Response(JSON.stringify({ url: session.url }), {
-      headers: { 'content-type': 'application/json' },
-    });
+    return json({ url: session.url });
   } catch (e) {
     console.error('[checkout] error:', e);
-    return new Response(JSON.stringify({ error: e.message || 'checkout failed' }), {
-      status: 500,
-      headers: { 'content-type': 'application/json' },
-    });
+    return json({ error: e?.message || 'checkout failed' }, 500);
   }
 };
