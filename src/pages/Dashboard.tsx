@@ -4,7 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
-import AreasSponsorList from "../components/AreasSponsorList"; // shows “Sponsor #1/#2/#3” for each area
+import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
 
 type Cleaner = {
@@ -37,6 +37,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0); // bump to make children refetch
+  const [openingPortal, setOpeningPortal] = useState(false);
 
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
@@ -115,6 +116,28 @@ export default function Dashboard() {
       }
     })();
   }, []);
+
+  async function openBillingPortal() {
+    if (!cleaner) return;
+    try {
+      setOpeningPortal(true);
+      const res = await fetch("/.netlify/functions/billing-portal", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cleanerId: cleaner.id }),
+      });
+      const data = await res.json();
+      if (data?.url) {
+        window.location.href = data.url;
+      } else {
+        setBanner({ kind: "error", msg: data?.error || "Could not open billing portal." });
+      }
+    } catch (e: any) {
+      setBanner({ kind: "error", msg: e?.message || "Could not open billing portal." });
+    } finally {
+      setOpeningPortal(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -205,9 +228,14 @@ export default function Dashboard() {
                 <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
-              <Link to="/settings" className="btn btn-primary justify-self-end">
-                Edit profile
-              </Link>
+              <div className="flex gap-2">
+                <Link to="/settings" className="btn btn-primary">
+                  Edit profile
+                </Link>
+                <button className="btn" onClick={openBillingPortal} disabled={openingPortal}>
+                  {openingPortal ? "Opening…" : "Manage billing"}
+                </button>
+              </div>
             </div>
           </section>
 
