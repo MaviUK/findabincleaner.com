@@ -6,7 +6,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE // server key
+  process.env.SUPABASE_SERVICE_ROLE
 );
 
 // ---------- helpers ----------
@@ -33,7 +33,7 @@ function siteBase() {
   return (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 }
 
-// Best-effort block: prevent duplicates for same business/area/slot
+// Best-effort duplicate guard for same business/area/slot
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data, error } = await supabase
@@ -73,9 +73,9 @@ export default async (req) => {
       cleanerId,     // business_id (uuid)
       areaId,        // area_id (uuid)
       slot,          // 1|2|3
-      months = 1,    // integer (kept in metadata; subscription is monthly)
-      drawnGeoJSON,  // optional: override geometry used for pricing
-      buyerEmail,    // optional: prefill email
+      months = 1,    // kept for metadata only (subscriptions renew monthly)
+      drawnGeoJSON,  // optional; if omitted we use saved geometry
+      buyerEmail,    // optional prefill email
     } = await req.json();
 
     if (!cleanerId || !areaId || !slot) {
@@ -85,10 +85,13 @@ export default async (req) => {
     // 0) Prevent duplicates
     const already = await hasExistingSponsorship(cleanerId, areaId, slot);
     if (already) {
-      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
+      return json(
+        { error: "You already have an active/prepaid sponsorship for this slot." },
+        409
+      );
     }
 
-    // 1) Server recompute of the quote
+    // 1) Compute price on server
     const { data, error } = await supabase.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: Number(slot),
@@ -103,12 +106,15 @@ export default async (req) => {
 
     const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
-    // 2) Pricing
-    const RATE = readNumberEnv("RATE_PER_KM2_PER_MONTH", 15); // £/km²/month
-    const MIN  = readNumberEnv("MIN_PRICE_PER_MONTH", 1);     // £/month minimum
+    // 2) Pricing inputs
+    const RATE = readNumberEnv("RATE_PER_KM2_PER_MONTH", 15);
+    const MIN  = readNumberEnv("MIN_PRICE_PER_MONTH", 1);
 
-    if (![RATE, MIN, area_km2].every(Number.isFinite)) {
-      return json({ error: "Pricing unavailable (check env vars & area size)", debug: { area_km2, RATE, MIN } }, 400);
+    if (!Number.isFinite(RATE) || !Number.isFinite(MIN) || !Number.isFinite(area_km2)) {
+      return json(
+        { error: "Pricing unavailable (check env vars & area size)", debug: { area_km2, RATE, MIN } },
+        400
+      );
     }
 
     const monthly_price = Math.max(MIN, Math.max(0, area_km2) * RATE);
@@ -117,28 +123,28 @@ export default async (req) => {
     // 3) URLs
     const site = siteBase();
 
-    // 4) Create Stripe Checkout session (SUBSCRIPTION)
-    // IMPORTANT: include `recurring: { interval: "month" }` on price_data
+    // 4) Create Checkout session (SUBSCRIPTION MODE)
+    //    - remove customer_creation (not allowed in subscription mode)
+    //    - add recurring price_data
+    //    - quantity must be 1; renews monthly automatically
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
 
-      // ensure a Customer is created/attached every time
-      customer_creation: "always",
+      // If you provide an email, Stripe will create a Customer automatically.
       customer_email: buyerEmail || undefined,
 
       line_items: [
         {
           price_data: {
             currency: "gbp",
-            unit_amount: unit_amount,
-            // make it a recurring monthly price:
-            recurring: { interval: "month" },
+            unit_amount,
+            recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot}`,
               description: `Area: ${area_km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
             },
           },
-          quantity: 1, // monthly subscription; we keep your 'months' in metadata
+          quantity: 1,
         },
       ],
 
@@ -146,7 +152,7 @@ export default async (req) => {
         cleaner_id: cleanerId,
         area_id: areaId,
         slot: String(slot),
-        months: String(Math.max(1, Number(months))),
+        months_requested: String(Math.max(1, Number(months))), // informational only
         area_km2: area_km2.toFixed(6),
         monthly_price_pennies: String(unit_amount),
       },
