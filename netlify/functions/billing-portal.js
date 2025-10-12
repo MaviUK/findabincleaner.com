@@ -4,10 +4,6 @@ import { createClient } from '@supabase/supabase-js';
 
 export const config = { path: '/.netlify/functions/billing-portal' };
 
-if (!process.env.STRIPE_SECRET_KEY) throw new Error('Missing STRIPE_SECRET_KEY');
-if (!process.env.SUPABASE_URL) throw new Error('Missing SUPABASE_URL');
-if (!process.env.SUPABASE_SERVICE_ROLE) throw new Error('Missing SUPABASE_SERVICE_ROLE');
-
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: '2024-06-20' });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
@@ -28,7 +24,7 @@ export default async (req) => {
     const { cleanerId } = await req.json();
     if (!cleanerId) return json({ error: 'cleanerId required' }, 400);
 
-    // 1) Try DB first for an existing customer id
+    // Try DB first
     const { data: subRow } = await supabase
       .from('sponsored_subscriptions')
       .select('stripe_customer_id')
@@ -40,7 +36,7 @@ export default async (req) => {
 
     let stripeCustomerId = subRow?.stripe_customer_id || null;
 
-    // 2) Fallback: look up the cleaner's email, then search Stripe customers by email
+    // Fallback to email search in Stripe
     if (!stripeCustomerId) {
       const { data: cleanerRow } = await supabase
         .from('cleaners')
@@ -67,9 +63,7 @@ export default async (req) => {
       }
     }
 
-    if (!stripeCustomerId) {
-      return json({ error: 'No customer found' }, 404);
-    }
+    if (!stripeCustomerId) return json({ error: 'No customer found' }, 404);
 
     const session = await stripe.billingPortal.sessions.create({
       customer: stripeCustomerId,
