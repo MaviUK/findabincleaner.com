@@ -58,13 +58,11 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
       'incomplete_expired',
     ]);
 
-    // Consider either: an active-ish subscription OR a prepay record present
     return (
       (row.status && activeStatuses.has(row.status)) ||
       Boolean(row.stripe_payment_intent_id)
     );
   } catch {
-    // If the table/view doesn’t exist yet, don’t block purchase
     return false;
   }
 }
@@ -103,7 +101,7 @@ export default async (req) => {
       _area_id: areaId,
       _slot: Number(slot),
       _drawn_geojson: drawnGeoJSON ?? null,
-      _exclude_cleaner: null, // explicit to disambiguate function overloads
+      _exclude_cleaner: null,
     });
 
     if (error) {
@@ -111,14 +109,12 @@ export default async (req) => {
       return json({ error: 'Failed to compute area/price' }, 500);
     }
 
-    // get_area_preview returns a single row object
     const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
     // 2) Pricing inputs from env (plain numbers only)
     const RATE = readNumberEnv('RATE_PER_KM2_PER_MONTH', 15); // £/km²/month
     const MIN  = readNumberEnv('MIN_PRICE_PER_MONTH', 1);     // £/month minimum
 
-    // Decide if we can price
     const canPrice = Number.isFinite(RATE) && Number.isFinite(MIN) && Number.isFinite(area_km2);
     if (!canPrice) {
       return json(
@@ -145,10 +141,14 @@ export default async (req) => {
     const session = await stripe.checkout.sessions.create({
       mode: 'payment',
 
-      // ✅ Ensures a Customer exists in payment mode
-      customer_creation: { enabled: true },
+      // ✅ New API (string): ensure a Customer exists in payment mode
+      //    "always" creates one even if not strictly required.
+      customer_creation: 'always',
+
+      // Still valid: object to auto-update captured details on the Customer
       customer_update: { name: 'auto', address: 'auto' },
-      // Optional prefill (helps reduce friction + match by email later)
+
+      // Optional prefill
       customer_email: buyerEmail || undefined,
 
       line_items: [
@@ -172,7 +172,7 @@ export default async (req) => {
         slot: String(slot),
         months: String(monthsInt),
         area_km2: area_km2.toFixed(6),
-        monthly_price_pennies: String(unit_amount), // handy for postverify
+        monthly_price_pennies: String(unit_amount),
         total_price_pennies: String(unit_amount * monthsInt),
       },
 
