@@ -4,6 +4,10 @@ import { createClient } from "@supabase/supabase-js";
 
 export const config = { path: "/.netlify/functions/stripe-postverify" };
 
+if (!process.env.STRIPE_SECRET_KEY) throw new Error("Missing STRIPE_SECRET_KEY");
+if (!process.env.SUPABASE_URL) throw new Error("Missing SUPABASE_URL");
+if (!process.env.SUPABASE_SERVICE_ROLE) throw new Error("Missing SUPABASE_SERVICE_ROLE");
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
@@ -14,119 +18,126 @@ function json(body, status = 200) {
   });
 }
 
-export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+function toISO(secOrMs) {
+  if (!secOrMs) return null;
+  const ms = String(secOrMs).length <= 10 ? Number(secOrMs) * 1000 : Number(secOrMs);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+}
 
-  const { checkout_session } = await req.json().catch(() => ({}));
-  if (!checkout_session) return json({ error: "checkout_session required" }, 400);
+export default async (req) => {
+  if (req.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const checkoutSessionId = body?.checkout_session;
+  if (!checkoutSessionId) {
+    return json({ error: "checkout_session required" }, 400);
+  }
 
   try {
-    // Expand everything we need regardless of mode
-    const session = await stripe.checkout.sessions.retrieve(checkout_session, {
+    // Get the session with everything we may need expanded
+    const session = await stripe.checkout.sessions.retrieve(checkoutSessionId, {
       expand: ["subscription", "subscription.latest_invoice", "payment_intent", "line_items"],
     });
 
     const meta = session.metadata || {};
-    const business_id =
-      meta.cleaner_id || meta.business_id || meta.cleanerId || null;
+    const business_id = meta.cleaner_id || meta.business_id || meta.cleanerId || null;
     const area_id = meta.area_id || meta.areaId || null;
-    const slot = Number(meta.slot || 1);
-    const months = Number(meta.months || 1);
+    const slot = Number(meta.slot ?? 1) || 1;
+    const months = Number(meta.months ?? 1) || 1;
+    const monthly_price_pennies =
+      Number(meta.monthly_price_pennies ?? meta.monthly_pennies ?? NaN);
+    const stripe_customer_id =
+      typeof session.customer === "string" ? session.customer : session.customer?.id || null;
 
     if (!business_id || !area_id) {
       return json({ error: "Missing metadata: area_id/cleaner_id" }, 400);
     }
 
-    // Common fields
-    const stripe_customer_id = session.customer || null;
-
-    if (session.mode === "subscription") {
-      // ----- RECURRING -----
+    if (session.mode === "subscription" && session.subscription) {
+      // --------- RECURRING SUBSCRIPTION ----------
       const sub =
         typeof session.subscription === "string"
-          ? await stripe.subscriptions.retrieve(session.subscription, {
-              expand: ["latest_invoice"],
-            })
+          ? await stripe.subscriptions.retrieve(session.subscription, { expand: ["latest_invoice"] })
           : session.subscription;
 
-      // upsert the active subscription
-      await supabase.from("sponsored_subscriptions").upsert(
-        {
-          business_id,
-          area_id,
-          slot,
-          stripe_customer_id,
-          stripe_subscription_id: sub?.id || null,
-          price_monthly_pennies:
-            sub?.items?.data?.[0]?.price?.unit_amount ?? null,
-          currency: sub?.currency || "gbp",
-          status: sub?.status || "active",
-          current_period_end: sub?.current_period_end
-            ? new Date(sub.current_period_end * 1000).toISOString()
-            : null,
-        },
-        { onConflict: "stripe_subscription_id" }
-      );
+      const unit_amount = sub?.items?.data?.[0]?.price?.unit_amount ?? null;
 
-      // store latest invoice if present
+      const upsertPayload = {
+        business_id,
+        area_id,
+        slot,
+        status: sub?.status || "active",
+        currency: sub?.currency || "gbp",
+        price_monthly_pennies: unit_amount,
+        stripe_customer_id,
+        stripe_subscription_id: sub?.id || null,
+        current_period_end: toISO(sub?.current_period_end),
+        checkout_session_id: session.id,
+      };
+
+      const { error: upErr } = await supabase
+        .from("sponsored_subscriptions")
+        .upsert(upsertPayload, { onConflict: "stripe_subscription_id" });
+      if (upErr) throw upErr;
+
+      // Also store latest invoice if available
       if (sub?.latest_invoice && typeof sub.latest_invoice === "object") {
         const inv = sub.latest_invoice;
+
         const { data: subRow } = await supabase
           .from("sponsored_subscriptions")
           .select("id")
           .eq("stripe_subscription_id", sub.id)
-          .single();
+          .maybeSingle();
 
-        if (subRow) {
-          await supabase.from("sponsored_invoices").upsert(
-            {
-              sponsored_subscription_id: subRow.id,
-              stripe_invoice_id: inv.id,
-              hosted_invoice_url: inv.hosted_invoice_url,
-              invoice_pdf: inv.invoice_pdf,
-              amount_due_pennies: inv.amount_due,
-              currency: inv.currency,
-              status: inv.status,
-              period_start: inv.period_start
-                ? new Date(inv.period_start * 1000).toISOString()
-                : null,
-              period_end: inv.period_end
-                ? new Date(inv.period_end * 1000).toISOString()
-                : null,
-            },
-            { onConflict: "stripe_invoice_id" }
-          );
+        if (subRow?.id) {
+          const invPayload = {
+            sponsored_subscription_id: subRow.id,
+            stripe_invoice_id: inv.id,
+            hosted_invoice_url: inv.hosted_invoice_url || null,
+            invoice_pdf: inv.invoice_pdf || null,
+            amount_due_pennies: inv.amount_due ?? null,
+            currency: inv.currency || "gbp",
+            status: inv.status || null,
+            period_start: toISO(inv.period_start),
+            period_end: toISO(inv.period_end),
+          };
+          const { error: invErr } = await supabase
+            .from("sponsored_invoices")
+            .upsert(invPayload, { onConflict: "stripe_invoice_id" });
+          if (invErr) throw invErr;
         }
       }
     } else {
-      // ----- ONE-OFF PAYMENT (prepay N months) -----
-      // there is no subscription object; treat it as an "active" sponsorship
+      // --------- ONE-OFF PAYMENT (PREPAY) ----------
       const pi =
         typeof session.payment_intent === "string"
           ? await stripe.paymentIntents.retrieve(session.payment_intent)
           : session.payment_intent;
 
-      await supabase.from("sponsored_subscriptions").upsert(
-        {
-          business_id,
-          area_id,
-          slot,
-          // store customer for portal access
-          stripe_customer_id,
-          // no subscription id in one-off flow
-          stripe_subscription_id: null,
-          stripe_payment_intent_id: pi?.id || null,
-          price_monthly_pennies: Number(meta.monthly_price_pennies) || null,
-          currency: (pi && pi.currency) || "gbp",
-          status: "active", // treat as active so the slot paints and buttons disable
-          // optional: you could compute an expiry based on months if you later enforce it
-          // current_period_end: null,
-          months_prepaid: Number.isFinite(months) ? months : 1,
-          checkout_session_id: session.id,
-        },
-        // no unique subscription id to conflict on; use composite key via a unique index if you add one
-        { onConflict: undefined }
-      );
+      const upsertPayload = {
+        business_id,
+        area_id,
+        slot,
+        status: "active", // treat prepay as active
+        currency: (pi && pi.currency) || "gbp",
+        price_monthly_pennies: Number.isFinite(monthly_price_pennies) ? monthly_price_pennies : null,
+        stripe_customer_id,
+        stripe_payment_intent_id: pi?.id || null,
+        months_prepaid: Number.isFinite(months) ? months : 1,
+        checkout_session_id: session.id,
+      };
+
+      const { error: upErr } = await supabase.from("sponsored_subscriptions").upsert(upsertPayload);
+      if (upErr) throw upErr;
     }
 
     return json({ ok: true });
