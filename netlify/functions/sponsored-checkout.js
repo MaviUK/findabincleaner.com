@@ -131,7 +131,7 @@ export default async (req) => {
 
     // 4) Create Checkout session (payment) and ensure a Customer exists
     const session = await stripe.checkout.sessions.create({
-      mode: 'payment',
+      mode: 'subscription',
 
       // Create/attach a Stripe Customer (new API expects a string)
       customer_creation: 'always',
