@@ -2,14 +2,16 @@
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-// DO NOT set a custom config.path. The default path is:
-//   /.netlify/functions/stripe-webhook
-// export const config = { path: "/.netlify/functions/stripe-webhook" }; // <-- remove
+export const config = { path: "/.netlify/functions/stripe-webhook" };
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
-// Small helper
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -17,137 +19,146 @@ function json(body, status = 200) {
   });
 }
 
-// Best-effort “upsert” of our purchase record + invoice
-async function upsertFromCheckoutSession(session) {
-  // We only create a *sponsorship* record for the “payment” Checkout sessions we create.
-  // Metadata is written by `sponsored-checkout.js`.
-  const m = session?.metadata || {};
-  const business_id = m.cleanerId || m.business_id || null;
-  const area_id = m.areaId || null;
-  const slot = Number(m.slot || 1);
+// Upsert a row in sponsored_subscriptions based on a Stripe subscription
+async function upsertSubscription(sub, meta) {
+  const business_id = meta?.cleaner_id || meta?.business_id || null;
+  const area_id = meta?.area_id || null;
+  const slot = Number(meta?.slot || 1);
 
-  if (!business_id || !area_id) {
-    console.warn("[webhook] missing metadata. business_id:", business_id, "area_id:", area_id);
-    return;
+  if (!business_id || !area_id) return;
+
+  // price is in the subscription items
+  const item = sub.items?.data?.[0] || null;
+  const unit_amount = item?.price?.unit_amount ?? null; // pence
+  const currency = item?.price?.currency ?? sub.currency ?? "gbp";
+
+  // Upsert subscription
+  await supabase.from("sponsored_subscriptions").upsert(
+    {
+      business_id,
+      area_id,
+      slot,
+      stripe_customer_id: sub.customer,
+      stripe_subscription_id: sub.id,
+      price_monthly_pennies: unit_amount,
+      currency,
+      status: sub.status, // active, trialing, past_due, canceled, etc
+      current_period_end: sub.current_period_end
+        ? new Date(sub.current_period_end * 1000).toISOString()
+        : null,
+    },
+    { onConflict: "stripe_subscription_id" }
+  );
+
+  // If latest invoice is expanded, mirror it too
+  const inv =
+    typeof sub.latest_invoice === "object" ? sub.latest_invoice : null;
+  if (inv) {
+    const { data: subRow } = await supabase
+      .from("sponsored_subscriptions")
+      .select("id")
+      .eq("stripe_subscription_id", sub.id)
+      .maybeSingle();
+
+    if (subRow) {
+      await supabase.from("sponsored_invoices").upsert(
+        {
+          sponsored_subscription_id: subRow.id,
+          stripe_invoice_id: inv.id,
+          hosted_invoice_url: inv.hosted_invoice_url ?? null,
+          invoice_pdf: inv.invoice_pdf ?? null,
+          amount_due_pennies: inv.amount_due ?? null,
+          currency: inv.currency ?? currency,
+          status: inv.status ?? null,
+          period_start: inv.period_start
+            ? new Date(inv.period_start * 1000).toISOString()
+            : null,
+          period_end: inv.period_end
+            ? new Date(inv.period_end * 1000).toISOString()
+            : null,
+        },
+        { onConflict: "stripe_invoice_id" }
+      );
+    }
   }
-
-  // Normalize amounts
-  const session_amount_total_pennies =
-    typeof session.amount_total === "number" ? session.amount_total : null;
-
-  const payload = {
-    business_id,
-    area_id,
-    slot,
-    stripe_customer_id: session.customer || null,
-    stripe_checkout_session_id: session.id,
-    stripe_payment_intent_id: session.payment_intent || null,
-    status: "active",
-    currency: (session.currency || "gbp").toLowerCase(),
-    price_monthly_pennies: null, // we keep single-charge detail on invoice row
-    current_period_end: null,    // n/a for one-off payments; useful if you add subscriptions later
-    last_charge_total_pennies: session_amount_total_pennies,
-  };
-
-  // Upsert a single “sponsored_subscriptions” row to represent this sponsorship
-  await supabase
-    .from("sponsored_subscriptions")
-    .upsert(payload, { onConflict: "stripe_checkout_session_id" });
-
-  // Also write an invoice-style row for the Checkout session itself
-  await supabase
-    .from("sponsored_invoices")
-    .upsert(
-      {
-        // you can keep a loose foreign key via checkout_session_id (or use a DB trigger to resolve to FK)
-        sponsored_subscription_id: null,
-        stripe_invoice_id: session.id, // not a real Stripe invoice, but gives you a stable id per charge
-        hosted_invoice_url: session.url || null,
-        invoice_pdf: null,
-        amount_due_pennies: session_amount_total_pennies,
-        currency: (session.currency || "gbp").toLowerCase(),
-        status: session.payment_status, // 'paid','unpaid'
-        period_start: new Date().toISOString(),
-        period_end: new Date().toISOString(),
-      },
-      { onConflict: "stripe_invoice_id" }
-    );
 }
 
 export default async (req) => {
-  // Make browser health-checks easy
+  // Stripe POSTs only. A GET is useful for quick health checks.
   if (req.method === "GET") {
-    return json({ ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
+    return json({
+      ok: true,
+      note: "Stripe webhook is deployed. Use POST from Stripe.",
+    });
   }
-
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   const sig = req.headers.get("stripe-signature");
-  if (!sig) return json({ error: "Missing Stripe signature" }, 400);
+  if (!sig) return json({ error: "Missing stripe-signature" }, 400);
 
   let event;
   try {
-    const raw = await req.text(); // keep body raw for signature verification
-    event = stripe.webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET);
-  } catch (e) {
-    console.error("[webhook] signature verify failed:", e?.message);
+    const raw = await req.text();
+    event = stripe.webhooks.constructEvent(
+      raw,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
+  } catch (err) {
+    // Signature mismatch (usually wrong secret or wrong mode)
     return json({ error: "Bad signature" }, 400);
   }
 
   try {
     switch (event.type) {
-      // Our Checkout mode is "payment" (one-off), so this is the primary event to act on.
       case "checkout.session.completed": {
+        // When you used Checkout in subscription mode
         const session = event.data.object;
-        console.log("[webhook] checkout.session.completed", {
-          id: session.id,
-          payment_status: session.payment_status,
-          amount_total: session.amount_total,
-          currency: session.currency,
-          metadata: session.metadata,
-        });
-
-        // If you ever change to subscriptions, you can expand the subscription here as needed.
-        await upsertFromCheckoutSession(session);
+        if (session.mode === "subscription" && session.subscription) {
+          const sub = await stripe.subscriptions.retrieve(session.subscription, {
+            expand: ["latest_invoice", "items.price"],
+          });
+          await upsertSubscription(sub, session.metadata || {});
+        }
         break;
       }
 
-      // Optional: capture a record for generated Stripe invoices (useful if you later move to subscriptions)
       case "invoice.paid":
       case "invoice.payment_failed": {
         const inv = event.data.object;
-        console.log("[webhook] invoice event", inv.id, inv.status);
-
-        // Try to connect invoice to an existing sponsorship by subscription id
+        // mirror invoice + update subscription status snapshot
         const { data: subRow } = await supabase
           .from("sponsored_subscriptions")
           .select("id")
-          .eq("stripe_subscription_id", inv.subscription || "")
+          .eq("stripe_subscription_id", inv.subscription)
           .maybeSingle();
 
-        await supabase
-          .from("sponsored_invoices")
-          .upsert(
+        if (subRow) {
+          await supabase.from("sponsored_invoices").upsert(
             {
-              sponsored_subscription_id: subRow?.id || null,
+              sponsored_subscription_id: subRow.id,
               stripe_invoice_id: inv.id,
-              hosted_invoice_url: inv.hosted_invoice_url,
-              invoice_pdf: inv.invoice_pdf,
-              amount_due_pennies: inv.amount_due,
-              currency: inv.currency,
-              status: inv.status,
-              period_start: new Date(inv.period_start * 1000).toISOString(),
-              period_end: new Date(inv.period_end * 1000).toISOString(),
+              hosted_invoice_url: inv.hosted_invoice_url ?? null,
+              invoice_pdf: inv.invoice_pdf ?? null,
+              amount_due_pennies: inv.amount_due ?? null,
+              currency: inv.currency ?? null,
+              status: inv.status ?? null,
+              period_start: inv.period_start
+                ? new Date(inv.period_start * 1000).toISOString()
+                : null,
+              period_end: inv.period_end
+                ? new Date(inv.period_end * 1000).toISOString()
+                : null,
             },
             { onConflict: "stripe_invoice_id" }
           );
 
-        if (subRow?.id) {
+          // keep a simple status on the subscription row
           await supabase
             .from("sponsored_subscriptions")
-            .update({ status: inv.status === "paid" ? "active" : "past_due" })
+            .update({
+              status: inv.status === "paid" ? "active" : "past_due",
+            })
             .eq("id", subRow.id);
         }
         break;
@@ -163,15 +174,13 @@ export default async (req) => {
       }
 
       default:
-        // Ignore other events to keep the webhook lean
+        // ignore others
         break;
     }
 
-    return json({ received: true });
+    return json({ ok: true });
   } catch (e) {
-    console.error("[webhook] handler error:", e);
-    // Return 200 so Stripe doesn’t keep retrying forever while you iterate;
-    // flip to 500 once things are stable and you want automatic retries.
-    return json({ ok: false, error: e?.message || "webhook failed" }, 200);
+    console.error("[stripe-webhook] handler error:", e);
+    return json({ error: e?.message || "webhook error" }, 500);
   }
 };
