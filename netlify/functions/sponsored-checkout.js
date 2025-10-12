@@ -3,7 +3,11 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE // server key
+);
 
 // ---------- helpers ----------
 function toPence(gbpNumber) {
@@ -29,7 +33,7 @@ function siteBase() {
   return (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 }
 
-// Don’t allow duplicate purchases for same business/area/slot (best-effort)
+// Best-effort block: prevent duplicates for same business/area/slot
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data, error } = await supabase
@@ -40,11 +44,10 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
       .eq("slot", Number(slot))
       .limit(1);
 
-    if (error) return false;
-    if (!data || !data.length) return false;
+    if (error || !data?.length) return false;
 
     const row = data[0];
-    const activeStatuses = new Set([
+    const active = new Set([
       "active",
       "trialing",
       "past_due",
@@ -53,10 +56,7 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
       "incomplete_expired",
     ]);
 
-    return (
-      (row.status && activeStatuses.has(row.status)) ||
-      Boolean(row.stripe_payment_intent_id)
-    );
+    return active.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch {
     return false;
   }
@@ -70,12 +70,12 @@ export default async (req) => {
 
   try {
     const {
-      cleanerId,        // business_id (uuid)
-      areaId,           // area_id (uuid)
-      slot,             // 1|2|3
-      months = 1,       // NOTE: in subscription mode this no longer pre-charges months; kept for metadata only
-      drawnGeoJSON,     // optional; if omitted we use saved geometry
-      buyerEmail,       // optional: prefill email
+      cleanerId,     // business_id (uuid)
+      areaId,        // area_id (uuid)
+      slot,          // 1|2|3
+      months = 1,    // integer (kept in metadata; subscription is monthly)
+      drawnGeoJSON,  // optional: override geometry used for pricing
+      buyerEmail,    // optional: prefill email
     } = await req.json();
 
     if (!cleanerId || !areaId || !slot) {
@@ -85,13 +85,10 @@ export default async (req) => {
     // 0) Prevent duplicates
     const already = await hasExistingSponsorship(cleanerId, areaId, slot);
     if (already) {
-      return json(
-        { error: "You already have an active/prepaid sponsorship for this slot." },
-        409
-      );
+      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // 1) Recompute pricing preview on server
+    // 1) Server recompute of the quote
     const { data, error } = await supabase.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: Number(slot),
@@ -106,31 +103,27 @@ export default async (req) => {
 
     const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
-    // 2) Pricing from env
-    const RATE = readNumberEnv("RATE_PER_KM2_PER_MONTH", 15);
-    const MIN  = readNumberEnv("MIN_PRICE_PER_MONTH", 1);
+    // 2) Pricing
+    const RATE = readNumberEnv("RATE_PER_KM2_PER_MONTH", 15); // £/km²/month
+    const MIN  = readNumberEnv("MIN_PRICE_PER_MONTH", 1);     // £/month minimum
 
-    const canPrice = Number.isFinite(RATE) && Number.isFinite(MIN) && Number.isFinite(area_km2);
-    if (!canPrice) {
-      return json(
-        { error: "Pricing unavailable (check env vars & area size)", debug: { area_km2, RATE, MIN } },
-        400
-      );
+    if (![RATE, MIN, area_km2].every(Number.isFinite)) {
+      return json({ error: "Pricing unavailable (check env vars & area size)", debug: { area_km2, RATE, MIN } }, 400);
     }
 
     const monthly_price = Math.max(MIN, Math.max(0, area_km2) * RATE);
-    const unit_amount = toPence(monthly_price);
+    const unit_amount   = toPence(monthly_price);
 
     // 3) URLs
     const site = siteBase();
 
-    // 4) Create Checkout session (SUBSCRIPTION mode)
-    // Important: price_data must include `recurring`.
+    // 4) Create Stripe Checkout session (SUBSCRIPTION)
+    // IMPORTANT: include `recurring: { interval: "month" }` on price_data
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
 
-      // Let Stripe create (or attach) a customer automatically.
-      // Supplying an email helps Stripe prefill / de-duplicate.
+      // ensure a Customer is created/attached every time
+      customer_creation: "always",
       customer_email: buyerEmail || undefined,
 
       line_items: [
@@ -138,29 +131,25 @@ export default async (req) => {
           price_data: {
             currency: "gbp",
             unit_amount: unit_amount,
-            // The key that fixes your error:
+            // make it a recurring monthly price:
             recurring: { interval: "month" },
             product_data: {
               name: `Area sponsorship #${slot}`,
               description: `Area: ${area_km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
             },
           },
-          quantity: 1, // one subscription; renews monthly
+          quantity: 1, // monthly subscription; we keep your 'months' in metadata
         },
       ],
 
-      // Keep your metadata so the webhook can map it
       metadata: {
         cleaner_id: cleanerId,
         area_id: areaId,
         slot: String(slot),
-        months: String(Math.max(1, Number(months))), // informational
+        months: String(Math.max(1, Number(months))),
         area_km2: area_km2.toFixed(6),
         monthly_price_pennies: String(unit_amount),
       },
-
-      // Optional niceties:
-      // allow_promotion_codes: true,
 
       success_url: `${site}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/#/dashboard?checkout=cancel`,
