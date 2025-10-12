@@ -10,9 +10,7 @@
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
-  # node_compat can help with some deps; safe to keep on
-  node_compat = true
-  # If you want all functions to receive raw bodies by default, uncomment:
+  # If you want ALL functions to receive raw bodies by default, uncomment this:
   # body = "raw"
 
 # Optional (for local dev with `ntl dev`)
