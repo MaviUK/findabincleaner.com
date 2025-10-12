@@ -1,84 +1,108 @@
-# ------------------------------
-# API / Function redirects (FIRST)
-# ------------------------------
+########################
+# Build & Functions
+########################
+[build]
+  command   = "npm run build"
+  publish   = "dist"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["stripe", "@supabase/supabase-js"]
+  # Optional, but helps if you read files from the functions dir
+  included_files = ["netlify/functions/**"]
+
+# Optional (for local dev with `ntl dev`)
+[dev]
+  framework = "vite"
+
+########################
+# API / Functions redirects (FIRST)
+########################
 
 # Area sponsorship APIs
 [[redirects]]
-from = "/api/area/availability"
-to   = "/.netlify/functions/area-availability"
-status = 200
+  from = "/api/area/availability"
+  to   = "/.netlify/functions/area-availability"
+  status = 200
 
 [[redirects]]
-from = "/api/area/preview"
-to   = "/.netlify/functions/area-preview"
-status = 200
+  from = "/api/area/preview"
+  to   = "/.netlify/functions/area-preview"
+  status = 200
 
 # Geo JSON feeds for maps
 [[redirects]]
-from = "/api/geo/my-coverage"
-to   = "/.netlify/functions/geo-my-coverage"
-status = 200
+  from = "/api/geo/my-coverage"
+  to   = "/.netlify/functions/geo-my-coverage"
+  status = 200
 
 [[redirects]]
-from = "/api/geo/my-wins"
-to   = "/.netlify/functions/geo-my-wins"
-status = 200
+  from = "/api/geo/my-wins"
+  to   = "/.netlify/functions/geo-my-wins"
+  status = 200
 
 [[redirects]]
-from = "/api/geo/available"
-to   = "/.netlify/functions/geo-available"
-status = 200
+  from = "/api/geo/available"
+  to   = "/.netlify/functions/geo-available"
+  status = 200
 
 # Sponsorship (legacy endpoints you still might call)
 [[redirects]]
-from = "/api/sponsored/purchase"
-to   = "/.netlify/functions/sponsored-purchase"
-status = 200
+  from = "/api/sponsored/purchase"
+  to   = "/.netlify/functions/sponsored-purchase"
+  status = 200
 
 [[redirects]]
-from = "/api/sponsored/preview"
-to   = "/.netlify/functions/sponsored-preview"
-status = 200
+  from = "/api/sponsored/preview"
+  to   = "/.netlify/functions/sponsored-preview"
+  status = 200
 
 [[redirects]]
-from = "/api/sponsored/checkout"
-to   = "/.netlify/functions/sponsored-checkout"
-status = 200
+  from = "/api/sponsored/checkout"
+  to   = "/.netlify/functions/sponsored-checkout"
+  status = 200
 
 # Stripe webhook (server-to-server)
 [[redirects]]
-from = "/api/stripe/webhook"
-to   = "/.netlify/functions/stripe-webhook"
-status = 200
+  from = "/api/stripe/webhook"
+  to   = "/.netlify/functions/stripe-webhook"
+  status = 200
+
+# Post-verify alias (nice UX for Dashboard)
+[[redirects]]
+  from = "/api/stripe/postverify"
+  to   = "/.netlify/functions/stripe-postverify"
+  status = 200
 
 # Optional alias you used before
 [[redirects]]
-from = "/api/geo-my-coverage"
-to   = "/.netlify/functions/geo-my-coverage"
-status = 200
+  from = "/api/geo-my-coverage"
+  to   = "/.netlify/functions/geo-my-coverage"
+  status = 200
 
-# ------------------------------
+########################
 # API headers (disable CDN caching for JSON)
-# ------------------------------
+########################
 [[headers]]
-for = "/api/*"
+  for = "/api/*"
   [headers.values]
-  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
-  Pragma = "no-cache"
-  Expires = "0"
+    Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+    Pragma        = "no-cache"
+    Expires       = "0"
 
-# (If you expose functions directly without the /api redirect)
+# If you call functions directly without /api redirects
 [[headers]]
-for = "/.netlify/functions/*"
+  for = "/.netlify/functions/*"
   [headers.values]
-  Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
-  Pragma = "no-cache"
-  Expires = "0"
+    Cache-Control = "no-store, no-cache, must-revalidate, max-age=0"
+    Pragma        = "no-cache"
+    Expires       = "0"
 
-# ------------------------------
+########################
 # SPA catch-all (LAST)
-# ------------------------------
+########################
 [[redirects]]
-from = "/*"
-to   = "/index.html"
-status = 200
+  from = "/*"
+  to   = "/index.html"
+  status = 200
