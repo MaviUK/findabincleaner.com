@@ -14,19 +14,6 @@ function json(body, status = 200) {
   });
 }
 
-/**
- * Best-effort write so your app has a record to react to.
- * This targets the `sponsored_subscriptions` table you already have.
- * For one-time “payment” mode checkouts we store:
- *  - business_id  (cleaner)
- *  - area_id
- *  - slot
- *  - status='active'
- *  - stripe_customer_id
- *  - stripe_checkout_id
- *  - stripe_payment_intent_id
- *  - currency, amount_total_pennies
- */
 async function upsertFromCheckoutSession(session) {
   const meta = session.metadata || {};
   const business_id = meta.cleanerId || meta.cleaner_id || null;
@@ -50,9 +37,6 @@ async function upsertFromCheckoutSession(session) {
     amount_total_pennies,
   };
 
-  // Upsert on (stripe_checkout_id) if your table has a unique index for it;
-  // otherwise you can upsert on (business_id, area_id, slot).
-  // If you don't have a unique constraint, a simple insert with ignore-on-conflict is fine.
   await supabase.from("sponsored_subscriptions").upsert(row, {
     onConflict: "stripe_checkout_id",
   });
@@ -60,63 +44,36 @@ async function upsertFromCheckoutSession(session) {
 
 export default async (req) => {
   try {
-    if (req.method !== "POST") {
-      // Function exists & is reachable
-      return json({ error: "Method not allowed" }, 405);
-    }
+    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
     const sig = req.headers.get("stripe-signature");
-    if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
-      return json({ error: "Missing Stripe signature or webhook secret" }, 400);
-    }
+    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!sig || !secret) return json({ error: "Missing signature/secret" }, 400);
 
-    // IMPORTANT: use the raw body, not parsed JSON
+    // IMPORTANT: Use RAW BODY
     const raw = await req.text();
 
     let event;
     try {
-      event = stripe.webhooks.constructEvent(
-        raw,
-        sig,
-        process.env.STRIPE_WEBHOOK_SECRET
-      );
+      event = stripe.webhooks.constructEvent(raw, sig, secret);
     } catch (err) {
-      console.error("[stripe-webhook] signature error:", err);
+      console.error("[webhook] signature error:", err);
       return json({ error: `Signature verification failed: ${err.message}` }, 400);
     }
 
-    // Handle events
     switch (event.type) {
       case "checkout.session.completed": {
-        const session = event.data.object;
-
-        // If you need expanded fields, fetch the session with expansions:
-        // const full = await stripe.checkout.sessions.retrieve(session.id, {
-        //   expand: ["payment_intent", "customer", "line_items"],
-        // });
-        await upsertFromCheckoutSession(session);
+        await upsertFromCheckoutSession(event.data.object);
         break;
       }
-
-      case "invoice.paid": {
-        // Optional: store invoice rows in sponsored_invoices if you want.
-        // Keeping minimal here to avoid schema mismatches.
-        break;
-      }
-
-      case "payment_intent.succeeded": {
-        // Optional: you can also reconcile here if needed.
-        break;
-      }
-
+      // You can add invoice.paid / payment_intent.succeeded handlers here if needed.
       default:
-        // No-op for other events, but respond 200 so Stripe stops retrying.
         break;
     }
 
     return json({ received: true }, 200);
   } catch (e) {
-    console.error("[stripe-webhook] unhandled error:", e);
+    console.error("[webhook] unhandled error:", e);
     return json({ error: e?.message || "webhook failure" }, 500);
   }
 };
