@@ -4,99 +4,119 @@ import { createClient } from "@supabase/supabase-js";
 
 export const config = { path: "/.netlify/functions/stripe-webhook" };
 
-if (!process.env.STRIPE_SECRET_KEY) throw new Error("Missing STRIPE_SECRET_KEY");
-if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
-  throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE");
-}
-if (!process.env.STRIPE_WEBHOOK_SECRET) {
-  // We don't throw here to avoid cold-start crashes during local tests,
-  // but signature verification will still fail below if it's missing.
-  console.warn("[stripe-webhook] STRIPE_WEBHOOK_SECRET is not set.");
-}
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// ---- helpers ----
-function normMeta(meta = {}) {
-  // Accept snake_case and camelCase
-  const cleaner_id = meta.cleaner_id || meta.business_id || meta.cleanerId || null;
-  const area_id = meta.area_id || meta.areaId || null;
+function json(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/**
+ * Best-effort write so your app has a record to react to.
+ * This targets the `sponsored_subscriptions` table you already have.
+ * For one-time “payment” mode checkouts we store:
+ *  - business_id  (cleaner)
+ *  - area_id
+ *  - slot
+ *  - status='active'
+ *  - stripe_customer_id
+ *  - stripe_checkout_id
+ *  - stripe_payment_intent_id
+ *  - currency, amount_total_pennies
+ */
+async function upsertFromCheckoutSession(session) {
+  const meta = session.metadata || {};
+  const business_id = meta.cleanerId || meta.cleaner_id || null;
+  const area_id = meta.areaId || meta.area_id || null;
   const slot = Number(meta.slot || 1);
-  const months = Number(meta.months || 1);
-  const monthly_price_pennies =
-    meta.monthly_price_pennies != null
-      ? Number(meta.monthly_price_pennies)
-      : meta.monthly_price != null
-      ? Math.round(Number(meta.monthly_price) * 100)
-      : null;
-
-  return { cleaner_id, area_id, slot, months, monthly_price_pennies };
-}
-
-async function upsertSubscriptionFromStripe(sub, meta) {
-  const { cleaner_id: business_id, area_id, slot } = normMeta(meta);
-  if (!business_id || !area_id) return;
-
-  await supabase
-    .from("sponsored_subscriptions")
-    .upsert(
-      {
-        business_id,
-        area_id,
-        slot,
-        stripe_customer_id: sub.customer,
-        stripe_subscription_id: sub.id,
-        price_monthly_pennies: sub.items?.data?.[0]?.price?.unit_amount ?? null,
-        currency: sub.currency || "gbp",
-        status: sub.status, // 'active','past_due','canceled', etc
-        current_period_end: sub.current_period_end
-          ? new Date(sub.current_period_end * 1000).toISOString()
-          : null,
-      },
-      { onConflict: "stripe_subscription_id" }
-    );
-}
-
-async function upsertFromPaymentSession(session) {
-  // For one-off 'payment' mode sessions (no subscription), we still want the slot to show as taken.
-  // We write a row using a synthetic "subscription id" based on the session id.
-  // This lets your v_area_slot_status view pick it up as 'active'.
-  const meta = normMeta(session.metadata || {});
-  const { cleaner_id: business_id, area_id, slot, months, monthly_price_pennies } = meta;
 
   if (!business_id || !area_id) return;
 
-  // Derive a monthly price if we can:
-  // Prefer metadata.monthly_price_pennies, else try amount_total / months (if provided).
-  let priceMonthly = monthly_price_pennies;
-  if (priceMonthly == null && typeof session.amount_total === "number" && months > 0) {
-    priceMonthly = Math.round(session.amount_total / months);
+  const amount_total_pennies =
+    typeof session.amount_total === "number" ? session.amount_total : null;
+
+  const row = {
+    business_id,
+    area_id,
+    slot,
+    status: "active",
+    stripe_customer_id: session.customer || null,
+    stripe_checkout_id: session.id,
+    stripe_payment_intent_id: session.payment_intent || null,
+    currency: session.currency || "gbp",
+    amount_total_pennies,
+  };
+
+  // Upsert on (stripe_checkout_id) if your table has a unique index for it;
+  // otherwise you can upsert on (business_id, area_id, slot).
+  // If you don't have a unique constraint, a simple insert with ignore-on-conflict is fine.
+  await supabase.from("sponsored_subscriptions").upsert(row, {
+    onConflict: "stripe_checkout_id",
+  });
+}
+
+export default async (req) => {
+  try {
+    if (req.method !== "POST") {
+      // Function exists & is reachable
+      return json({ error: "Method not allowed" }, 405);
+    }
+
+    const sig = req.headers.get("stripe-signature");
+    if (!sig || !process.env.STRIPE_WEBHOOK_SECRET) {
+      return json({ error: "Missing Stripe signature or webhook secret" }, 400);
+    }
+
+    // IMPORTANT: use the raw body, not parsed JSON
+    const raw = await req.text();
+
+    let event;
+    try {
+      event = stripe.webhooks.constructEvent(
+        raw,
+        sig,
+        process.env.STRIPE_WEBHOOK_SECRET
+      );
+    } catch (err) {
+      console.error("[stripe-webhook] signature error:", err);
+      return json({ error: `Signature verification failed: ${err.message}` }, 400);
+    }
+
+    // Handle events
+    switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object;
+
+        // If you need expanded fields, fetch the session with expansions:
+        // const full = await stripe.checkout.sessions.retrieve(session.id, {
+        //   expand: ["payment_intent", "customer", "line_items"],
+        // });
+        await upsertFromCheckoutSession(session);
+        break;
+      }
+
+      case "invoice.paid": {
+        // Optional: store invoice rows in sponsored_invoices if you want.
+        // Keeping minimal here to avoid schema mismatches.
+        break;
+      }
+
+      case "payment_intent.succeeded": {
+        // Optional: you can also reconcile here if needed.
+        break;
+      }
+
+      default:
+        // No-op for other events, but respond 200 so Stripe stops retrying.
+        break;
+    }
+
+    return json({ received: true }, 200);
+  } catch (e) {
+    console.error("[stripe-webhook] unhandled error:", e);
+    return json({ error: e?.message || "webhook failure" }, 500);
   }
-
-  const syntheticId = `checkout_${session.id}`;
-
-  await supabase
-    .from("sponsored_subscriptions")
-    .upsert(
-      {
-        business_id,
-        area_id,
-        slot,
-        stripe_customer_id: session.customer ?? null,
-        stripe_subscription_id: syntheticId, // synthetic so it's unique for upsert
-        price_monthly_pennies: priceMonthly ?? null,
-        currency: session.currency || "gbp",
-        status: "active", // treat a completed payment as active
-        current_period_end: null, // not applicable for one-off
-      },
-      { onConflict: "stripe_subscription_id" }
-    );
-}
-
-async function upsertLatestInvoice(inv) {
-  // Link by subscription; if it's a synthetic "checkout_*" there won't be invoices — harmless no-op.
-  const { data: subRow } = await supabase
-    .from("sponsored_subscriptions")
-    .select("id")
-    .eq("stripe_subscription_id", inv.subscription
+};
