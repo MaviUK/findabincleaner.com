@@ -7,10 +7,6 @@ import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
 
-// NEW: add these imports
-import { fetchSubscription } from "../api/subscriptions";
-import { ManageModal } from "../components/ManageModal";
-
 type Cleaner = {
   id: string;
   user_id: string;
@@ -20,8 +16,8 @@ type Cleaner = {
   subscription_status: "active" | "incomplete" | "past_due" | "canceled" | null;
 };
 
-// local helper: HashRouter puts query in the hash
 function useHashQuery() {
+  // HashRouter puts query in the hash (e.g. #/dashboard?checkout=success&checkout_session=cs_...)
   const { hash } = useLocation();
   return useMemo(() => {
     const qIndex = hash.indexOf("?");
@@ -30,29 +26,18 @@ function useHashQuery() {
   }, [hash]);
 }
 
-type ManageState =
-  | { open: false }
-  | {
-      open: true;
-      area: { id: string; name?: string };
-      slot: number;
-      sub: any; // sponsored_subscriptions row (shape used by ManageModal)
-    };
-
 export default function Dashboard() {
   const [userId, setUserId] = useState<string | null>(null);
   const [cleaner, setCleaner] = useState<Cleaner | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
+  // Banner + refresh signal after Stripe redirect
   const qs = useHashQuery();
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0); // bump to make children refetch
   const [openingPortal, setOpeningPortal] = useState(false);
-
-  // NEW: state for Manage modal
-  const [manageState, setManageState] = useState<ManageState>({ open: false });
 
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
@@ -73,9 +58,11 @@ export default function Dashboard() {
     }
 
     if (status === "success") {
+      // Attempt to write the purchase immediately so UI updates are instant
       postVerify().finally(() => {
         setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
         setSponsorshipVersion((v) => v + 1);
+        // Clean the URL so the banner doesn't re-trigger on refresh
         const clean = window.location.hash.replace(/\?[^#]*/g, "");
         setTimeout(() => navigate(clean, { replace: true }), 0);
       });
@@ -152,29 +139,6 @@ export default function Dashboard() {
     }
   }
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // NEW: slot click handler that chooses Manage vs Sponsor
-  // area must have at least { id, name? }
-  async function onSlotAction(area: { id: string; name?: string }, slot: number) {
-    if (!cleaner) return;
-
-    // 1) Check if there's a current sub for this (business, area, slot)
-    const sub = await fetchSubscription(cleaner.id, area.id, slot);
-
-    if (sub && (sub.status === "active" || sub.status === "open")) {
-      // 2) Show Manage modal
-      setManageState({ open: true, area, slot, sub });
-      return;
-    }
-
-    // 3) Fall back to your existing Sponsor preview flow
-    // If your child components own the preview logic, you can instead pass a
-    // second handler prop or leave this branch empty (they’ll show the preview).
-    // Otherwise, if you have a global helper, call it here:
-    // openSponsorPreview({ area, slot });
-  }
-  // ────────────────────────────────────────────────────────────────────────────
-
   if (loading) {
     return (
       <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
@@ -219,7 +183,10 @@ export default function Dashboard() {
         >
           <div className="px-4 py-3 flex items-start justify-between gap-4">
             <div className="text-sm">{banner.msg}</div>
-            <button className="text-xs opacity-70 hover:opacity-100" onClick={() => setBanner(null)}>
+            <button
+              className="text-xs opacity-70 hover:opacity-100"
+              onClick={() => setBanner(null)}
+            >
               Dismiss
             </button>
           </div>
@@ -293,12 +260,10 @@ export default function Dashboard() {
               </div>
 
               <div className="rounded-xl overflow-hidden border">
-                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint,
-                   and pass onSlotAction so Manage vs Sponsor is decided centrally */}
+                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint Gold/Silver/Bronze */}
                 <ServiceAreaEditor
                   cleanerId={cleaner.id}
                   sponsorshipVersion={sponsorshipVersion}
-                  onSlotAction={onSlotAction} // <— make sure the component accepts this
                 />
               </div>
 
@@ -309,32 +274,14 @@ export default function Dashboard() {
                 </a>
               </div>
 
-              {/* Also pass version & onSlotAction so the list buttons behave correctly */}
+              {/* Also pass version so buttons re-check availability */}
               <AreasSponsorList
                 cleanerId={cleaner.id}
                 sponsorshipVersion={sponsorshipVersion}
-                onSlotAction={onSlotAction} // <— make sure the component accepts this
               />
             </div>
           </section>
         </>
-      )}
-
-      {/* NEW: Manage modal mounts here */}
-      {manageState.open && (
-        <ManageModal
-          areaName={manageState.area.name || "Your area"}
-          slot={manageState.slot}
-          sub={manageState.sub}
-          invoice={undefined}
-          business_id={cleaner.id}
-          area_id={manageState.area.id}
-          onClose={() => setManageState({ open: false })}
-          onCanceled={() => {
-            setManageState({ open: false });
-            setSponsorshipVersion((v) => v + 1); // refresh paint + lists
-          }}
-        />
       )}
     </main>
   );
