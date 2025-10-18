@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
+import AreaManageModal from "./AreaManageModal";
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs */
 
@@ -49,12 +50,19 @@ function pathToGeoJSONRing(
   path: google.maps.MVCArray<google.maps.LatLng> | google.maps.LatLng[]
 ): number[][] {
   const ring: number[][] = [];
-  const len = (path as any).getLength ? (path as any).getLength() : (path as google.maps.LatLng[]).length;
+  const len = (path as any).getLength
+    ? (path as any).getLength()
+    : (path as google.maps.LatLng[]).length;
   for (let i = 0; i < len; i++) {
-    const pt: google.maps.LatLng = (path as any).getAt ? (path as any).getAt(i) : (path as google.maps.LatLng[])[i];
+    const pt: google.maps.LatLng = (path as any).getAt
+      ? (path as any).getAt(i)
+      : (path as google.maps.LatLng[])[i];
     ring.push([round(pt.lng()), round(pt.lat())]);
   }
-  if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
+  if (
+    ring.length &&
+    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
+  ) {
     ring.push([ring[0][0], ring[0][1]]);
   }
   return ring;
@@ -110,7 +118,7 @@ function fmtArea(m2: number) {
 type Props = {
   cleanerId: string;
   sponsorshipVersion?: number;
-  /** Called when user clicks a “Manage #n” (their own slot). */
+  /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
   onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
 };
 
@@ -142,6 +150,11 @@ export default function ServiceAreaEditor({
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
   const [sponsorSlot, setSponsorSlot] = useState<1 | 2 | 3>(1);
+
+  // manage modal state (used when onSlotAction isn't provided)
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageAreaId, setManageAreaId] = useState<string | null>(null);
+  const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
@@ -212,7 +225,10 @@ export default function ServiceAreaEditor({
     resetDraft();
     setCreating(true);
     setDraftName("New Service Area");
-    setTimeout(() => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON), 0);
+    setTimeout(
+      () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
+      0
+    );
   }, [resetDraft]);
 
   const editArea = useCallback(
@@ -243,7 +259,9 @@ export default function ServiceAreaEditor({
     const multi = makeMultiPolygon(draftPolys);
 
     const newKey = normalizeMultiPolygon(multi);
-    const dup = serviceAreas.find((a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId);
+    const dup = serviceAreas.find(
+      (a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId
+    );
     if (dup) {
       setError(`This area matches an existing one: “${dup.name}”.`);
       return;
@@ -372,7 +390,8 @@ export default function ServiceAreaEditor({
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish
+                    the polygon.
                   </div>
                 )}
 
@@ -416,11 +435,17 @@ export default function ServiceAreaEditor({
                 const dis2 = !!s2?.taken && !mine2;
                 const dis3 = !!s3?.taken && !mine3;
 
-                // helper to route click either to manage (owned) or sponsor (new)
-                const clickSlot = (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
+                // route click either to manage (owned) or sponsor (new)
+                const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
                   if (isDisabled) return;
-                  if (isMine && onSlotAction) {
-                    onSlotAction({ id: a.id, name: a.name }, slot);
+                  if (isMine) {
+                    if (onSlotAction) {
+                      await onSlotAction({ id: a.id, name: a.name }, slot);
+                    } else {
+                      setManageAreaId(a.id);
+                      setManageSlot(slot);
+                      setManageOpen(true);
+                    }
                     return;
                   }
                   // default: open sponsor flow
@@ -481,7 +506,9 @@ export default function ServiceAreaEditor({
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
+                <li className="text-sm text-gray-500">
+                  No service areas yet. Click “New Area” to draw one.
+                </li>
               )}
             </ul>
           </div>
@@ -490,15 +517,24 @@ export default function ServiceAreaEditor({
             <div className="font-semibold mb-1">Legend</div>
             <div className="flex items-center gap-4 mb-3">
               <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }} />
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }}
+                />
                 Gold (Slot #1)
               </span>
               <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }} />
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }}
+                />
                 Silver (Slot #2)
               </span>
               <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }} />
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }}
+                />
                 Bronze (Slot #3)
               </span>
             </div>
@@ -566,6 +602,16 @@ export default function ServiceAreaEditor({
           cleanerId={cleanerId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
+        />
+      )}
+
+      {/* Manage modal (used when parent doesn't intercept) */}
+      {manageOpen && manageAreaId && (
+        <AreaManageModal
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          areaId={manageAreaId}
+          slot={manageSlot}
         />
       )}
     </>
