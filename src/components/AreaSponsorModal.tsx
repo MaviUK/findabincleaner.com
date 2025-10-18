@@ -9,17 +9,23 @@ type Props = {
   slot: 1 | 2 | 3;
 };
 
-type GetSubResponse =
-  | {
-      ok: true;
-      subscription: {
-        area_name: string | null;
-        status: string | null;
-        current_period_end: string | null; // ISO
-        price_monthly_pennies: number | null;
-      };
-    }
-  | { ok: false; notFound?: boolean; error?: string };
+type GetSubOk = {
+  ok: true;
+  subscription: {
+    area_name: string | null;
+    status: string | null;
+    current_period_end: string | null; // ISO
+    price_monthly_pennies: number | null;
+  };
+};
+
+type GetSubErr = {
+  ok: false;
+  notFound?: boolean;
+  error?: string;
+};
+
+type GetSubResponse = GetSubOk | GetSubErr;
 
 export default function AreaSponsorModal({
   open,
@@ -35,6 +41,7 @@ export default function AreaSponsorModal({
   const [periodEnd, setPeriodEnd] = useState<string | null>(null);
   const [priceGBP, setPriceGBP] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+
   const title = useMemo(
     () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
     [mode, slot]
@@ -43,7 +50,7 @@ export default function AreaSponsorModal({
   useEffect(() => {
     if (!open) return;
 
-    // Sanity check props
+    // Validate required params
     if (!cleanerId || !areaId || !slot) {
       setMode("error");
       setErr("Missing params");
@@ -51,7 +58,6 @@ export default function AreaSponsorModal({
       return;
     }
 
-    // Try to load an existing subscription for this cleaner/area/slot
     (async () => {
       setLoading(true);
       setErr(null);
@@ -64,6 +70,7 @@ export default function AreaSponsorModal({
         const json: GetSubResponse = await res.json();
 
         if (json.ok) {
+          // manage view
           setMode("manage");
           const s = json.subscription;
           setAreaName(s.area_name || "");
@@ -74,13 +81,13 @@ export default function AreaSponsorModal({
               ? (s.price_monthly_pennies / 100).toFixed(2)
               : null
           );
-        } else if (json.notFound) {
-          // No sub found for this cleaner/area/slot → sponsor mode
+        } else if ("notFound" in json && json.notFound) {
+          // no subscription for this cleaner/area/slot → sponsor flow
           setMode("sponsor");
-          // Optional: you can also fetch a price preview here if you want.
         } else {
           setMode("error");
-          setErr(json.error || "Failed to load subscription");
+          const msg = ("error" in json && json.error) ? json.error : "Failed to load subscription";
+          setErr(msg);
         }
       } catch (e: any) {
         setMode("error");
@@ -104,7 +111,6 @@ export default function AreaSponsorModal({
       if (!res.ok || json?.ok !== true) {
         throw new Error(json?.error || `Cancel failed (${res.status})`);
       }
-      // Update UI to reflect canceled status
       setStatus("canceled");
     } catch (e: any) {
       setErr(e?.message || "Cancel failed");
@@ -114,8 +120,6 @@ export default function AreaSponsorModal({
   }
 
   function sponsorCheckout() {
-    // Hand off to your existing checkout function endpoint
-    // This endpoint looks up availability and creates a Stripe Checkout Session.
     const url = "/.netlify/functions/sponsored-checkout";
     setLoading(true);
     fetch(url, {
@@ -125,11 +129,8 @@ export default function AreaSponsorModal({
     })
       .then((r) => r.json())
       .then((j) => {
-        if (j?.url) {
-          window.location.href = j.url;
-        } else {
-          throw new Error(j?.error || "Failed to start checkout");
-        }
+        if (j?.url) window.location.href = j.url;
+        else throw new Error(j?.error || "Failed to start checkout");
       })
       .catch((e) => {
         setErr(e?.message || "Failed to start checkout");
@@ -140,16 +141,9 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center"
-      aria-modal="true"
-      role="dialog"
-    >
+    <div className="fixed inset-0 z-[100] flex items-center justify-center" aria-modal="true" role="dialog">
       {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/40"
-        onClick={() => !loading && onClose()}
-      />
+      <div className="absolute inset-0 bg-black/40" onClick={() => !loading && onClose()} />
 
       {/* Modal */}
       <div className="relative z-[101] w-[92vw] max-w-md rounded-xl bg-white shadow-lg">
@@ -189,11 +183,7 @@ export default function AreaSponsorModal({
               </div>
 
               <div className="pt-1">
-                <button
-                  className="btn"
-                  onClick={cancelAtPeriodEnd}
-                  disabled={loading || status === "canceled"}
-                >
+                <button className="btn" onClick={cancelAtPeriodEnd} disabled={loading || status === "canceled"}>
                   Cancel at period end
                 </button>
               </div>
