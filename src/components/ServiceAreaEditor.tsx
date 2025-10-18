@@ -4,10 +4,7 @@ import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-googl
 import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
 
-/**
- * ServiceAreaEditor
- * - Draw, edit, name, save, list, delete coverage areas (MultiPolygon GeoJSON in service_areas.gj)
- */
+/** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs */
 
 // ---- Types ----
 export interface ServiceAreaRow {
@@ -18,7 +15,6 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-// Sponsorship state returned by /.netlify/functions/area-sponsorship
 type SlotState = {
   slot: 1 | 2 | 3;
   taken: boolean;
@@ -30,17 +26,14 @@ type SponsorshipState = {
   slots: SlotState[];
   paint: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
-
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
-// Typings fix for @react-google-maps/api
 type Libraries = ("drawing" | "geometry" | "places")[];
 
 const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
 const DEFAULT_ZOOM = 10;
 
-// Base polygon style; fill/stroke are applied per-area from sponsorship
 const polyStyle: google.maps.PolygonOptions = {
   strokeWeight: 2,
   strokeOpacity: 0.9,
@@ -50,10 +43,8 @@ const polyStyle: google.maps.PolygonOptions = {
   draggable: false,
 };
 
-// Helpers
 const round = (n: number, p = 5) => Number(n.toFixed(p));
 
-// Convert a Google path into a closed GeoJSON ring
 function pathToGeoJSONRing(
   path: google.maps.MVCArray<google.maps.LatLng> | google.maps.LatLng[]
 ): number[][] {
@@ -69,9 +60,7 @@ function pathToGeoJSONRing(
   return ring;
 }
 
-// Build a MultiPolygon GeoJSON from drawn polygons
 function makeMultiPolygon(polys: google.maps.Polygon[]): any {
-  // MultiPolygon = Polygon[]; Polygon = LinearRing[]; LinearRing = [lng,lat][]
   const coordinates: number[][][][] = polys.map((poly) => {
     const rings: number[][][] = [];
     const paths = poly.getPaths();
@@ -83,7 +72,6 @@ function makeMultiPolygon(polys: google.maps.Polygon[]): any {
   return { type: "MultiPolygon", coordinates };
 }
 
-// Normalize MultiPolygon for rough duplicate detection
 function normalizeMultiPolygon(multi: any): string {
   if (!multi || multi.type !== "MultiPolygon") return "";
   const polys = (multi.coordinates as number[][][][]).map((rings: number[][][]) =>
@@ -96,7 +84,6 @@ function normalizeMultiPolygon(multi: any): string {
   return polys.sort().join("||");
 }
 
-// Compute area (m²) for a Google polygon (outer - holes)
 function polygonAreaMeters(p: google.maps.Polygon): number {
   let area = 0;
   const paths = p.getPaths();
@@ -120,14 +107,19 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
+type Props = {
+  cleanerId: string;
+  sponsorshipVersion?: number;
+  /** Called when user clicks a “Manage #n” (their own slot). */
+  onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
+};
+
 // ---------------- Component ----------------
 export default function ServiceAreaEditor({
   cleanerId,
   sponsorshipVersion = 0,
-}: {
-  cleanerId: string;
-  sponsorshipVersion?: number;
-}) {
+  onSlotAction,
+}: Props) {
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
@@ -141,11 +133,10 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // draft / edit state
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState<string>("");
   const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
-  const [creating, setCreating] = useState<boolean>(false); // show panel as soon as "New Area" is clicked
+  const [creating, setCreating] = useState<boolean>(false);
 
   // sponsor modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
@@ -179,7 +170,6 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas]);
 
-  // Fetch sponsorship state for the loaded areas (and whenever version bumps)
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -194,14 +184,12 @@ export default function ServiceAreaEditor({
       for (const s of json.areas) map[s.area_id] = s;
       setSponsorship(map);
     } catch (e) {
-      // non-fatal: just skip paint/disable
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
   }, []);
 
   useEffect(() => {
-    // whenever areas load or version changes (e.g., after checkout)
     fetchSponsorship(serviceAreas.map((a) => a.id));
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
@@ -213,27 +201,20 @@ export default function ServiceAreaEditor({
     drawingMgrRef.current = dm;
   }, []);
 
-  // When user completes a polygon via DrawingManager
   const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
     poly.setOptions(polyStyle);
     poly.setEditable(true);
-    // stop auto-starting another polygon
     drawingMgrRef.current?.setDrawingMode(null);
     setDraftPolys((prev) => [...prev, poly]);
   }, []);
 
-  // Start a new area
   const startNewArea = useCallback(() => {
     resetDraft();
-    setCreating(true); // show panel immediately
+    setCreating(true);
     setDraftName("New Service Area");
-    setTimeout(
-      () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
-      0
-    );
+    setTimeout(() => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON), 0);
   }, [resetDraft]);
 
-  // Edit an existing area -> load polygons onto map
   const editArea = useCallback(
     (area: ServiceAreaRow) => {
       resetDraft();
@@ -243,7 +224,7 @@ export default function ServiceAreaEditor({
       if (!gj || gj.type !== "MultiPolygon") return;
       const newPolys: google.maps.Polygon[] = [];
       (gj.coordinates as number[][][][]).forEach((poly) => {
-        const rings = poly; // Polygon = rings
+        const rings = poly;
         const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
         const gpoly = new google.maps.Polygon({ paths, ...polyStyle, editable: true });
         gpoly.setMap(mapRef.current);
@@ -254,7 +235,6 @@ export default function ServiceAreaEditor({
     [resetDraft]
   );
 
-  // Validate & Save (insert or update)
   const saveDraft = useCallback(async () => {
     if (!draftPolys.length) {
       setError("Draw at least one polygon.");
@@ -262,7 +242,6 @@ export default function ServiceAreaEditor({
     }
     const multi = makeMultiPolygon(draftPolys);
 
-    // Duplicate detection against existing (simple heuristic)
     const newKey = normalizeMultiPolygon(multi);
     const dup = serviceAreas.find((a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId);
     if (dup) {
@@ -280,7 +259,6 @@ export default function ServiceAreaEditor({
     setError(null);
     try {
       if (activeAreaId) {
-        // update (server checks ownership via auth.uid())
         const { error } = await supabase.rpc("update_service_area", {
           p_area_id: activeAreaId,
           p_gj: multi,
@@ -311,12 +289,11 @@ export default function ServiceAreaEditor({
       setLoading(true);
       setError(null);
       try {
-        // delete (server checks ownership via auth.uid())
         const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
         if (error) throw error;
         if (activeAreaId === area.id) resetDraft();
-        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id)); // optimistic remove
-        await fetchAreas(); // final refresh
+        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
+        await fetchAreas();
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
       } finally {
@@ -331,7 +308,6 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [resetDraft]);
 
-  // Center map on first area if available
   useEffect(() => {
     if (!isLoaded || !mapRef.current || !serviceAreas.length) return;
     const first = serviceAreas[0];
@@ -352,7 +328,6 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
-  // Helpers for slot render
   function slotInfo(areaId: string, slot: 1 | 2 | 3): SlotState | undefined {
     const s = sponsorship[areaId];
     return s?.slots.find((x) => x.slot === slot);
@@ -384,7 +359,6 @@ export default function ServiceAreaEditor({
               </div>
             )}
 
-            {/* Draft editor */}
             {(creating || activeAreaId !== null || draftPolys.length > 0) && (
               <div className="border rounded-lg p-3 mb-4">
                 <div className="flex items-center gap-2 mb-2">
@@ -442,6 +416,19 @@ export default function ServiceAreaEditor({
                 const dis2 = !!s2?.taken && !mine2;
                 const dis3 = !!s3?.taken && !mine3;
 
+                // helper to route click either to manage (owned) or sponsor (new)
+                const clickSlot = (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
+                  if (isDisabled) return;
+                  if (isMine && onSlotAction) {
+                    onSlotAction({ id: a.id, name: a.name }, slot);
+                    return;
+                  }
+                  // default: open sponsor flow
+                  setSponsorAreaId(a.id);
+                  setSponsorSlot(slot);
+                  setSponsorOpen(true);
+                };
+
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
                     <div className="flex items-center justify-between">
@@ -461,16 +448,11 @@ export default function ServiceAreaEditor({
                       </div>
                     </div>
 
-                    {/* Sponsor buttons */}
+                    {/* Sponsor / Manage buttons */}
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => {
-                          if (dis1) return;
-                          setSponsorAreaId(a.id);
-                          setSponsorSlot(1);
-                          setSponsorOpen(true);
-                        }}
+                        onClick={() => clickSlot(1, mine1, dis1)}
                         disabled={dis1}
                         title={s1?.taken ? `Status: ${s1?.status || "taken"}` : "Available"}
                       >
@@ -479,12 +461,7 @@ export default function ServiceAreaEditor({
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => {
-                          if (dis2) return;
-                          setSponsorAreaId(a.id);
-                          setSponsorSlot(2);
-                          setSponsorOpen(true);
-                        }}
+                        onClick={() => clickSlot(2, mine2, dis2)}
                         disabled={dis2}
                         title={s2?.taken ? `Status: ${s2?.status || "taken"}` : "Available"}
                       >
@@ -493,12 +470,7 @@ export default function ServiceAreaEditor({
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => {
-                          if (dis3) return;
-                          setSponsorAreaId(a.id);
-                          setSponsorSlot(3);
-                          setSponsorOpen(true);
-                        }}
+                        onClick={() => clickSlot(3, mine3, dis3)}
                         disabled={dis3}
                         title={s3?.taken ? `Status: ${s3?.status || "taken"}` : "Available"}
                       >
@@ -509,9 +481,7 @@ export default function ServiceAreaEditor({
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">
-                  No service areas yet. Click “New Area” to draw one.
-                </li>
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
               )}
             </ul>
           </div>
@@ -557,14 +527,12 @@ export default function ServiceAreaEditor({
                 options={{
                   drawingMode: null,
                   drawingControl: true,
-                  drawingControlOptions: {
-                    drawingModes: [google.maps.drawing.OverlayType.POLYGON],
-                  },
+                  drawingControlOptions: { drawingModes: [google.maps.drawing.OverlayType.POLYGON] },
                   polygonOptions: polyStyle,
                 }}
               />
 
-              {/* Render existing areas as non-editable preview when not in draft mode, with paint */}
+              {/* non-editable painted overlays */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
@@ -574,7 +542,6 @@ export default function ServiceAreaEditor({
                     ...polyStyle,
                     editable: false,
                     draggable: false,
-                    // Use sponsorship paint if available, otherwise default grey
                     fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
                     strokeColor: paint?.stroke ?? "#555",
                   };
