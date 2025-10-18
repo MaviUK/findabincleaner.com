@@ -10,14 +10,13 @@
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
-  # (Optional) If you want ALL functions to receive raw bodies by default:
+  # If you want ALL functions to receive raw bodies by default, leave commented:
   # body = "raw"
 
-# Ensure ONLY the Stripe webhook gets a raw body (needed for signature verify)
+# Only the Stripe webhook needs raw body for signature verification
 [functions."stripe-webhook"]
   body = "raw"
 
-# Optional (for local dev with `ntl dev`)
 [dev]
   framework = "vite"
 
@@ -36,7 +35,7 @@
   to   = "/.netlify/functions/area-preview"
   status = 200
 
-# Geo JSON feeds for maps
+# Geo JSON feeds
 [[redirects]]
   from = "/api/geo/my-coverage"
   to   = "/.netlify/functions/geo-my-coverage"
@@ -52,7 +51,7 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship (legacy endpoints)
+# Sponsorship (legacy)
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -69,12 +68,13 @@
   status = 200
 
 # Stripe webhook (server-to-server)
+# NOTE: Source must NOT start with "/.netlify"
 [[redirects]]
   from = "/api/stripe/webhook"
   to   = "/.netlify/functions/stripe-webhook"
   status = 200
 
-# Post-verify alias (nice UX for Dashboard)
+# Post-verify alias
 [[redirects]]
   from = "/api/stripe/postverify"
   to   = "/.netlify/functions/stripe-postverify"
@@ -87,23 +87,6 @@
   status = 200
 
 ########################
-# Let direct function URLs pass through
-########################
-# Hard-stop: never let SPA catch the exact webhook path
-[[redirects]]
-  from = "/.netlify/functions/stripe-webhook"
-  to   = "/.netlify/functions/stripe-webhook"
-  status = 200
-  force = true
-
-# Pass-through for ANY functions path
-[[redirects]]
-  from = "/.netlify/functions/*"
-  to   = "/.netlify/functions/:splat"
-  status = 200
-  force = true
-
-########################
 # API headers (disable CDN caching for JSON)
 ########################
 [[headers]]
@@ -113,7 +96,6 @@
     Pragma        = "no-cache"
     Expires       = "0"
 
-# If you call functions directly without /api redirects
 [[headers]]
   for = "/.netlify/functions/*"
   [headers.values]
