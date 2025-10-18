@@ -87,6 +87,15 @@
   status = 200
 
 ########################
+# Let direct function URLs pass through
+########################
+[[redirects]]
+  from = "/.netlify/functions/*"
+  to   = "/.netlify/functions/:splat"
+  status = 200
+  force = true
+
+########################
 # API headers (disable CDN caching for JSON)
 ########################
 [[headers]]
