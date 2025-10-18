@@ -89,6 +89,14 @@
 ########################
 # Let direct function URLs pass through
 ########################
+# Hard-stop: never let SPA catch the exact webhook path
+[[redirects]]
+  from = "/.netlify/functions/stripe-webhook"
+  to   = "/.netlify/functions/stripe-webhook"
+  status = 200
+  force = true
+
+# Pass-through for ANY functions path
 [[redirects]]
   from = "/.netlify/functions/*"
   to   = "/.netlify/functions/:splat"
