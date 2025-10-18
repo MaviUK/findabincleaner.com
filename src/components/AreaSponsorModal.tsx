@@ -1,28 +1,25 @@
 // src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabase";
 
-/** ---------- Types ---------- */
-type AvailabilityOk = { ok: true; existing: any; available: any };
-type AvailabilityErr = { ok: false; error: string };
-type Availability = AvailabilityOk | AvailabilityErr;
-
-type PreviewOk = {
-  ok: true;
-  area_km2: number | string | null;
-  monthly_price: number | string | null;
-  total_price: number | string | null;
-  final_geojson: any | null;
-  months?: number;
+type Props = {
+  open: boolean;
+  onClose: () => void;
+  cleanerId: string;
+  areaId: string;
+  slot: 1 | 2 | 3;
 };
-type PreviewErr = { ok: false; error: string };
-type PreviewResult = PreviewOk | PreviewErr;
 
-/** Safe numeric coerce */
-function toNum(n: unknown): number | null {
-  const x = typeof n === "string" ? Number(n) : (n as number);
-  return Number.isFinite(x) ? x : null;
-}
+type GetSubResponse =
+  | {
+      ok: true;
+      subscription: {
+        area_name: string | null;
+        status: string | null;
+        current_period_end: string | null; // ISO
+        price_monthly_pennies: number | null;
+      };
+    }
+  | { ok: false; notFound?: boolean; error?: string };
 
 export default function AreaSponsorModal({
   open,
@@ -30,317 +27,189 @@ export default function AreaSponsorModal({
   cleanerId,
   areaId,
   slot,
-}: {
-  open: boolean;
-  onClose: () => void;
-  cleanerId: string;
-  areaId: string;
-  slot: 1 | 2 | 3;
-}) {
-  const [loading, setLoading] = useState(false);
+}: Props) {
+  const [loading, setLoading] = useState(true);
+  const [mode, setMode] = useState<"manage" | "sponsor" | "error">("sponsor");
+  const [areaName, setAreaName] = useState<string>("");
+  const [status, setStatus] = useState<string | null>(null);
+  const [periodEnd, setPeriodEnd] = useState<string | null>(null);
+  const [priceGBP, setPriceGBP] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [avail, setAvail] = useState<Availability | null>(null);
+  const title = useMemo(
+    () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
+    [mode, slot]
+  );
 
-  const [previewing, setPreviewing] = useState(false);
-  const [preview, setPreview] = useState<PreviewResult | null>(null);
-
-  // (loaded for potential future use)
-  const [areaGeoJSON, setAreaGeoJSON] = useState<any | null>(null);
-  const [loadingGJ, setLoadingGJ] = useState(false);
-
-  /** Load the service area's GeoJSON when the modal opens */
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadGJ() {
-      if (!open || !areaId) return;
-      setLoadingGJ(true);
-      setErr(null);
-      try {
-        const { data, error } = await supabase
-          .from("service_areas")
-          .select("gj")
-          .eq("id", areaId)
-          .maybeSingle();
-
-        if (error) throw error;
-        if (!data?.gj) throw new Error("This service area has no geometry saved.");
-        if (!cancelled) setAreaGeoJSON(data.gj);
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "Failed to load area geometry.");
-      } finally {
-        if (!cancelled) setLoadingGJ(false);
-      }
-    }
-
-    if (open) {
-      setErr(null);
-      setAvail(null);
-      setPreview(null);
-      loadGJ();
-    }
-
-    return () => {
-      cancelled = true;
-    };
-  }, [open, areaId]);
-
-  /** Build availability URL — include cleaner_id (exclude self) */
-  const availabilityUrl = useMemo(() => {
-    const qs = new URLSearchParams({
-      area_id: areaId,
-      slot: String(slot),
-      cleaner_id: cleanerId,
-      t: String(Date.now()),
-    });
-    return `/.netlify/functions/area-availability?${qs.toString()}`;
-  }, [areaId, slot, cleanerId]);
-
-  /** Fetch availability on open */
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
 
+    // Sanity check props
+    if (!cleanerId || !areaId || !slot) {
+      setMode("error");
+      setErr("Missing params");
+      setLoading(false);
+      return;
+    }
+
+    // Try to load an existing subscription for this cleaner/area/slot
     (async () => {
       setLoading(true);
       setErr(null);
-      setAvail(null);
-      setPreview(null);
       try {
-        const res = await fetch(availabilityUrl, {
-          method: "GET",
-          headers: { accept: "application/json" },
+        const res = await fetch("/.netlify/functions/subscription-get", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cleanerId, areaId, slot }),
         });
+        const json: GetSubResponse = await res.json();
 
-        const ct = res.headers.get("content-type") || "";
-        const raw = await res.text().catch(() => "");
-
-        console.log("[area-availability] status:", res.status, res.statusText);
-        console.log("[area-availability] content-type:", ct);
-        if (raw) console.log("[area-availability] raw:", raw);
-
-        if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-        if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
-
-        const data: Availability = JSON.parse(raw);
-        if (!data || (data as any).ok !== true) {
-          const msg =
-            (data as AvailabilityErr)?.error ||
-            `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
-          throw new Error(msg);
+        if (json.ok) {
+          setMode("manage");
+          const s = json.subscription;
+          setAreaName(s.area_name || "");
+          setStatus(s.status || null);
+          setPeriodEnd(s.current_period_end);
+          setPriceGBP(
+            typeof s.price_monthly_pennies === "number"
+              ? (s.price_monthly_pennies / 100).toFixed(2)
+              : null
+          );
+        } else if (json.notFound) {
+          // No sub found for this cleaner/area/slot → sponsor mode
+          setMode("sponsor");
+          // Optional: you can also fetch a price preview here if you want.
+        } else {
+          setMode("error");
+          setErr(json.error || "Failed to load subscription");
         }
-        if (!cancelled) setAvail(data);
       } catch (e: any) {
-        const msg =
-          typeof e?.message === "string" && e.message.startsWith("<")
-            ? "Received HTML from server (check Netlify redirects order)."
-            : e?.message || "Failed to load availability.";
-        if (!cancelled) setErr(msg);
+        setMode("error");
+        setErr(e?.message || "Failed to load subscription");
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     })();
+  }, [open, cleanerId, areaId, slot]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [open, availabilityUrl]);
-
-  /** Preview pricing — send cleanerId so DB excludes your own records */
-  async function runPreview() {
-    if (!open) return;
-    setPreviewing(true);
-    setErr(null);
-    setPreview(null);
-
+  async function cancelAtPeriodEnd() {
+    if (!confirm("Cancel this subscription at period end?")) return;
     try {
-      const res = await fetch(`/.netlify/functions/area-preview`, {
+      setLoading(true);
+      const res = await fetch("/.netlify/functions/subscription-cancel", {
         method: "POST",
-        headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({
-          areaId: areaId,
-          slot,
-          months: 1,
-          drawnGeoJSON: null,
-          cleanerId, // <-- IMPORTANT (exclude own areas when calculating availability)
-        }),
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cleanerId, areaId, slot }),
       });
-
-      const ct = res.headers.get("content-type") || "";
-      const raw = await res.text().catch(() => "");
-
-      console.log("[area-preview] status:", res.status, res.statusText);
-      console.log("[area-preview] content-type:", ct);
-      if (raw) console.log("[area-preview] raw:", raw);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-      if (!ct.includes("application/json")) throw new Error(`Non-JSON response:\n${raw}`);
-
-      const data: PreviewResult = JSON.parse(raw);
-      if (!data || (data as any).ok !== true) {
-        const msg =
-          (data as PreviewErr)?.error ||
-          `Server responded without ok=true:\n${JSON.stringify(data, null, 2)}`;
-        throw new Error(msg);
+      const json = await res.json();
+      if (!res.ok || json?.ok !== true) {
+        throw new Error(json?.error || `Cancel failed (${res.status})`);
       }
-      setPreview(data);
+      // Update UI to reflect canceled status
+      setStatus("canceled");
     } catch (e: any) {
-      setErr(String(e?.message || e));
+      setErr(e?.message || "Cancel failed");
     } finally {
-      setPreviewing(false);
+      setLoading(false);
     }
   }
 
-  /** Stripe checkout — also pass cleanerId */
-  async function goToCheckout() {
-    try {
-      let token: string | null = null;
-      const rawToken = localStorage.getItem("supabase.auth.token");
-      if (rawToken) {
-        try {
-          const parsed = JSON.parse(rawToken);
-          token = parsed?.currentSession?.access_token ?? null;
-        } catch {}
-      }
-
-      const res = await fetch(`/.netlify/functions/sponsored-checkout`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          cleanerId,
-          areaId,
-          slot,
-          months: 1,
-          drawnGeoJSON: null,
-        }),
+  function sponsorCheckout() {
+    // Hand off to your existing checkout function endpoint
+    // This endpoint looks up availability and creates a Stripe Checkout Session.
+    const url = "/.netlify/functions/sponsored-checkout";
+    setLoading(true);
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cleanerId, areaId, slot }),
+    })
+      .then((r) => r.json())
+      .then((j) => {
+        if (j?.url) {
+          window.location.href = j.url;
+        } else {
+          throw new Error(j?.error || "Failed to start checkout");
+        }
+      })
+      .catch((e) => {
+        setErr(e?.message || "Failed to start checkout");
+        setLoading(false);
       });
-
-      const ct = res.headers.get("content-type") || "";
-      const raw = await res.text().catch(() => "");
-      console.log("[checkout] status:", res.status, res.statusText);
-      console.log("[checkout] content-type:", ct);
-      if (raw) console.log("[checkout] raw:", raw);
-
-      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}\n${raw}`);
-      if (!ct.includes("application/json")) throw new Error(`Non-JSON response from checkout:\n${raw}`);
-
-      const data = JSON.parse(raw);
-      if (data?.url) {
-        window.location.href = data.url; // to Stripe
-      } else {
-        throw new Error("No checkout URL returned.");
-      }
-    } catch (e: any) {
-      const msg =
-        typeof e?.message === "string" && e.message.startsWith("<")
-          ? "Received HTML from server (check Netlify redirects order)."
-          : e?.message || "Failed to start checkout.";
-      setErr(msg);
-    }
   }
 
   if (!open) return null;
 
-  /** Derived state */
-  const okAvail = avail && (avail as any).ok;
-  const availHasArea =
-    (okAvail &&
-      (avail as AvailabilityOk).available &&
-      (Array.isArray((avail as AvailabilityOk).available?.coordinates)
-        ? (avail as AvailabilityOk).available.coordinates.length > 0
-        : true)) ||
-    false;
-
-  const areaKm2 = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).area_km2) : null;
-  const monthly = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).monthly_price) : null;
-  const total = preview && (preview as PreviewOk).ok ? toNum((preview as PreviewOk).total_price) : null;
-
-  // Allow billing if availability shows some area OR the preview computed a positive area.
-  const canBill = availHasArea || (areaKm2 !== null && areaKm2 > 0);
-
   return (
-    <div className="fixed inset-0 z-[100] grid place-items-center p-4">
-      <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="relative w-full max-w-xl rounded-2xl bg-white shadow-xl overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="text-lg font-semibold">Sponsor #{slot}</h3>
-          <button
-            type="button"
-            className="text-sm px-2 py-1 rounded hover:bg-black/5"
-            onClick={onClose}
-          >
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center"
+      aria-modal="true"
+      role="dialog"
+    >
+      {/* Backdrop */}
+      <div
+        className="absolute inset-0 bg-black/40"
+        onClick={() => !loading && onClose()}
+      />
+
+      {/* Modal */}
+      <div className="relative z-[101] w-[92vw] max-w-md rounded-xl bg-white shadow-lg">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <div className="font-semibold">{title}</div>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
             Close
           </button>
         </div>
 
-        <div className="p-4 space-y-3">
-          {(loading || loadingGJ) && <div className="text-sm text-gray-600">Loading…</div>}
+        <div className="px-4 py-3 space-y-3">
+          {loading && <div className="text-sm text-gray-600">Loading…</div>}
 
-          {!loading && !loadingGJ && err && (
-            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2 whitespace-pre-wrap">
+          {!loading && err && (
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
               {err}
             </div>
           )}
 
-          {!loading && !loadingGJ && !err && okAvail && (
+          {!loading && mode === "manage" && !err && (
             <>
+              {areaName && (
+                <div className="text-sm">
+                  <span className="font-medium">Area:</span> {areaName}
+                </div>
+              )}
               <div className="text-sm">
-                <div className="mb-1">
-                  <strong>Result:</strong>{" "}
-                  {canBill ? (
-                    <span className="text-green-700">
-                      Some part of this area is available for #{slot}.
-                    </span>
-                  ) : (
-                    <span className="text-gray-700">
-                      No billable area is currently available for #{slot} inside this Service Area.
-                    </span>
-                  )}
-                </div>
-                <div className="text-xs text-gray-500">
-                  We’ll only bill the portion that’s actually available for this slot.
-                </div>
+                <span className="font-medium">Status:</span> {status || "—"}
+              </div>
+              <div className="text-sm">
+                <span className="font-medium">Next renewal:</span>{" "}
+                {periodEnd ? new Date(periodEnd).toLocaleString() : "—"}
+              </div>
+              <div className="text-sm">
+                <span className="font-medium">Price:</span>{" "}
+                {priceGBP ? `${priceGBP} GBP/mo` : "—"}
               </div>
 
-              <div className="flex items-center gap-2 pt-2">
+              <div className="pt-1">
                 <button
-                  type="button"
                   className="btn"
-                  onClick={runPreview}
-                  disabled={previewing}
+                  onClick={cancelAtPeriodEnd}
+                  disabled={loading || status === "canceled"}
                 >
-                  {previewing ? "Calculating…" : "Preview price"}
+                  Cancel at period end
                 </button>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={goToCheckout}
-                  disabled={!canBill}
-                  title={!canBill ? "This slot currently has no billable area." : undefined}
-                >
+              </div>
+            </>
+          )}
+
+          {!loading && mode === "sponsor" && !err && (
+            <>
+              <div className="text-sm text-gray-700">
+                This slot appears to be available. Continue to checkout to sponsor it.
+              </div>
+              <div className="pt-1">
+                <button className="btn btn-primary" onClick={sponsorCheckout} disabled={loading}>
                   Continue to checkout
                 </button>
               </div>
-
-              {preview && (preview as PreviewOk).ok && (
-                <div className="mt-3 text-sm space-y-1">
-                  <div>
-                    <span className="text-gray-500">Area:</span>{" "}
-                    {areaKm2 !== null ? `${areaKm2.toFixed(4)} km²` : "–"}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">Monthly price:</span>{" "}
-                    {monthly !== null ? `£${monthly.toFixed(2)}` : "–"}
-                  </div>
-                  <div>
-                    <span className="text-gray-500">First charge (months × price):</span>{" "}
-                    {total !== null ? `£${total.toFixed(2)}` : "–"}
-                  </div>
-                </div>
-              )}
             </>
           )}
         </div>
