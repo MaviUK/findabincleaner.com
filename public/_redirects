@@ -1,1 +1,3 @@
-/*    /index.html   200
+/.netlify/functions/stripe-webhook   /.netlify/functions/stripe-webhook   200!
+/api/stripe/webhook                  /.netlify/functions/stripe-webhook   200!
+/*                                   /index.html                          200
