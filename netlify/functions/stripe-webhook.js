@@ -2,9 +2,14 @@
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
+/**
+ * Ensure this function is always reachable directly and receives the raw body
+ * so the Stripe signature can be verified. Visit in browser to see a health message:
+ *   https://<site>/.netlify/functions/stripe-webhook
+ */
 export const config = {
   path: "/.netlify/functions/stripe-webhook",
-  body: "raw", // keep raw body for Stripe signature verification
+  body: "raw",
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
@@ -13,14 +18,16 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-// ---------- helpers ----------
+/* ----------------------------- helpers ---------------------------------- */
 
 async function resolveContext({ meta, customerId }) {
   const business_id = meta?.cleaner_id || meta?.business_id || null;
   const area_id = meta?.area_id || null;
   const slot = meta?.slot ? Number(meta.slot) : null;
+
   if (business_id && area_id && slot) return { business_id, area_id, slot };
 
+  // Fall back via cleaners.stripe_customer_id
   if (customerId) {
     const { data, error } = await supabase
       .from("cleaners")
@@ -30,6 +37,7 @@ async function resolveContext({ meta, customerId }) {
     if (error) console.error("[webhook] resolveContext error:", error);
     if (data?.id) return { business_id: data.id, area_id: null, slot: null };
   }
+
   return { business_id: null, area_id: null, slot: null };
 }
 
@@ -68,14 +76,35 @@ async function upsertInvoice(inv) {
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
-  const { data: subRow, error: findErr } = await supabase
+  // Ensure we have a subscription row. If not, retrieve from Stripe and insert it.
+  let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
     .select("id")
     .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
+
   if (findErr) {
     console.error("[webhook] find sub for invoice error:", findErr);
     throw new Error("DB find(sub) for invoice failed");
+  }
+
+  if (!subRow && subscriptionId) {
+    // Retrieve the subscription and create it (handles out-of-order deliveries)
+    try {
+      const sub = await stripe.subscriptions.retrieve(subscriptionId, {
+        expand: ["customer", "items.data.price.product"],
+      });
+      await upsertSubscription(sub, sub.metadata || {});
+      // Re-fetch the row id for FK
+      const refetch = await supabase
+        .from("sponsored_subscriptions")
+        .select("id")
+        .eq("stripe_subscription_id", subscriptionId)
+        .maybeSingle();
+      subRow = refetch.data ?? null;
+    } catch (e) {
+      console.error("[webhook] could not retrieve+insert subscription for invoice:", e);
+    }
   }
 
   const payload = {
@@ -99,7 +128,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB upsert(invoice) failed");
   }
 
-  // Mirror minimal invoice status to sub
+  // Mirror minimal invoice status back to the subscription row
   if (subRow?.id) {
     let mirror = null;
     if (inv.status === "paid") mirror = "active";
@@ -118,9 +147,10 @@ async function upsertInvoice(inv) {
   }
 }
 
-// ---------- handler ----------
+/* ----------------------------- handler ---------------------------------- */
 
 export default async (req) => {
+  // Health check for browsers
   if (req.method === "GET") {
     return json({ ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
   }
@@ -131,7 +161,7 @@ export default async (req) => {
 
   let event;
   try {
-    const raw = await req.text();
+    const raw = await req.text(); // RAW body is required
     event = stripe.webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
@@ -142,6 +172,7 @@ export default async (req) => {
     console.log(`[webhook] ${event.type} id=${event.id}`);
 
     switch (event.type) {
+      // Checkout success → insert sub + latest invoice
       case "checkout.session.completed": {
         const session = event.data.object;
         if (session.mode === "subscription" && session.subscription) {
@@ -156,6 +187,7 @@ export default async (req) => {
         break;
       }
 
+      // Sub lifecycle (also fires for Billing Portal changes)
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = event.data.object;
@@ -176,6 +208,7 @@ export default async (req) => {
         break;
       }
 
+      // Keep invoices table synced (these may arrive before a sub row exists)
       case "invoice.paid":
       case "invoice.payment_failed":
       case "invoice.finalized":
@@ -185,13 +218,14 @@ export default async (req) => {
       }
 
       default:
-        // no-op
+        // No-op for other events
         break;
     }
 
     return json({ ok: true });
   } catch (e) {
     console.error("[webhook] handler error:", e);
+    // Stripe will retry non-2xx. Keep this 500 while you’re validating writes.
     return json({ error: e?.message || "Server error" }, 500);
   }
 };
