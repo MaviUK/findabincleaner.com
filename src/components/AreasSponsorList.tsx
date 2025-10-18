@@ -1,5 +1,5 @@
 // src/components/AreasSponsorList.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabase";
 import AreaSponsorDrawer from "./AreaSponsorDrawer";
 
@@ -23,17 +23,26 @@ type SponsorshipState = {
   paint: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 
+type Props = {
+  cleanerId: string;
+  sponsorshipVersion?: number;
+  /** Called when user clicks a “Manage #n” button for their own slot. */
+  onSlotAction?: (area: { id: string; name: string }, slot: 1 | 2 | 3) => void | Promise<void>;
+};
+
 export default function AreasSponsorList({
   cleanerId,
   sponsorshipVersion = 0,
-}: {
-  cleanerId: string;
-  sponsorshipVersion?: number;
-}) {
+  onSlotAction,
+}: Props) {
   const [areas, setAreas] = useState<AreaRow[]>([]);
   const [sponsorship, setSponsorship] = useState<Record<string, SponsorshipState | undefined>>({});
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState<{ areaId: string; slot: 1 | 2 | 3; center: [number, number] } | null>(null);
+  const [active, setActive] = useState<{
+    areaId: string;
+    slot: 1 | 2 | 3;
+    center: [number, number];
+  } | null>(null);
 
   // Load areas
   useEffect(() => {
@@ -70,18 +79,26 @@ export default function AreasSponsorList({
         setSponsorship({});
       }
     })();
+    // Trigger on areas and version so it refreshes after a checkout success
   }, [areas, sponsorshipVersion]);
 
   function slotInfo(areaId: string, slot: 1 | 2 | 3) {
     return sponsorship[areaId]?.slots.find((x) => x.slot === slot);
   }
 
-  function openSponsor(area: AreaRow, slot: 1 | 2 | 3) {
+  function handleSlotClick(area: AreaRow, slot: 1 | 2 | 3) {
     const s = slotInfo(area.id, slot);
     const mine = !!s?.owner_business_id && s.owner_business_id === cleanerId;
     const disabled = !!s?.taken && !mine;
     if (disabled) return;
 
+    if (mine && onSlotAction) {
+      // For owned slot, delegate to parent “manage” handler
+      onSlotAction({ id: area.id, name: area.name }, slot);
+      return;
+    }
+
+    // Otherwise open sponsorship drawer (new purchase)
     const center: [number, number] =
       area.center_lat && area.center_lng
         ? [area.center_lat, area.center_lng]
@@ -112,7 +129,7 @@ export default function AreasSponsorList({
               <div className="flex gap-2">
                 <button
                   className={`px-3 py-1.5 rounded border text-sm ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
-                  onClick={() => openSponsor(a, 1)}
+                  onClick={() => handleSlotClick(a, 1)}
                   disabled={dis1}
                   title={s1?.taken ? `Status: ${s1?.status || "taken"}` : "Available"}
                 >
@@ -120,7 +137,7 @@ export default function AreasSponsorList({
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded border text-sm ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
-                  onClick={() => openSponsor(a, 2)}
+                  onClick={() => handleSlotClick(a, 2)}
                   disabled={dis2}
                   title={s2?.taken ? `Status: ${s2?.status || "taken"}` : "Available"}
                 >
@@ -128,7 +145,7 @@ export default function AreasSponsorList({
                 </button>
                 <button
                   className={`px-3 py-1.5 rounded border text-sm ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
-                  onClick={() => openSponsor(a, 3)}
+                  onClick={() => handleSlotClick(a, 3)}
                   disabled={dis3}
                   title={s3?.taken ? `Status: ${s3?.status || "taken"}` : "Available"}
                 >
@@ -139,7 +156,9 @@ export default function AreasSponsorList({
           );
         })}
         {areas.length === 0 && (
-          <li className="p-3 text-sm text-gray-500">No areas yet. Use the map editor above to add one.</li>
+          <li className="p-3 text-sm text-gray-500">
+            No areas yet. Use the map editor above to add one.
+          </li>
         )}
       </ul>
 
