@@ -11,7 +11,7 @@
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
 
-# Only the Stripe webhook needs raw body
+# Only the Stripe webhook needs raw body for signature verification
 [functions."stripe-webhook"]
   body = "raw"
 
@@ -21,6 +21,8 @@
 ########################
 # API / Functions redirects (FIRST)
 ########################
+
+# Areas & Geo endpoints
 [[redirects]]
   from = "/api/area/availability"
   to   = "/.netlify/functions/area-availability"
@@ -46,6 +48,7 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
+# Sponsorship checkout/preview (legacy)
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -61,16 +64,33 @@
   to   = "/.netlify/functions/sponsored-checkout"
   status = 200
 
-# (No redirect for /api/stripe/webhook — the function owns this path)
+# Stripe webhook endpoint (this is the URL configured in Stripe)
+[[redirects]]
+  from = "/api/stripe/webhook"
+  to   = "/.netlify/functions/stripe-webhook"
+  status = 200
 
+# Post-verify alias (nice UX for Dashboard)
 [[redirects]]
   from = "/api/stripe/postverify"
   to   = "/.netlify/functions/stripe-postverify"
   status = 200
 
+# Billing Portal
 [[redirects]]
   from = "/api/billing/portal"
   to   = "/.netlify/functions/billing-portal"
+  status = 200
+
+# Manage view: subscription info + cancel-at-period-end
+[[redirects]]
+  from = "/api/subscription/get"
+  to   = "/.netlify/functions/subscription-get"
+  status = 200
+
+[[redirects]]
+  from = "/api/subscription/cancel"
+  to   = "/.netlify/functions/subscription-cancel"
   status = 200
 
 ########################
@@ -83,6 +103,7 @@
     Pragma        = "no-cache"
     Expires       = "0"
 
+# If you call functions directly without /api redirects
 [[headers]]
   for = "/.netlify/functions/*"
   [headers.values]
