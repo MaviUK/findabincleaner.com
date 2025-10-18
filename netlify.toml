@@ -10,8 +10,12 @@
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
-  # If you want ALL functions to receive raw bodies by default, uncomment this:
+  # (Optional) If you want ALL functions to receive raw bodies by default:
   # body = "raw"
+
+# Ensure ONLY the Stripe webhook gets a raw body (needed for signature verify)
+[functions."stripe-webhook"]
+  body = "raw"
 
 # Optional (for local dev with `ntl dev`)
 [dev]
@@ -48,7 +52,7 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship (legacy endpoints you still might call)
+# Sponsorship (legacy endpoints)
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -80,12 +84,6 @@
 [[redirects]]
   from = "/api/billing/portal"
   to   = "/.netlify/functions/billing-portal"
-  status = 200
-
-# Optional alias you used before
-[[redirects]]
-  from = "/api/geo-my-coverage"
-  to   = "/.netlify/functions/geo-my-coverage"
   status = 200
 
 ########################
