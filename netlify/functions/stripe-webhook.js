@@ -3,13 +3,15 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * Ensure this function is always reachable directly and receives the raw body
- * so the Stripe signature can be verified. Visit in browser to see a health message:
- *   https://<site>/.netlify/functions/stripe-webhook
+ * This function owns a first-class URL (no redirects involved) and receives the
+ * RAW body so Stripe signatures verify.
+ *
+ * Health check (GET in a browser):
+ *   https://<your-site>/api/stripe/webhook
  */
 export const config = {
-  path: "/.netlify/functions/stripe-webhook",
-  body: "raw",
+  path: "/api/stripe/webhook", // <- serve directly at /api/stripe/webhook
+  body: "raw",                 // <- raw body required for signature verification
 };
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
@@ -89,7 +91,6 @@ async function upsertInvoice(inv) {
   }
 
   if (!subRow && subscriptionId) {
-    // Retrieve the subscription and create it (handles out-of-order deliveries)
     try {
       const sub = await stripe.subscriptions.retrieve(subscriptionId, {
         expand: ["customer", "items.data.price.product"],
