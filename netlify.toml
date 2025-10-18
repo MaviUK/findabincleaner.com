@@ -10,20 +10,17 @@
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
-  # body = "raw"  # (optional) global
 
-# Ensure ONLY the Stripe webhook gets a raw body
+# Only the Stripe webhook needs raw body
 [functions."stripe-webhook"]
   body = "raw"
 
-# Optional (for local dev with `ntl dev`)
 [dev]
   framework = "vite"
 
 ########################
 # API / Functions redirects (FIRST)
 ########################
-# Area sponsorship APIs
 [[redirects]]
   from = "/api/area/availability"
   to   = "/.netlify/functions/area-availability"
@@ -34,7 +31,6 @@
   to   = "/.netlify/functions/area-preview"
   status = 200
 
-# Geo JSON feeds
 [[redirects]]
   from = "/api/geo/my-coverage"
   to   = "/.netlify/functions/geo-my-coverage"
@@ -50,7 +46,6 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship (legacy)
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -66,19 +61,13 @@
   to   = "/.netlify/functions/sponsored-checkout"
   status = 200
 
-# Stripe webhook (server-to-server)
-[[redirects]]
-  from = "/api/stripe/webhook"
-  to   = "/.netlify/functions/stripe-webhook"
-  status = 200
+# (No redirect for /api/stripe/webhook — the function owns this path)
 
-# Post-verify alias
 [[redirects]]
   from = "/api/stripe/postverify"
   to   = "/.netlify/functions/stripe-postverify"
   status = 200
 
-# Billing Portal
 [[redirects]]
   from = "/api/billing/portal"
   to   = "/.netlify/functions/billing-portal"
