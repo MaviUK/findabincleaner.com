@@ -10,20 +10,19 @@
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
-  # If you want ALL functions to receive raw bodies by default, leave commented:
-  # body = "raw"
+  # body = "raw"  # (optional) global
 
-# Only the Stripe webhook needs raw body for signature verification
+# Ensure ONLY the Stripe webhook gets a raw body
 [functions."stripe-webhook"]
   body = "raw"
 
+# Optional (for local dev with `ntl dev`)
 [dev]
   framework = "vite"
 
 ########################
 # API / Functions redirects (FIRST)
 ########################
-
 # Area sponsorship APIs
 [[redirects]]
   from = "/api/area/availability"
@@ -68,7 +67,6 @@
   status = 200
 
 # Stripe webhook (server-to-server)
-# NOTE: Source must NOT start with "/.netlify"
 [[redirects]]
   from = "/api/stripe/webhook"
   to   = "/.netlify/functions/stripe-webhook"
