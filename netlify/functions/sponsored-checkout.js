@@ -1,71 +1,42 @@
-// netlify/functions/sponsored-checkout.js
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-function toPence(gbp) {
-  const n = Number(gbp);
-  return Math.round(Number.isFinite(n) ? n * 100 : 0);
-}
-function readNum(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null) return fallback;
-  const n = Number(String(raw).trim());
-  return Number.isFinite(n) ? n : fallback;
-}
-function tierRates(slot) {
-  switch (Number(slot)) {
-    case 1:
-      return {
-        rate: readNum("RATE_GOLD_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 15)),
-        min:  readNum("MIN_GOLD_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 1)),
-        label: "Gold",
-      };
-    case 2:
-      return {
-        rate: readNum("RATE_SILVER_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 12)),
-        min:  readNum("MIN_SILVER_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.75)),
-        label: "Silver",
-      };
-    case 3:
-      return {
-        rate: readNum("RATE_BRONZE_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 10)),
-        min:  readNum("MIN_BRONZE_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.5)),
-        label: "Bronze",
-      };
-    default:
-      return {
-        rate: readNum("RATE_PER_KM2_PER_MONTH", 15),
-        min:  readNum("MIN_PRICE_PER_MONTH", 1),
-        label: "Unknown",
-      };
-  }
-}
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
-function siteBase() {
-  return (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
-}
+const RATE = {
+  1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1),
+  2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? 0.75),
+  3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? 0.5),
+};
+const MIN = {
+  1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? 1),
+  2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? 0.75),
+  3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
+};
 
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+
+const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
+const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
+
+// Basic duplicate guard (same business/area/slot with active/unsettled status)
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("sponsored_subscriptions")
       .select("id,status,stripe_subscription_id,stripe_payment_intent_id")
       .eq("business_id", business_id)
       .eq("area_id", area_id)
       .eq("slot", Number(slot))
       .limit(1);
-    if (error || !data?.length) return false;
+    if (!data?.length) return false;
     const row = data[0];
-    const active = new Set(["active","trialing","past_due","unpaid","incomplete","incomplete_expired"]);
-    return active.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    const activeish = new Set([
+      "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
+    ]);
+    return activeish.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch {
     return false;
   }
@@ -83,58 +54,72 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
 
   let email = null;
   if (cleaner.user_id) {
-    const { data: p } = await supabase.from("profiles").select("email").eq("id", cleaner.user_id).maybeSingle();
-    email = p?.email || null;
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("email").eq("id", cleaner.user_id).maybeSingle();
+    email = profile?.email || null;
   }
 
-  let stripeCustomerId = null;
+  // Reuse by email if found
+  let customerId = null;
   if (email) {
     const list = await stripe.customers.list({ email, limit: 1 });
-    if (list.data.length) stripeCustomerId = list.data[0].id;
+    if (list.data.length) customerId = list.data[0].id;
   }
-  if (!stripeCustomerId) {
+  if (!customerId) {
     const created = await stripe.customers.create({
       email: email || undefined,
       name: cleaner.business_name || undefined,
       metadata: { cleaner_id: cleanerId },
     });
-    stripeCustomerId = created.id;
+    customerId = created.id;
   }
-  await supabase.from("cleaners").update({ stripe_customer_id: stripeCustomerId }).eq("id", cleanerId);
-  return stripeCustomerId;
+  await supabase.from("cleaners").update({ stripe_customer_id: customerId }).eq("id", cleanerId);
+  return customerId;
 }
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot, months = 1, drawnGeoJSON } = await req.json();
+    const { cleanerId, areaId, slot } = await req.json();
     if (!cleanerId || !areaId || !slot) return json({ error: "cleanerId, areaId, slot required" }, 400);
 
     if (await hasExistingSponsorship(cleanerId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // Area for this slot
-    const { data, error } = await supabase.rpc("get_area_preview", {
-      _area_id: areaId,
-      _slot: Number(slot),
-      _drawn_geojson: drawnGeoJSON ?? null,
-      _exclude_cleaner: null,
+    // IMPORTANT: clip to what's actually available for this slot
+    const proc = slot === 1
+      ? "clip_available_slot1_preview"
+      : slot === 2
+      ? "clip_available_slot2_preview"
+      : "clip_available_slot3_preview";
+
+    const { data, error } = await supabase.rpc(proc, {
+      p_cleaner: cleanerId,
+      p_area_id: areaId,
     });
     if (error) {
-      console.error("[checkout] get_area_preview error:", error);
-      return json({ error: "Failed to compute area/price" }, 500);
+      console.error("[checkout] clipping rpc error:", error);
+      return json({ error: "Failed to compute available area" }, 500);
     }
-    const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
-    // Tiered pricing
-    const { rate, min, label } = tierRates(slot);
-    const monthly_price = Math.max(min, Math.max(0, area_km2) * rate);
-    const unit_amount = toPence(monthly_price);
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_m2 = Number(row?.area_m2 ?? 0);
+    const km2 = Math.max(0, area_m2 / 1_000_000);
+
+    if (km2 <= 0) return json({ error: "This slot has no available area for this region." }, 400);
+
+    const rate = RATE[slot] ?? 1;
+    const min  = MIN[slot] ?? 1;
+    const monthly_price = Math.max(min, km2 * rate);
+    const unit_amount   = toPence(monthly_price);
 
     const customerId = await ensureStripeCustomerForCleaner(cleanerId);
     const site = siteBase();
+
+    const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -143,11 +128,11 @@ export default async (req) => {
         {
           price_data: {
             currency: "gbp",
-            unit_amount,
+            unit_amount: unit_amount,
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
-              name: `${label} area sponsorship #${slot}`,
-              description: `Area: ${area_km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
+              name: `Area sponsorship #${slot} (${tierName})`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
             },
           },
           quantity: 1,
@@ -155,16 +140,19 @@ export default async (req) => {
       ],
       subscription_data: {
         metadata: {
-          cleaner_id: cleanerId,
-          area_id: areaId,
+          cleaner_id: String(cleanerId),
+          area_id: String(areaId),
           slot: String(slot),
-          tier: label,
-          area_km2: area_km2.toFixed(6),
+          available_area_km2: km2.toFixed(6),
           monthly_price_pennies: String(unit_amount),
-          months_requested: String(Math.max(1, Number(months))),
+          tier: tierName,
         },
       },
-      metadata: { cleaner_id: cleanerId, area_id: areaId, slot: String(slot), tier: label },
+      metadata: {
+        cleaner_id: String(cleanerId),
+        area_id: String(areaId),
+        slot: String(slot),
+      },
       success_url: `${site}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/#/dashboard?checkout=cancel`,
     });
