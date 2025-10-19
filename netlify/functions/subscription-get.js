@@ -12,66 +12,62 @@ const json = (body, status = 200) =>
   });
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
+  let body;
   try {
-    const { businessId, cleanerId, areaId, slot } = await req.json();
-
-    if (!areaId || !slot || ![1, 2, 3].includes(Number(slot))) {
-      return json({ ok: false, error: "Missing areaId/slot" }, 400);
-    }
-
-    // Resolve business id from cleanerId if not provided
-    let bid = businessId || null;
-    if (!bid && cleanerId) {
-      const { data, error } = await supabase
-        .from("cleaners")
-        .select("id")
-        .eq("user_id", cleanerId)
-        .maybeSingle();
-      if (error) {
-        console.error("[sub-get] cleaners lookup error:", error);
-        return json({ ok: false, error: "Lookup failed" }, 500);
-      }
-      bid = data ? data.id : null;
-    }
-
-    if (!bid) return json({ ok: false, error: "Missing params" }, 400);
-
-    const { data: sub, error: subErr } = await supabase
-      .from("sponsored_subscriptions")
-      .select(
-        `
-        status,
-        current_period_end,
-        price_monthly_pennies,
-        area_id,
-        service_areas!inner(name)
-      `
-      )
-      .eq("business_id", bid)
-      .eq("area_id", areaId)
-      .eq("slot", Number(slot))
-      .maybeSingle();
-
-    if (subErr) {
-      console.error("[sub-get] query error:", subErr);
-      return json({ ok: false, error: "Query failed" }, 500);
-    }
-
-    if (!sub) return json({ ok: false, notFound: true }, 200);
-
-    return json({
-      ok: true,
-      subscription: {
-        area_name: sub.service_areas ? sub.service_areas.name : null,
-        status: sub.status || null,
-        current_period_end: sub.current_period_end || null,
-        price_monthly_pennies: sub.price_monthly_pennies || null,
-      },
-    });
-  } catch (e) {
-    console.error("[sub-get] handler error:", e);
-    return json({ ok: false, error: e && e.message ? e.message : "Server error" }, 500);
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
   }
-};
+
+  const businessId = body?.businessId || null; // cleaners.id (aka business id)
+  const areaId = body?.areaId || null;
+  const slot = Number(body?.slot) || null;
+
+  // Helpful logging in Netlify function logs
+  console.log("[subscription-get] payload:", { businessId, areaId, slot });
+
+  if (!businessId || !areaId || !slot) {
+    return json({ ok: false, error: "Missing params" }, 400);
+  }
+
+  // Find the user’s sponsorship for the area+slot
+  const { data: subRow, error: subErr } = await supabase
+    .from("sponsored_subscriptions")
+    .select(
+      `
+      id,
+      business_id,
+      area_id,
+      slot,
+      status,
+      price_monthly_pennies,
+      current_period_end,
+      service_areas(name)
+    `
+    )
+    .eq("business_id", businessId)
+    .eq("area_id", areaId)
+    .eq("slot", slot)
+    .maybeSingle();
+
+  if (subErr) {
+    console.error("[subscription-get] DB error:", subErr);
+    return json({ ok: false, error: "DB error" }, 500);
+  }
+
+  if (!subRow) {
+    return json({ ok: false, notFound: true }, 200);
+  }
+
+  return json({
+    ok: true,
+    subscription: {
+      area_name: subRow.service_areas?.name || null,
+      status: subRow.status || null,
+      current_period_end: subRow.current_period_end || null,
+      price_monthly_pennies: subRow.price_monthly_pennies ?? null,
+    },
+  });
+}
