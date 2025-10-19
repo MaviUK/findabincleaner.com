@@ -649,31 +649,31 @@ export default function ServiceAreaEditor({
 
               {/* non-editable painted overlays */}
               {activeAreaId === null &&
-                serviceAreas.map((a) => {
-                  const gj = a.gj;
-                  if (!gj || gj.type !== "MultiPolygon") return null;
+  serviceAreas.map((a) => {
+    const gj = a.gj;
+    if (!gj || gj.type !== "MultiPolygon") return null;
+    const paint = areaPaint(a.id);
+    const previewIsForThisArea =
+      previewActiveForArea && sponsorAreaId === a.id;
 
-                  const paint = areaPaint(a.id);
-                  const previewIsForThisArea =
-                    previewActiveForArea && sponsorAreaId === a.id;
+    const style: google.maps.PolygonOptions = {
+      ...polyStyle,
+      editable: false,
+      draggable: false,
+      // currently we DIM here
+      fillOpacity: previewIsForThisArea ? 0.05 : 0.35,
+      strokeOpacity: previewIsForThisArea ? 0.5 : 0.9,
+      fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
+      strokeColor: paint?.stroke ?? "#555",
+    };
 
-                  const style: google.maps.PolygonOptions = {
-                    ...polyStyle,
-                    editable: false,
-                    draggable: false,
-                    // When preview for this area is active, dim the base paint so only the clipped region stands out
-                    fillOpacity: previewIsForThisArea ? 0.05 : 0.35,
-                    strokeOpacity: previewIsForThisArea ? 0.5 : 0.9,
-                    fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
-                    strokeColor: paint?.stroke ?? "#555",
-                  };
+    return (gj.coordinates as number[][][][]).map((poly, i) => {
+      const rings = poly;
+      const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+      return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
+    });
+  })}
 
-                  return (gj.coordinates as number[][][][]).map((poly, i) => {
-                    const rings = poly;
-                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-                    return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
-                  });
-                })}
 
               {/* Preview overlay – drawn on top */}
               {previewPolys.map((p, i) => (
