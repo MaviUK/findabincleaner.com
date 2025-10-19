@@ -24,10 +24,10 @@ type GetSubResp = GetSubOk | GetSubErr;
 
 type PreviewRespOk = {
   ok: true;
-  area_km2: number;              // ← the *actual* available area for this slot
+  area_km2: number;
   monthly_price: number;
   total_price: number;
-  final_geojson?: any | null;    // optional; server may send clipped shape
+  final_geojson?: any | null;
 };
 type PreviewRespErr = { ok?: false; error?: string };
 type PreviewResp = PreviewRespOk | PreviewRespErr;
@@ -53,7 +53,7 @@ export default function AreaSponsorModal({
     [mode, slot]
   );
 
-  // -------- Manage: load current subscription summary --------
+  // Manage view: load summary
   useEffect(() => {
     let cancelled = false;
 
@@ -92,10 +92,10 @@ export default function AreaSponsorModal({
     };
   }, [open, mode, areaId, slot, cleanerId]);
 
-  // -------- Sponsor: auto-preview area + price on open --------
+  // Sponsor view: auto-preview on open
   useEffect(() => {
     if (!open || mode !== "sponsor") return;
-    previewPrice(); // fire-and-forget; user can still click "Preview price" again to refresh
+    previewPrice();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mode, areaId, slot, cleanerId]);
 
@@ -107,11 +107,11 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId,    // business id
-          drawnGeoJSON: null, // using saved geometry; wire a drawing flow later if needed
+          cleanerId,      // business id — used to exclude your own sub if needed
+          areaId,         // << tell server which area
+          slot,           // << and which slot
+          drawnGeoJSON: null,
           months: 1,
-          // server can infer slot=1/2/3 via stored procedure or you can add it:
-          // slot,
         }),
       });
       const json: PreviewResp = await res.json();
@@ -180,14 +180,15 @@ export default function AreaSponsorModal({
   const areaText =
     preview && Number.isFinite(preview.area_km2)
       ? `${preview.area_km2.toFixed(4)} km²`
-      : null;
+      : "—";
 
   const priceText =
     preview && Number.isFinite(preview.monthly_price)
       ? `£${preview.monthly_price.toFixed(2)}/month`
-      : null;
+      : "—";
 
-  const disableCheckout = mode === "sponsor" && (!!preview && preview.area_km2 === 0);
+  const disableCheckout =
+    mode === "sponsor" && !!preview && preview.area_km2 === 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -243,23 +244,18 @@ export default function AreaSponsorModal({
                 </div>
               </div>
 
-              {/* Live preview block */}
               <div className="rounded border p-2 text-sm">
                 {previewLoading && <div className="text-gray-600">Calculating available area…</div>}
-                {previewErr && (
-                  <div className="text-red-700">Preview failed: {previewErr}</div>
-                )}
-                {!previewLoading && !previewErr && preview && (
+                {previewErr && <div className="text-red-700">Preview failed: {previewErr}</div>}
+                {!previewLoading && !previewErr && (
                   <div className="space-y-1">
                     <div>
-                      <span className="font-medium">Available area for slot #{slot}:</span>{" "}
-                      {areaText ?? "—"}
+                      <span className="font-medium">Available area for slot #{slot}:</span> {areaText}
                     </div>
                     <div>
-                      <span className="font-medium">Monthly price:</span>{" "}
-                      {priceText ?? "—"}
+                      <span className="font-medium">Monthly price:</span> {priceText}
                     </div>
-                    {preview.area_km2 === 0 && (
+                    {preview && preview.area_km2 === 0 && (
                       <div className="text-amber-700">
                         Nothing is currently available in your shape for this slot.
                       </div>
