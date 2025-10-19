@@ -4,9 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
-import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
-import AreaSponsorModal from "../components/AreaSponsorModal"; // <-- NEW
 
 type Cleaner = {
   id: string;
@@ -18,7 +16,6 @@ type Cleaner = {
 };
 
 function useHashQuery() {
-  // HashRouter puts query in the hash (e.g. #/dashboard?checkout=success&checkout_session=cs_...)
   const { hash } = useLocation();
   return useMemo(() => {
     const qIndex = hash.indexOf("?");
@@ -37,13 +34,8 @@ export default function Dashboard() {
   const qs = useHashQuery();
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
-  const [sponsorshipVersion, setSponsorshipVersion] = useState(0); // bump to make children refetch
+  const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
   const [openingPortal, setOpeningPortal] = useState(false);
-
-  // NEW: Manage modal state
-  const [manageOpen, setManageOpen] = useState(false);
-  const [manageAreaId, setManageAreaId] = useState<string | null>(null);
-  const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
@@ -64,11 +56,9 @@ export default function Dashboard() {
     }
 
     if (status === "success") {
-      // Attempt to write the purchase immediately so UI updates are instant
       postVerify().finally(() => {
         setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
         setSponsorshipVersion((v) => v + 1);
-        // Clean the URL so the banner doesn't re-trigger on refresh
         const clean = window.location.hash.replace(/\?[^#]*/g, "");
         setTimeout(() => navigate(clean, { replace: true }), 0);
       });
@@ -258,7 +248,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Service areas + Sponsorship actions */}
+          {/* Service areas (with Sponsor/Manage inside the list) */}
           <section className="card">
             <div className="card-pad space-y-6">
               <div className="flex items-center justify-between">
@@ -266,46 +256,14 @@ export default function Dashboard() {
               </div>
 
               <div className="rounded-xl overflow-hidden border">
-                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint */}
                 <ServiceAreaEditor
                   cleanerId={cleaner.id}
                   sponsorshipVersion={sponsorshipVersion}
-                  onSlotAction={(area, slot) => {
-                    // Open "Manage Slot" modal with the right params
-                    setManageAreaId(area.id);
-                    setManageSlot(slot);
-                    setManageOpen(true);
-                  }}
                 />
               </div>
-
-              <div className="flex items-center justify-between pt-2">
-                <h3 className="text-base font-semibold">Sponsor your areas</h3>
-                <a href="#/sponsorships" className="text-sm underline">
-                  Manage →
-                </a>
-              </div>
-
-              {/* Also pass version so buttons re-check availability */}
-              <AreasSponsorList
-                cleanerId={cleaner.id}
-                sponsorshipVersion={sponsorshipVersion}
-              />
             </div>
           </section>
         </>
-      )}
-
-      {/* Manage modal (opens when user clicks "Manage #n") */}
-      {manageOpen && manageAreaId && (
-        <AreaSponsorModal
-          open={manageOpen}
-          onClose={() => setManageOpen(false)}
-          cleanerId={cleaner.id}   // BUSINESS id (cleaners.id)
-          areaId={manageAreaId}    // service_areas.id
-          slot={manageSlot}
-          mode="manage"
-        />
       )}
     </main>
   );
