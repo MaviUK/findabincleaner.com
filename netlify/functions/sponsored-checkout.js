@@ -1,33 +1,29 @@
-// netlify/functions/sponsored-checkout.ts (or .js if you’re using JS)
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, { apiVersion: "2024-06-20" });
-const supabase = createClient(
-  process.env.SUPABASE_URL as string,
-  process.env.SUPABASE_SERVICE_ROLE as string
-);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const RATE = {
   1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1),
   2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? 0.75),
   3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? 0.5),
-} as const;
+};
 
 const MIN = {
   1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? 1),
   2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? 0.75),
   3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
-} as const;
+};
 
-const json = (body: any, status = 200) =>
+const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const toPence = (gbp: number) => Math.round(Math.max(0, Number(gbp)) * 100);
+const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// Basic duplicate guard (same business/area/slot with active/unsettled status)
-async function hasExistingSponsorship(business_id: string, area_id: string, slot: number) {
+// Duplicate guard for SAME business/area/slot
+async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data } = await supabase
       .from("sponsored_subscriptions")
@@ -52,7 +48,7 @@ async function hasExistingSponsorship(business_id: string, area_id: string, slot
   }
 }
 
-async function ensureStripeCustomerForCleaner(cleanerId: string) {
+async function ensureStripeCustomerForCleaner(cleanerId) {
   const { data: cleaner, error } = await supabase
     .from("cleaners")
     .select("id,business_name,stripe_customer_id,user_id")
@@ -60,20 +56,20 @@ async function ensureStripeCustomerForCleaner(cleanerId: string) {
     .maybeSingle();
   if (error) throw error;
   if (!cleaner) throw new Error("Cleaner not found");
-  if (cleaner.stripe_customer_id) return cleaner.stripe_customer_id as string;
+  if (cleaner.stripe_customer_id) return cleaner.stripe_customer_id;
 
-  let email: string | null = null;
+  let email = null;
   if (cleaner.user_id) {
     const { data: profile } = await supabase
       .from("profiles")
       .select("email")
       .eq("id", cleaner.user_id)
       .maybeSingle();
-    email = (profile?.email as string) || null;
+    email = profile?.email || null;
   }
 
   // Reuse by email if found
-  let customerId: string | null = null;
+  let customerId = null;
   if (email) {
     const list = await stripe.customers.list({ email, limit: 1 });
     if (list.data.length) customerId = list.data[0].id;
@@ -81,7 +77,7 @@ async function ensureStripeCustomerForCleaner(cleanerId: string) {
   if (!customerId) {
     const created = await stripe.customers.create({
       email: email || undefined,
-      name: (cleaner.business_name as string) || undefined,
+      name: cleaner.business_name || undefined,
       metadata: { cleaner_id: cleanerId },
     });
     customerId = created.id;
@@ -90,59 +86,23 @@ async function ensureStripeCustomerForCleaner(cleanerId: string) {
   return customerId;
 }
 
-export default async (req: Request) => {
+export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot } = (await req.json()) as {
-      cleanerId?: string;
-      areaId?: string;
-      slot?: number;
-    };
-
-    if (!cleanerId || !areaId || !slot || ![1, 2, 3].includes(Number(slot))) {
+    const { cleanerId, areaId, slot } = await req.json();
+    if (!cleanerId || !areaId || ![1, 2, 3].includes(Number(slot))) {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // Duplicate guard for THIS cleaner
+    // Duplicate guard for this cleaner
     if (await hasExistingSponsorship(cleanerId, areaId, slot)) {
-      return json(
-        { error: "You already have an active/prepaid sponsorship for this slot." },
-        409
-      );
+      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // ---- HARD AVAILABILITY CHECK (server-side) ----
-    // Call the general availability function used by the UI preview fallback.
-    // This should return the remaining (clipped) region and/or its km² for (areaId, slot).
-    const availRes = await fetch(`${siteBase()}/.netlify/functions/area-availability`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ areaId, slot }),
-    });
-
-    if (!availRes.ok) {
-      const txt = await availRes.text().catch(() => "");
-      // If availability cannot be verified, fail safe (block)
-      return json(
-        { error: `Failed to verify availability (${availRes.status}${txt ? ` – ${txt}` : ""})` },
-        502
-      );
-    }
-    const availJson = await availRes.json();
-    const km2Avail = Number(
-      availJson?.km2_available ?? availJson?.area_km2 ?? availJson?.km2 ?? 0
-    );
-
-    if (!Number.isFinite(km2Avail) || km2Avail <= 0) {
-      // HARD STOP: nothing left to buy for this slot
-      return json(
-        { error: `Sponsor #${slot} is already fully taken in this area.` },
-        409
-      );
-    }
-
-    // ---- Price/description using your clipping RPCs (authoritative for price calc) ----
+    // ---- HARD AVAILABILITY CHECK + PRICE (authoritative RPC) ----
+    // Use the slot-specific clipping RPC you already have. If another business holds Sponsor#1,
+    // this should return zero km² after clipping.
     const proc =
       slot === 1
         ? "clip_available_slot1_preview"
@@ -163,13 +123,14 @@ export default async (req: Request) => {
     const area_m2 = Number(row?.area_m2 ?? 0);
     const km2 = Math.max(0, area_m2 / 1_000_000);
 
-    // Defensive: if the pricing RPC says zero, block as well.
     if (!Number.isFinite(km2) || km2 <= 0) {
-      return json({ error: "This slot has no available area for this region." }, 409);
+      // Nothing left to buy for this slot
+      return json({ error: `Sponsor #${slot} is already fully taken in this area.` }, 409);
     }
 
-    const rate = RATE[slot as 1 | 2 | 3] ?? 1;
-    const min = MIN[slot as 1 | 2 | 3] ?? 1;
+    // Price from km²
+    const rate = RATE[slot] ?? 1;
+    const min = MIN[slot] ?? 1;
     const monthly_price = Math.max(min, km2 * rate);
     const unit_amount = toPence(monthly_price);
 
@@ -216,7 +177,7 @@ export default async (req: Request) => {
     });
 
     return json({ url: session.url });
-  } catch (e: any) {
+  } catch (e) {
     console.error("[checkout] error:", e);
     return json({ error: e?.message || "checkout failed" }, 500);
   }
