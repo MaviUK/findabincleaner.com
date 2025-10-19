@@ -10,31 +10,40 @@ const cors = {
   "access-control-allow-headers": "Content-Type, Authorization",
 };
 
-const num = (v, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
+function readNum(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null) return fallback;
+  const n = Number(String(raw).trim());
+  return Number.isFinite(n) ? n : fallback;
+}
 
-function rateForSlot(slot) {
-  // Optional per-slot rates
-  const rates = {
-    1: process.env.RATE_SLOT1,
-    2: process.env.RATE_SLOT2,
-    3: process.env.RATE_SLOT3,
-  };
-  const mins = {
-    1: process.env.MIN_PRICE_SLOT1,
-    2: process.env.MIN_PRICE_SLOT2,
-    3: process.env.MIN_PRICE_SLOT3,
-  };
-
-  const fallbackRate = num(process.env.RATE_PER_KM2_PER_MONTH, 15);
-  const fallbackMin = num(process.env.MIN_PRICE_PER_MONTH, 1);
-
-  return {
-    rate: num(rates[slot], fallbackRate),
-    min: num(mins[slot], fallbackMin),
-  };
+function tierRates(slot) {
+  switch (Number(slot)) {
+    case 1:
+      return {
+        rate: readNum("RATE_GOLD_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 15)),
+        min:  readNum("MIN_GOLD_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 1)),
+        label: "Gold",
+      };
+    case 2:
+      return {
+        rate: readNum("RATE_SILVER_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 12)),
+        min:  readNum("MIN_SILVER_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.75)),
+        label: "Silver",
+      };
+    case 3:
+      return {
+        rate: readNum("RATE_BRONZE_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 10)),
+        min:  readNum("MIN_BRONZE_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.5)),
+        label: "Bronze",
+      };
+    default:
+      return {
+        rate: readNum("RATE_PER_KM2_PER_MONTH", 15),
+        min:  readNum("MIN_PRICE_PER_MONTH", 1),
+        label: "Unknown",
+      };
+  }
 }
 
 function json(body, status = 200) {
@@ -43,45 +52,40 @@ function json(body, status = 200) {
 
 export default async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot, drawnGeoJSON = null, months = 1 } = await req.json();
+    const { cleanerId, areaId, slot, drawnGeoJSON, months = 1 } = await req.json();
+    if (!cleanerId || !areaId || !slot) return json({ error: "cleanerId, areaId, slot required" }, 400);
 
-    if (!cleanerId || !areaId || !slot) {
-      return json({ ok: false, error: "cleanerId, areaId, slot required" }, 400);
-    }
-
-    // Ask DB how much of this area is actually available for the slot,
-    // taking into account overlaps & existing sponsorships.
+    // Ask Postgres to compute the available portion for this slot
     const { data, error } = await sb.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: Number(slot),
-      _drawn_geojson: drawnGeoJSON,     // keep null to use saved polygons
-      _exclude_cleaner: cleanerId,      // exclude the caller's own subs if helpful
+      _drawn_geojson: drawnGeoJSON ?? null,
+      _exclude_cleaner: cleanerId, // exclude user’s own paid shapes from “already taken”
     });
-
     if (error) {
       console.error("[sponsored-preview] get_area_preview error:", error);
-      return json({ ok: false, error: "Failed to compute area/price" }, 500);
+      return json({ error: "Failed to compute area/price" }, 500);
     }
 
-    const row = Array.isArray(data) ? data[0] : data;
-    const area_km2 = num(row?.area_km2, 0);
+    const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
 
-    const { rate, min } = rateForSlot(Number(slot));
+    const { rate, min, label } = tierRates(slot);
     const monthly = Math.max(min, Math.max(0, area_km2) * rate);
-    const total = monthly * Math.max(1, num(months, 1));
+    const total = monthly * Math.max(1, Number(months));
 
     return json({
       ok: true,
+      tier: label,
+      slot: Number(slot),
       area_km2: Number(area_km2.toFixed(5)),
       monthly_price: Number(monthly.toFixed(2)),
       total_price: Number(total.toFixed(2)),
-      final_geojson: row?.final_geojson ?? null,
     });
   } catch (e) {
     console.error("[sponsored-preview] error:", e);
-    return json({ ok: false, error: e.message || "Failed preview" }, 500);
+    return json({ error: e?.message || "Failed preview" }, 500);
   }
 };
