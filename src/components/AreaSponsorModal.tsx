@@ -1,9 +1,10 @@
+// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  /** This is the BUSINESS id (cleaners.id). We keep the prop name for compatibility. */
+  /** BUSINESS id (cleaners.id). We keep the prop name for compatibility. */
   cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
@@ -45,24 +46,41 @@ export default function AreaSponsorModal({
     [mode, slot]
   );
 
+  // Clear state whenever the modal fully closes
+  useEffect(() => {
+    if (!open) {
+      setErr(null);
+      setSub(null);
+      setLoading(false);
+    }
+  }, [open]);
+
   // Load current sub details in manage mode
   useEffect(() => {
     let cancelled = false;
 
     async function run() {
       if (!open || mode !== "manage") return;
+
+      // Quick param validation for clearer UI feedback
+      if (!cleanerId || !areaId || !slot) {
+        setErr("Missing params");
+        return;
+      }
+
       setLoading(true);
       setErr(null);
       setSub(null);
+
       try {
-        const body = { businessId: cleanerId, areaId, slot }; // IMPORTANT: send BUSINESS id
+        const body = { businessId: cleanerId, areaId, slot }; // send BUSINESS id
         const res = await fetch("/.netlify/functions/subscription-get", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
-        const json: GetSubResp = await res.json();
 
+        const json: GetSubResp = await res.json();
         if (cancelled) return;
 
         if ("ok" in json && json.ok) {
@@ -87,10 +105,14 @@ export default function AreaSponsorModal({
   }, [open, mode, areaId, slot, cleanerId]);
 
   async function cancelAtPeriodEnd() {
+    if (!cleanerId || !areaId || !slot) {
+      setErr("Missing params");
+      return;
+    }
     setLoading(true);
     setErr(null);
     try {
-      const body = { businessId: cleanerId, areaId, slot }; // IMPORTANT: send BUSINESS id
+      const body = { businessId: cleanerId, areaId, slot }; // BUSINESS id
       const res = await fetch("/.netlify/functions/subscription-cancel", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -109,6 +131,10 @@ export default function AreaSponsorModal({
   }
 
   async function proceedToCheckout() {
+    if (!cleanerId || !areaId || !slot) {
+      setErr("Missing params");
+      return;
+    }
     setLoading(true);
     setErr(null);
     try {
@@ -116,7 +142,7 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId, // fine for sponsor flow (server uses metadata + webhook)
+          cleanerId, // OK for sponsor flow (server uses metadata; webhook writes)
           areaId,
           slot,
         }),
@@ -136,10 +162,17 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sponsor-manage-title"
+    >
       <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-semibold">{title}</h3>
+          <h3 id="sponsor-manage-title" className="font-semibold">
+            {title}
+          </h3>
           <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
             Close
           </button>
@@ -180,7 +213,10 @@ export default function AreaSponsorModal({
             </>
           ) : (
             <div className="text-sm">
-              Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
+              Result:{" "}
+              <span className="font-medium">
+                Some part of this area is available for #{slot}.
+              </span>
               <br />
               We’ll only bill the portion that's actually available for this slot.
             </div>
