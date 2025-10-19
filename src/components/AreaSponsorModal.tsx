@@ -1,4 +1,3 @@
-// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
@@ -9,9 +8,12 @@ type Props = {
   areaId: string;
   slot: 1 | 2 | 3;
   mode?: "sponsor" | "manage";
+
+  /** Optional hooks so the parent can draw/clear the map overlay. */
+  onPreviewGeoJSON?: (multi: any) => void;
+  onClearPreview?: () => void;
 };
 
-// ---- Types for "manage" (existing subscription) ----
 type GetSubOk = {
   ok: true;
   subscription: {
@@ -24,18 +26,6 @@ type GetSubOk = {
 type GetSubErr = { ok: false; error?: string; notFound?: boolean };
 type GetSubResp = GetSubOk | GetSubErr;
 
-// ---- Types for "sponsor" preview ----
-type PreviewOk = {
-  ok: true;
-  tier: string;
-  slot: number;
-  area_km2: number;
-  monthly_price: number;
-  total_price: number;
-};
-type PreviewErr = { ok?: false; error?: string };
-type PreviewResp = PreviewOk | PreviewErr;
-
 export default function AreaSponsorModal({
   open,
   onClose,
@@ -43,28 +33,26 @@ export default function AreaSponsorModal({
   areaId,
   slot,
   mode = "sponsor",
+  onPreviewGeoJSON,
+  onClearPreview,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  // manage
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
-  // preview
+  // preview state (sponsor mode)
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
-  const [monthly, setMonthly] = useState<number | null>(null);
-  const [tier, setTier] = useState<string | null>(null);
+  const [monthlyPrice, setMonthlyPrice] = useState<number | null>(null);
 
   const title = useMemo(
     () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
     [mode, slot]
   );
 
-  // Load current sub details in manage mode
+  // ----- Load current sub details (manage) -----
   useEffect(() => {
     let cancelled = false;
-
-    async function runManage() {
+    async function run() {
       if (!open || mode !== "manage") return;
       setLoading(true);
       setErr(null);
@@ -84,7 +72,8 @@ export default function AreaSponsorModal({
         } else if ("notFound" in json && json.notFound) {
           setErr("No active subscription was found for this slot.");
         } else {
-          setErr(("error" in json && json.error) || "Failed to load subscription.");
+          const msg = ("error" in json && json.error) || "Failed to load subscription.";
+          setErr(msg);
         }
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || "Failed to load subscription.");
@@ -92,52 +81,56 @@ export default function AreaSponsorModal({
         if (!cancelled) setLoading(false);
       }
     }
-
-    runManage();
+    run();
     return () => {
       cancelled = true;
     };
   }, [open, mode, areaId, slot, cleanerId]);
 
-  // Auto preview price in sponsor mode (no “Preview price” button)
+  // ----- Preview (sponsor) – compute available geojson + price and draw overlay -----
   useEffect(() => {
     let cancelled = false;
-
-    async function runPreview() {
+    async function run() {
       if (!open || mode !== "sponsor") return;
       setLoading(true);
       setErr(null);
       setAreaKm2(null);
-      setMonthly(null);
-      setTier(null);
+      setMonthlyPrice(null);
+
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cleanerId, areaId, slot }),
         });
-        const json: PreviewResp = await res.json();
+        const json = await res.json();
         if (cancelled) return;
 
-        if ("ok" in json && json.ok) {
-          setAreaKm2(json.area_km2);
-          setMonthly(json.monthly_price);
-          setTier(json.tier);
+        if (!res.ok || json?.error) {
+          setErr(json?.error || "Failed to compute available area");
         } else {
-          setErr(("error" in json && json.error) || "Failed to preview price.");
+          setAreaKm2(typeof json.area_km2 === "number" ? json.area_km2 : null);
+          setMonthlyPrice(typeof json.monthly_price === "number" ? json.monthly_price : null);
+
+          // draw overlay on the map
+          if (json.final_geojson && onPreviewGeoJSON) {
+            onPreviewGeoJSON(json.final_geojson);
+          }
         }
       } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "Failed to preview price.");
+        if (!cancelled) setErr(e?.message || "Failed to compute available area");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
+    run();
 
-    runPreview();
+    // clear overlay when modal unmounts/closes
     return () => {
+      if (onClearPreview) onClearPreview();
       cancelled = true;
     };
-  }, [open, mode, cleanerId, areaId, slot]);
+  }, [open, mode, cleanerId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
 
   async function cancelAtPeriodEnd() {
     setLoading(true);
@@ -228,28 +221,23 @@ export default function AreaSponsorModal({
               )}
             </>
           ) : (
-            <div className="space-y-3">
-              <div className="text-sm">
-                Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
-                <br />
-                We’ll only bill the portion that's actually available for this slot.
+            <div className="text-sm space-y-2">
+              <div>
+                Result: Some part of this area is available for #{slot}. We’ll only bill the
+                portion that's actually available for this slot.
               </div>
-
-              <div className="rounded border p-3 text-sm text-gray-700 bg-gray-50">
-                <div className="flex items-center justify-between">
-                  <span>Available area for slot #{slot}:</span>
-                  <span className="font-medium">
-                    {loading || areaKm2 === null ? "—" : `${areaKm2.toFixed(4)} km²`}
-                  </span>
+              <div className="rounded border p-2 text-sm">
+                <div>
+                  <span className="font-medium">Available area for slot #{slot}:</span>{" "}
+                  {typeof areaKm2 === "number" ? `${areaKm2.toFixed(4)} km²` : "—"}
                 </div>
-                <div className="flex items-center justify-between mt-1">
-                  <span>Monthly price{tier ? ` (${tier})` : ""}:</span>
-                  <span className="font-medium">
-                    {loading || monthly === null ? "—" : `£${monthly.toFixed(2)}/month`}
-                  </span>
+                <div>
+                  <span className="font-medium">Monthly price</span>
+                  {slot === 1 ? " (Gold)" : slot === 2 ? " (Silver)" : " (Bronze)"}:{" "}
+                  {typeof monthlyPrice === "number" ? `£${monthlyPrice.toFixed(2)}/month` : "—"}
                 </div>
               </div>
-              {/* The old “Preview price” row has been removed on purpose */}
+              {loading && <div className="text-xs text-gray-500">Computing preview…</div>}
             </div>
           )}
         </div>
