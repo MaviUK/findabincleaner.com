@@ -1,67 +1,6 @@
 // netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
-// ---------- pricing helpers (per slot 1/2/3) ----------
-function readNumberEnv(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null) return fallback;
-  const n = Number(String(raw).trim());
-  return Number.isFinite(n) ? n : fallback;
-}
-function readFirstEnvNumber(names, fallback) {
-  for (const n of names) {
-    const v = readNumberEnv(n, Number.NaN);
-    if (Number.isFinite(v)) return v;
-  }
-  return fallback;
-}
-function getSlotConfig(slot) {
-  // Support both “slot” and “gold/silver/bronze” env names (whichever you set)
-  if (slot === 1) {
-    return {
-      rate: readFirstEnvNumber(
-        ["RATE_SLOT1_PER_KM2_PER_MONTH", "RATE_GOLD_PER_KM2_PER_MONTH", "RATE_PER_KM2_PER_MONTH"],
-        15
-      ),
-      min: readFirstEnvNumber(
-        ["MIN_SLOT1_PRICE_PER_MONTH", "MIN_GOLD_PRICE_PER_MONTH", "MIN_PRICE_PER_MONTH"],
-        5
-      ),
-      label: "Gold",
-    };
-  }
-  if (slot === 2) {
-    return {
-      rate: readFirstEnvNumber(
-        ["RATE_SLOT2_PER_KM2_PER_MONTH", "RATE_SILVER_PER_KM2_PER_MONTH", "RATE_PER_KM2_PER_MONTH"],
-        10
-      ),
-      min: readFirstEnvNumber(
-        ["MIN_SLOT2_PRICE_PER_MONTH", "MIN_SILVER_PRICE_PER_MONTH", "MIN_PRICE_PER_MONTH"],
-        4
-      ),
-      label: "Silver",
-    };
-  }
-  return {
-    rate: readFirstEnvNumber(
-      ["RATE_SLOT3_PER_KM2_PER_MONTH", "RATE_BRONZE_PER_KM2_PER_MONTH", "RATE_PER_KM2_PER_MONTH"],
-      7
-    ),
-    min: readFirstEnvNumber(
-      ["MIN_SLOT3_PRICE_PER_MONTH", "MIN_BRONZE_PRICE_PER_MONTH", "MIN_PRICE_PER_MONTH"],
-      3
-    ),
-    label: "Bronze",
-  };
-}
-function computeMonthly(areaKm2, slot) {
-  const { rate, min } = getSlotConfig(slot);
-  const raw = Math.max(0, Number(areaKm2)) * rate;
-  return Math.max(min, raw);
-}
-
-// ---------- supabase / utils ----------
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const cors = {
@@ -71,54 +10,78 @@ const cors = {
   "access-control-allow-headers": "Content-Type, Authorization",
 };
 
+const num = (v, d = 0) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+
+function rateForSlot(slot) {
+  // Optional per-slot rates
+  const rates = {
+    1: process.env.RATE_SLOT1,
+    2: process.env.RATE_SLOT2,
+    3: process.env.RATE_SLOT3,
+  };
+  const mins = {
+    1: process.env.MIN_PRICE_SLOT1,
+    2: process.env.MIN_PRICE_SLOT2,
+    3: process.env.MIN_PRICE_SLOT3,
+  };
+
+  const fallbackRate = num(process.env.RATE_PER_KM2_PER_MONTH, 15);
+  const fallbackMin = num(process.env.MIN_PRICE_PER_MONTH, 1);
+
+  return {
+    rate: num(rates[slot], fallbackRate),
+    min: num(mins[slot], fallbackMin),
+  };
+}
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: cors });
 }
 
 export default async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, drawnGeoJSON, months = 1, slot = 1 } = await req.json();
+    const { cleanerId, areaId, slot, drawnGeoJSON = null, months = 1 } = await req.json();
 
-    // Validate
-    const slotNum = Number(slot);
-    if (![1, 2, 3].includes(slotNum)) return json({ error: "Invalid slot (1|2|3)" }, 400);
-    if (!cleanerId) return json({ error: "cleanerId required" }, 400);
-    if (!areaId && !drawnGeoJSON) {
-      return json({ error: "Provide either areaId or drawnGeoJSON" }, 400);
+    if (!cleanerId || !areaId || !slot) {
+      return json({ ok: false, error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // Use a single preview RPC for both cases. It:
-    // - Intersects drawn geometry with available portion for the slot
-    // - Or uses the saved area when _area_id is provided
+    // Ask DB how much of this area is actually available for the slot,
+    // taking into account overlaps & existing sponsorships.
     const { data, error } = await sb.rpc("get_area_preview", {
-      _area_id: areaId ?? null,
-      _slot: slotNum,
-      _drawn_geojson: drawnGeoJSON ?? null,
-      _exclude_cleaner: cleanerId, // exclude user's own current holds/purchases
+      _area_id: areaId,
+      _slot: Number(slot),
+      _drawn_geojson: drawnGeoJSON,     // keep null to use saved polygons
+      _exclude_cleaner: cleanerId,      // exclude the caller's own subs if helpful
     });
-    if (error) throw error;
 
-    const record = Array.isArray(data) ? data[0] : data;
-    const area_km2 = Number(record?.area_km2 ?? 0);
-    const final_geojson = record?.final_geojson ?? null;
+    if (error) {
+      console.error("[sponsored-preview] get_area_preview error:", error);
+      return json({ ok: false, error: "Failed to compute area/price" }, 500);
+    }
 
-    const monthly = computeMonthly(area_km2, slotNum);
-    const total = monthly * Math.max(1, Number(months));
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_km2 = num(row?.area_km2, 0);
+
+    const { rate, min } = rateForSlot(Number(slot));
+    const monthly = Math.max(min, Math.max(0, area_km2) * rate);
+    const total = monthly * Math.max(1, num(months, 1));
 
     return json({
       ok: true,
-      slot: slotNum,
-      tier: getSlotConfig(slotNum).label,
       area_km2: Number(area_km2.toFixed(5)),
       monthly_price: Number(monthly.toFixed(2)),
       total_price: Number(total.toFixed(2)),
-      final_geojson,
+      final_geojson: row?.final_geojson ?? null,
     });
   } catch (e) {
     console.error("[sponsored-preview] error:", e);
-    return json({ error: e?.message || "Failed preview" }, 500);
+    return json({ ok: false, error: e.message || "Failed preview" }, 500);
   }
 };
