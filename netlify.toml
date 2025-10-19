@@ -118,3 +118,9 @@
   from = "/*"
   to   = "/index.html"
   status = 200
+
+# ...
+[[redirects]]
+  from = "/api/area/sponsorship"
+  to = "/.netlify/functions/area-sponsorship"
+  status = 200
