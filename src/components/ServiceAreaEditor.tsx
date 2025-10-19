@@ -652,17 +652,20 @@ export default function ServiceAreaEditor({
   serviceAreas.map((a) => {
     const gj = a.gj;
     if (!gj || gj.type !== "MultiPolygon") return null;
-    const paint = areaPaint(a.id);
+
     const previewIsForThisArea =
       previewActiveForArea && sponsorAreaId === a.id;
 
+    // If we’re previewing this area, skip rendering its base paint entirely
+    if (previewIsForThisArea) return null;
+
+    const paint = areaPaint(a.id);
     const style: google.maps.PolygonOptions = {
       ...polyStyle,
       editable: false,
       draggable: false,
-      // currently we DIM here
-      fillOpacity: previewIsForThisArea ? 0.05 : 0.35,
-      strokeOpacity: previewIsForThisArea ? 0.5 : 0.9,
+      fillOpacity: 0.35,
+      strokeOpacity: 0.9,
       fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
       strokeColor: paint?.stroke ?? "#555",
     };
@@ -673,6 +676,7 @@ export default function ServiceAreaEditor({
       return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
     });
   })}
+
 
 
               {/* Preview overlay – drawn on top */}
