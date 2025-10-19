@@ -1,27 +1,39 @@
 // src/components/AreaSponsorModal.tsx
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  cleanerId: string;     // BUSINESS id (cleaners.id)
+
+  /** BUSINESS id (cleaners.id) */
+  cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
-  // Optional hooks for the parent map to show the computed (available) GeoJSON
+
+  /** Let parent map paint the computed, billable portion of the area. */
   onPreviewGeoJSON?: (multi: any) => void;
+  /** Ask parent to clear any painted preview. */
   onClearPreview?: () => void;
 };
 
+/** Preview API response types */
 type PreviewOk = {
   ok: true;
-  slot: 1 | 2 | 3;
-  area_km2: number;
-  monthly_price: number;
-  final_geojson: any | null; // MultiPolygon of the *available* area for this slot
+  area_km2: number;                 // billable area for this slot
+  monthly_price: number;            // computed monthly price for this slot
+  final_geojson: any | null;        // MultiPolygon of the billable geometry
 };
 
-type PreviewErr = { ok?: false; error?: string };
+type PreviewErr = {
+  ok: false;
+  error?: string;
+};
+
 type PreviewResp = PreviewOk | PreviewErr;
+
+function isPreviewOk(x: PreviewResp): x is PreviewOk {
+  return (x as any)?.ok === true;
+}
 
 export default function AreaSponsorModal({
   open,
@@ -32,29 +44,25 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
+  const title = useMemo(() => `Sponsor #${slot}`, [slot]);
+
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
   const [price, setPrice] = useState<number | null>(null);
 
-  const title = useMemo(() => `Sponsor #${slot}`, [slot]);
-
-  const abortRef = useRef<AbortController | null>(null);
-
-  // Fetch preview whenever the modal opens or inputs change
+  // Load the *billable* portion + price when the modal opens
   useEffect(() => {
-    if (!open) return;
-
-    abortRef.current?.abort();
     const ac = new AbortController();
-    abortRef.current = ac;
 
-    setErr(null);
-    setAreaKm2(null);
-    setPrice(null);
-    setLoading(true);
+    async function run() {
+      if (!open) return;
 
-    (async () => {
+      setLoading(true);
+      setErr(null);
+      setAreaKm2(null);
+      setPrice(null);
+
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
@@ -63,47 +71,40 @@ export default function AreaSponsorModal({
           signal: ac.signal,
         });
 
-        // Network-level error handling
-        if (!res.ok) {
-          const text = await res.text().catch(() => "");
-          throw new Error(
-            `Preview failed (${res.status}). ${text || "Please try again."}`
-          );
-        }
-
         const json: PreviewResp = await res.json();
-
         if (ac.signal.aborted) return;
 
-        if ("ok" in json && json.ok) {
+        if (isPreviewOk(json)) {
           setAreaKm2(json.area_km2);
           setPrice(json.monthly_price);
+
+          // Ask the parent to paint this computed “billable” geometry on the map.
           if (json.final_geojson && onPreviewGeoJSON) {
             onPreviewGeoJSON(json.final_geojson);
           }
         } else {
-          throw new Error(json?.error || "Failed to compute available area");
+          const msg = json?.error || "Failed to compute available area";
+          throw new Error(msg);
         }
       } catch (e: any) {
-        if (!ac.signal.aborted) {
-          setErr(e?.message || "Failed to compute available area");
-        }
+        if (!ac.signal.aborted) setErr(e?.message || "Failed to compute available area");
       } finally {
         if (!ac.signal.aborted) setLoading(false);
       }
-    })();
+    }
 
-    // cleanup (also clear overlay)
+    run();
+
+    // Cleanup / clear painted preview when inputs change or modal closes
     return () => {
       ac.abort();
       onClearPreview?.();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, cleanerId, areaId, slot]);
+  }, [open, cleanerId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
 
   async function proceedToCheckout() {
-    setErr(null);
     setLoading(true);
+    setErr(null);
     try {
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
@@ -118,9 +119,14 @@ export default function AreaSponsorModal({
       }
     } catch (e: any) {
       setErr(e?.message || "Could not start checkout");
-    } finally {
       setLoading(false);
     }
+  }
+
+  // Close helper that also clears the painted preview
+  function handleClose() {
+    onClearPreview?.();
+    onClose();
   }
 
   if (!open) return null;
@@ -130,13 +136,7 @@ export default function AreaSponsorModal({
       <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="font-semibold">{title}</h3>
-          <button
-            className="text-sm opacity-70 hover:opacity-100"
-            onClick={() => {
-              onClearPreview?.();
-              onClose();
-            }}
-          >
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={handleClose}>
             Close
           </button>
         </div>
@@ -148,25 +148,30 @@ export default function AreaSponsorModal({
             </div>
           )}
 
-          <div className="text-sm">
+          <p className="text-sm text-gray-700">
             Result: Some part of this area is available for #{slot}. We’ll only bill the portion
             that’s actually available for this slot.
-          </div>
+          </p>
 
-          <div className="text-sm border rounded p-2">
+          <div className="text-sm border rounded p-2 bg-gray-50">
             <div className="flex items-center justify-between">
-              <span>Available area for slot #{slot}:</span>
-              <span className="font-medium">
-                {areaKm2 != null ? `${areaKm2.toFixed(4)} km²` : "—"}
+              <span className="font-medium">Available area for slot #{slot}:</span>
+              <span>
+                {areaKm2 != null ? `${areaKm2.toFixed(5)} km²` : "—"}
               </span>
             </div>
-            <div className="flex items-center justify-between">
-              <span>Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):</span>
+            <div className="flex items-center justify-between mt-1">
               <span className="font-medium">
+                Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):
+              </span>
+              <span>
                 {price != null ? `£${price.toFixed(2)}/month` : "—"}
               </span>
             </div>
-            {loading && <div className="text-xs text-gray-500 mt-1">Computing preview…</div>}
+
+            {loading && (
+              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
+            )}
           </div>
         </div>
 
