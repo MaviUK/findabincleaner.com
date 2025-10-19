@@ -1,88 +1,218 @@
-// netlify/functions/sponsored-preview.js
-import { createClient } from "@supabase/supabase-js";
+// src/components/AreaSponsorModal.tsx
+import { useEffect, useMemo, useState } from "react";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+type Tier = "bronze" | "silver" | "gold";
 
-const RATE_GOLD = num(process.env.RATE_GOLD_PER_KM2_PER_MONTH, 1.0);
-const RATE_SILV = num(process.env.RATE_SILVER_PER_KM2_PER_MONTH, 0.75);
-const RATE_BRON = num(process.env.RATE_BRONZE_PER_KM2_PER_MONTH, 0.5);
-
-const MIN_GOLD = num(process.env.MIN_GOLD_PRICE_PER_MONTH, 1.0);
-const MIN_SILV = num(process.env.MIN_SILVER_PRICE_PER_MONTH, 0.75);
-const MIN_BRON = num(process.env.MIN_BRONZE_PRICE_PER_MONTH, 0.5);
-
-const CORS = {
-  "content-type": "application/json",
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST,OPTIONS",
-  "access-control-allow-headers": "Content-Type, Authorization",
+type PreviewRequest = {
+  tier: Tier;
+  // GeoJSON Feature or geometry; keep it "any" to avoid dragging types into the client.
+  geometry: any;
 };
 
-export default async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
-  if (req.method !== "POST") return send({ error: "Method not allowed" }, 405);
+type PreviewResponse = {
+  ok: boolean;
+  // Example payload; adapt keys to what your function returns.
+  km2?: number;
+  monthly?: number;
+  setup_fee?: number;
+  min_monthly?: number;
+  currency?: string; // "GBP"
+  message?: string;
+};
 
-  try {
-    const { cleanerId, areaId, slot } = await req.json();
-    if (!cleanerId || !areaId || !slot) {
-      return send({ error: "cleanerId, areaId, slot required" }, 400);
+type CheckoutRequest = {
+  tier: Tier;
+  geometry: any;
+  // optionally include anything else your function expects, e.g. return_url
+};
+
+type CheckoutResponse = {
+  ok: boolean;
+  url?: string;
+  message?: string;
+};
+
+export type AreaSponsorModalProps = {
+  open: boolean;
+  onClose: () => void;
+  tier: Tier;
+  geometry: any; // GeoJSON polygon/multi-polygon being previewed
+};
+
+export default function AreaSponsorModal({
+  open,
+  onClose,
+  tier,
+  geometry,
+}: AreaSponsorModalProps) {
+  const [loading, setLoading] = useState(false);
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checkingOut, setCheckingOut] = useState(false);
+
+  const canInteract = open && !loading && !checkingOut;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+
+    async function run() {
+      setLoading(true);
+      setError(null);
+      setPreview(null);
+      try {
+        const res = await fetch("/api/sponsored/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tier, geometry } as PreviewRequest),
+        });
+        const data: PreviewResponse = await res.json();
+        if (cancelled) return;
+
+        if (!res.ok || !data.ok) {
+          setError(data.message || "Could not calculate preview.");
+        } else {
+          setPreview(data);
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message ?? "Network error.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     }
 
-    // IMPORTANT: this RPC must clip the requested area's geometry
-    // to the portion that is free for `slot`, excluding the caller’s own subscriptions.
-    //
-    // Expected return shape (single row):
-    //   { area_km2: number, final_geojson: GeoJSON | null }
-    //
-    // Implemented in SQL something like:
-    //   final_geojson = ST_AsGeoJSON(
-    //     ST_Multi(
-    //       ST_Intersection(area.geom, available_for_slot(slot, exclude_cleaner := cleanerId))
-    //     )
-    //   )::jsonb
-    //
-    const { data, error } = await sb.rpc("get_area_preview", {
-      _area_id: areaId,
-      _slot: Number(slot),
-      _drawn_geojson: null,       // or a drawn override if you support it
-      _exclude_cleaner: cleanerId // ensures caller’s own live slots don’t block themselves
-    });
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, tier, geometry]);
 
-    if (error) {
-      console.error("[sponsored-preview] RPC error:", error);
-      return send({ error: "Failed to compute available geometry" }, 500);
+  const priceLine = useMemo(() => {
+    if (!preview) return "";
+    const c = preview.currency || "GBP";
+    const monthly =
+      typeof preview.monthly === "number"
+        ? new Intl.NumberFormat(undefined, {
+            style: "currency",
+            currency: c,
+            maximumFractionDigits: 2,
+          }).format(preview.monthly)
+        : null;
+    const setup =
+      typeof preview.setup_fee === "number"
+        ? new Intl.NumberFormat(undefined, {
+            style: "currency",
+            currency: c,
+            maximumFractionDigits: 2,
+          }).format(preview.setup_fee)
+        : null;
+
+    const size =
+      typeof preview.km2 === "number"
+        ? `${preview.km2.toFixed(2)} km²`
+        : undefined;
+
+    const parts = [
+      size ? `Area: ${size}` : null,
+      monthly ? `Monthly: ${monthly}` : null,
+      setup ? `Setup: ${setup}` : null,
+    ].filter(Boolean);
+
+    return parts.join(" · ");
+  }, [preview]);
+
+  async function handleCheckout() {
+    setCheckingOut(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/sponsored/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier, geometry } as CheckoutRequest),
+      });
+      const data: CheckoutResponse = await res.json();
+
+      if (!res.ok || !data.ok || !data.url) {
+        setCheckingOut(false);
+        setError(data.message || "Checkout could not be created.");
+        return;
+      }
+
+      // Redirect to Stripe Checkout
+      window.location.assign(data.url);
+    } catch (e: any) {
+      setCheckingOut(false);
+      setError(e?.message ?? "Network error during checkout.");
     }
-
-    const row = Array.isArray(data) ? data[0] : data;
-    const area_km2 = Number(row?.area_km2 ?? 0);
-    const final_geojson = row?.final_geojson ?? null;
-
-    // price by slot
-    const { rate, min } =
-      Number(slot) === 1 ? { rate: RATE_GOLD, min: MIN_GOLD } :
-      Number(slot) === 2 ? { rate: RATE_SILV, min: MIN_SILV } :
-                           { rate: RATE_BRON, min: MIN_BRON };
-
-    const monthly_price = round2(Math.max(min, Math.max(0, area_km2) * rate));
-
-    return send({
-      ok: true,
-      area_km2: round5(area_km2),
-      monthly_price,
-      final_geojson, // 👈 UI will draw exactly this (only the purchasable piece)
-    });
-  } catch (e) {
-    console.error("[sponsored-preview] error:", e);
-    return send({ error: e?.message || "preview failed" }, 500);
   }
-};
 
-function send(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: CORS });
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Sponsored Area Preview"
+    >
+      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
+        <div className="mb-4 flex items-start justify-between">
+          <h2 className="text-xl font-bold">
+            Sponsor preview — {tier.toUpperCase()}
+          </h2>
+          <button
+            className="rounded-lg px-3 py-1.5 text-sm hover:bg-gray-100"
+            onClick={onClose}
+            disabled={!canInteract}
+            aria-label="Close"
+          >
+            ✕
+          </button>
+        </div>
+
+        {loading && (
+          <p className="text-sm text-gray-600">Calculating your price…</p>
+        )}
+
+        {error && (
+          <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+            {error}
+          </div>
+        )}
+
+        {!loading && !error && preview && (
+          <>
+            <p className="mb-2 text-sm text-gray-700">
+              We’ve priced your selected area. Review and proceed to checkout.
+            </p>
+            <div className="mb-4 rounded-lg border border-gray-200 p-3">
+              <p className="text-sm">{priceLine}</p>
+              {typeof preview.min_monthly === "number" && (
+                <p className="mt-1 text-xs text-gray-500">
+                  Minimum monthly applies.
+                </p>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
+            onClick={onClose}
+            disabled={!canInteract}
+          >
+            Cancel
+          </button>
+          <button
+            className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
+            onClick={handleCheckout}
+            disabled={!preview || !!error || !open || loading || checkingOut}
+          >
+            {checkingOut ? "Redirecting…" : "Proceed to Checkout"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
-function num(v, d) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
-function round2(n) { return Math.round(n * 100) / 100; }
-function round5(n) { return Math.round(n * 1e5) / 1e5; }
