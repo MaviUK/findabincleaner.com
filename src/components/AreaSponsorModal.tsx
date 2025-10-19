@@ -1,53 +1,29 @@
 // src/components/AreaSponsorModal.tsx
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useState } from "react";
 
-type Tier = "bronze" | "silver" | "gold";
+type Slot = 1 | 2 | 3;
 
-export type AreaSponsorModalProps = {
+type PreviewOk = {
+  ok: true;
+  area_km2: number;
+  monthly_price: number;
+  final_geojson: any | null;
+};
+type PreviewErr = { ok?: false; error?: string };
+type PreviewResp = PreviewOk | PreviewErr;
+
+type Props = {
   open: boolean;
   onClose: () => void;
+  cleanerId: string;
+  areaId: string;
+  slot: Slot;
 
-  // From ServiceAreaEditor
-  cleanerId?: string;
-  areaId?: string;
-  slot?: 1 | 2 | 3;
-
-  // Map overlay hooks
+  /** Optional: when preview returns a clipped MultiPolygon, draw it on the map */
   onPreviewGeoJSON?: (multi: any) => void;
+  /** Optional: clear any previously drawn preview overlay */
   onClearPreview?: () => void;
-
-  // Optional direct inputs
-  tier?: Tier;
-  geometry?: any; // GeoJSON (Feature/Geometry)
 };
-
-function slotToTier(slot?: 1 | 2 | 3): Tier | undefined {
-  return slot === 1 ? "bronze" : slot === 2 ? "silver" : slot === 3 ? "gold" : undefined;
-}
-
-// ---- Robust pickers: tolerate multiple response shapes
-function pickCurrency(x: any): string {
-  return x?.currency || x?.price?.currency || x?.quote?.currency || "GBP";
-}
-function pickNumber(x: any, key: string): number | undefined {
-  if (typeof x?.[key] === "number") return x[key];
-  if (typeof x?.price?.[key] === "number") return x.price[key];
-  if (typeof x?.quote?.[key] === "number") return x.quote[key];
-  if (typeof x?.data?.[key] === "number") return x.data[key];
-  return undefined;
-}
-function pickPreviewGeom(x: any): any {
-  return (
-    x?.available ??
-    x?.available_gj ??
-    x?.available_geojson ??
-    x?.geometry ??
-    x?.geojson ??
-    x?.multi ??
-    null
-  );
-}
-// -----------------------------------------------
 
 export default function AreaSponsorModal({
   open,
@@ -57,221 +33,157 @@ export default function AreaSponsorModal({
   slot,
   onPreviewGeoJSON,
   onClearPreview,
-  tier,
-  geometry,
-}: AreaSponsorModalProps) {
-  const [loading, setLoading] = useState(false);
+}: Props) {
+  const [computing, setComputing] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [preview, setPreview] = useState<any | null>(null);
+  const [areaKm2, setAreaKm2] = useState<number | null>(null);
+  const [monthly, setMonthly] = useState<number | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  const resolvedTier: Tier | undefined = tier ?? slotToTier(slot);
-  const canInteract = open && !loading && !checkingOut;
-
+  // Fetch preview once per open; cancel on close; clear overlay on cleanup
   useEffect(() => {
     if (!open) return;
+
     let cancelled = false;
+    const controller = new AbortController();
+
+    // Clear any old overlay while we compute a new one
+    onClearPreview?.();
 
     async function run() {
-      setLoading(true);
-      setError(null);
-      setPreview(null);
-      onClearPreview?.();
-
-      const return_url =
-        typeof window !== "undefined" ? window.location.origin : undefined;
-
-      // Send all common aliases so the function doesn't care which one it reads
-      const body = {
-        // identifiers
-        cleanerId,
-        cleaner_id: cleanerId,
-        areaId,
-        service_area_id: areaId,
-
-        // plan / tier
-        slot,
-        plan: slot,
-        tier: resolvedTier,
-        sponsorship_level: resolvedTier,
-
-        // geometry aliases
-        geometry,
-        geojson: geometry,
-        multi: geometry,
-        polygon: geometry,
-        polygons: geometry,
-
-        return_url,
-      };
+      setErr(null);
+      setComputing(true);
+      setAreaKm2(null);
+      setMonthly(null);
 
       try {
-        const res = await fetch("/api/sponsored/preview", {
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cleanerId, areaId, slot }),
+          signal: controller.signal,
         });
-        const data = await res.json();
 
-        if (cancelled) return;
-
-        if (!res.ok || data?.ok === false) {
-          setError(data?.message || "Could not calculate preview.");
-          return;
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
         }
 
-        setPreview(data);
+        const json: PreviewResp = await res.json();
+        if (cancelled || controller.signal.aborted) return;
 
-        const clip = pickPreviewGeom(data);
-        if (clip && onPreviewGeoJSON) onPreviewGeoJSON(clip);
+        if (!("ok" in json) || !json.ok) {
+          throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
+        }
+
+        setAreaKm2(json.area_km2);
+        setMonthly(json.monthly_price);
+
+        if (json.final_geojson && onPreviewGeoJSON) {
+          onPreviewGeoJSON(json.final_geojson);
+        }
       } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? "Network error.");
+        if (!cancelled && !controller.signal.aborted) {
+          setErr(e?.message || "Failed to compute preview");
+        }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !controller.signal.aborted) {
+          setComputing(false);
+        }
       }
     }
 
     run();
+
     return () => {
       cancelled = true;
+      controller.abort();
+      onClearPreview?.();
     };
-  }, [open, cleanerId, areaId, slot, resolvedTier, geometry, onPreviewGeoJSON, onClearPreview]);
-
-  const priceLine = useMemo(() => {
-    if (!preview) return "";
-    const currency = pickCurrency(preview);
-    const fmt = (n?: number) =>
-      typeof n === "number"
-        ? new Intl.NumberFormat(undefined, {
-            style: "currency",
-            currency,
-            maximumFractionDigits: 2,
-          }).format(n)
-        : undefined;
-
-    const monthly = fmt(pickNumber(preview, "monthly"));
-    const setup = fmt(pickNumber(preview, "setup_fee"));
-    const km2Num = pickNumber(preview, "km2");
-    const minMonthly = fmt(pickNumber(preview, "min_monthly"));
-
-    const parts: string[] = [];
-    if (typeof km2Num === "number") parts.push(`Area: ${km2Num.toFixed(2)} km²`);
-    if (monthly) parts.push(`Monthly: ${monthly}`);
-    if (setup) parts.push(`Setup: ${setup}`);
-    if (minMonthly) parts.push(`Minimum monthly applies (${minMonthly}).`);
-
-    return parts.join(" · ");
-  }, [preview]);
-
-  function handleClose() {
-    onClearPreview?.();
-    onClose();
-  }
-
-  async function handleCheckout() {
-    setCheckingOut(true);
-    setError(null);
-
-    const return_url =
-      typeof window !== "undefined" ? window.location.origin : undefined;
-
-    const body = {
-      cleanerId,
-      cleaner_id: cleanerId,
-      areaId,
-      service_area_id: areaId,
-      slot,
-      plan: slot,
-      tier: resolvedTier,
-      sponsorship_level: resolvedTier,
-      geometry,
-      geojson: geometry,
-      multi: geometry,
-      polygon: geometry,
-      polygons: geometry,
-      return_url,
-    };
-
-    try {
-      const res = await fetch("/api/sponsored/checkout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = (await res.json()) as { ok?: boolean; url?: string; message?: string };
-
-      if (!res.ok || data?.ok === false || !data?.url) {
-        setCheckingOut(false);
-        setError(data?.message || "Checkout could not be created.");
-        return;
-      }
-
-      window.location.assign(data.url);
-    } catch (e: any) {
-      setCheckingOut(false);
-      setError(e?.message ?? "Network error during checkout.");
-    }
-  }
+    // Intentionally minimal deps: run exactly once per logical open
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cleanerId, areaId, slot]);
 
   if (!open) return null;
 
+  const labelForSlot = (s: Slot) =>
+    s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
+
+  async function handleCheckout() {
+    setCheckingOut(true);
+    setErr(null);
+    try {
+      const res = await fetch("/.netlify/functions/sponsored-checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ cleanerId, areaId, slot }),
+      });
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(`Checkout ${res.status}${txt ? ` – ${txt}` : ""}`);
+      }
+      const json = await res.json();
+      if (!json?.url) throw new Error("No checkout URL returned");
+      window.location.href = json.url;
+    } catch (e: any) {
+      setErr(e?.message || "Failed to start checkout");
+      setCheckingOut(false);
+    }
+  }
+
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Sponsored Area Preview"
-    >
-      <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
-        <div className="mb-4 flex items-start justify-between">
-          <h2 className="text-xl font-bold">
-            Sponsor preview{resolvedTier ? ` — ${resolvedTier.toUpperCase()}` : ""}
-          </h2>
-          <button
-            className="rounded-lg px-3 py-1.5 text-sm hover:bg-gray-100"
-            onClick={handleClose}
-            disabled={!canInteract}
-            aria-label="Close"
-          >
-            ✕
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white rounded-xl shadow-lg w-full max-w-lg">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <div className="font-semibold">Sponsor #{slot}</div>
+          <button className="text-gray-600 hover:text-black" onClick={onClose}>
+            Close
           </button>
         </div>
 
-        {loading && <p className="text-sm text-gray-600">Calculating your price…</p>}
+        <div className="p-4 space-y-3">
+          {err && (
+            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {err}
+            </div>
+          )}
 
-        {error && (
-          <div className="mb-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">{error}</div>
-        )}
+          <p className="text-sm text-gray-700">
+            Some part of this area is available for #{slot}. We’ll only bill the
+            portion that’s actually available for this slot.
+          </p>
 
-        {!loading && !error && preview && (
-          <>
-            <p className="mb-2 text-sm text-gray-700">
-              We’ve priced your selected area. Review and proceed to checkout.
-            </p>
-            <input
-              type="text"
-              className="mb-4 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              readOnly
-              value={priceLine}
-              aria-label="Price summary"
-            />
-          </>
-        )}
+          <div className="border rounded p-3 text-sm text-gray-800">
+            <div className="flex items-center justify-between">
+              <span>Available area for slot #{slot}:</span>
+              <span className="tabular-nums">
+                {areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`}
+              </span>
+            </div>
+            <div className="mt-1 flex items-center justify-between">
+              <span>Monthly price ({labelForSlot(slot)}):</span>
+              <span className="tabular-nums">
+                {monthly == null ? "—" : `£${monthly.toFixed(2)}/month`}
+              </span>
+            </div>
 
-        <div className="mt-4 flex items-center justify-end gap-2">
-          <button
-            className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
-            onClick={handleClose}
-            disabled={!canInteract}
-          >
+            {computing && (
+              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
+            )}
+          </div>
+        </div>
+
+        <div className="px-4 py-3 border-t flex justify-end gap-2">
+          <button className="btn" onClick={onClose} disabled={checkingOut}>
             Cancel
           </button>
           <button
-            className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
+            className="btn btn-primary"
             onClick={handleCheckout}
-            disabled={!!error || !open || loading || checkingOut}
+            disabled={checkingOut || computing}
+            title={computing ? "Please wait for the preview" : undefined}
           >
-            {checkingOut ? "Redirecting…" : "Proceed to Checkout"}
+            {checkingOut ? "Starting checkout…" : "Continue to checkout"}
           </button>
         </div>
       </div>
