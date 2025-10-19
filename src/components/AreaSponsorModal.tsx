@@ -118,11 +118,13 @@ export default function AreaSponsorModal({
           throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
         }
 
-        // Coerce numbers safely
-        const a = Number((json as PreviewOk).area_km2);
-        const m = Number((json as PreviewOk).monthly_price);
-        setAreaKm2(Number.isFinite(a) ? a : null);
-        setMonthly(Number.isFinite(m) ? m : null);
+        // Coerce to numbers safely
+        const aRaw = (json as PreviewOk).area_km2;
+        const mRaw = (json as PreviewOk).monthly_price;
+        const aNum = Number(aRaw);
+        const mNum = Number(mRaw);
+        setAreaKm2(Number.isFinite(aNum) ? aNum : null);
+        setMonthly(Number.isFinite(mNum) ? mNum : null);
 
         const clipped = pickClippedGeom(json);
         if (clipped && onPreviewGeoJSON) {
@@ -168,7 +170,7 @@ export default function AreaSponsorModal({
     return `Area: ${a} · Monthly: ${m}`;
   }, [areaKm2, monthly, nfGBP]);
 
-  const hasPurchasableRegion = areaKm2 != null && areaKm2 > 0;
+  const hasPurchasableRegion = areaKm2 !== null && areaKm2 > 0;
 
   function handleClose() {
     onClearPreview?.();
@@ -176,7 +178,7 @@ export default function AreaSponsorModal({
   }
 
   async function handleCheckout() {
-    if (!hasPurchasableRegion) return; // just in case
+    if (!hasPurchasableRegion) return; // safety
     setCheckingOut(true);
     setErr(null);
     try {
@@ -217,6 +219,7 @@ export default function AreaSponsorModal({
             className="text-gray-600 hover:text-black disabled:opacity-50"
             onClick={handleClose}
             disabled={computing || checkingOut}
+            aria-label="Close"
           >
             Close
           </button>
@@ -259,7 +262,7 @@ export default function AreaSponsorModal({
               </div>
             )}
 
-            {wasClipped && !computing && areaKm2! > 0 && (
+            {wasClipped && !computing && hasPurchasableRegion && (
               <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
                 Preview shows only the purchasable sub-region on the map.
               </div>
