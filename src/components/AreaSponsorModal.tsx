@@ -4,26 +4,44 @@ import { useEffect, useMemo, useState } from "react";
 type Tier = "bronze" | "silver" | "gold";
 
 type PreviewRequest = {
-  tier: Tier;
-  // GeoJSON Feature or geometry; keep it "any" to avoid dragging types into the client.
-  geometry: any;
+  // Identify selection/source
+  cleanerId?: string;
+  areaId?: string;
+  slot?: 1 | 2 | 3;
+
+  // Pricing inputs
+  tier?: Tier;
+  geometry?: any; // GeoJSON geometry/feature
+
+  // Optional UI/flow hints
+  return_url?: string;
 };
 
 type PreviewResponse = {
   ok: boolean;
-  // Example payload; adapt keys to what your function returns.
+  message?: string;
+
+  // Pricing data
   km2?: number;
   monthly?: number;
   setup_fee?: number;
   min_monthly?: number;
-  currency?: string; // "GBP"
-  message?: string;
+  currency?: string; // e.g., "GBP"
+
+  // Server-provided preview geometry (e.g., purchasable sub-region)
+  // Accept either `available`, `available_gj`, or generic `geometry`
+  available?: any;
+  available_gj?: any;
+  geometry?: any;
 };
 
 type CheckoutRequest = {
-  tier: Tier;
-  geometry: any;
-  // optionally include anything else your function expects, e.g. return_url
+  cleanerId?: string;
+  areaId?: string;
+  slot?: 1 | 2 | 3;
+  tier?: Tier;
+  geometry?: any;
+  return_url?: string;
 };
 
 type CheckoutResponse = {
@@ -35,13 +53,34 @@ type CheckoutResponse = {
 export type AreaSponsorModalProps = {
   open: boolean;
   onClose: () => void;
-  tier: Tier;
-  geometry: any; // GeoJSON polygon/multi-polygon being previewed
+
+  // New props coming from ServiceAreaEditor
+  cleanerId?: string;
+  areaId?: string;
+  slot?: 1 | 2 | 3;
+  onPreviewGeoJSON?: (multi: any) => void;
+  onClearPreview?: () => void;
+
+  // Optional legacy/direct props
+  tier?: Tier;       // if omitted, will be derived from slot
+  geometry?: any;    // if omitted, server can infer from areaId/cleanerId
 };
+
+function slotToTier(slot?: 1 | 2 | 3): Tier | undefined {
+  if (slot === 1) return "bronze";
+  if (slot === 2) return "silver";
+  if (slot === 3) return "gold";
+  return undefined;
+}
 
 export default function AreaSponsorModal({
   open,
   onClose,
+  cleanerId,
+  areaId,
+  slot,
+  onPreviewGeoJSON,
+  onClearPreview,
   tier,
   geometry,
 }: AreaSponsorModalProps) {
@@ -50,29 +89,57 @@ export default function AreaSponsorModal({
   const [error, setError] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
 
+  const resolvedTier: Tier | undefined = tier ?? slotToTier(slot);
   const canInteract = open && !loading && !checkingOut;
 
   useEffect(() => {
     if (!open) return;
+
     let cancelled = false;
 
-    async function run() {
+    async function runPreview() {
       setLoading(true);
       setError(null);
       setPreview(null);
+
+      // Clear any previous overlay when we start fresh
+      if (onClearPreview) onClearPreview();
+
       try {
+        const body: PreviewRequest = {
+          cleanerId,
+          areaId,
+          slot,
+          tier: resolvedTier,
+          geometry, // optional; server can ignore if it derives internally
+          // Optional return target if your function uses it
+          return_url:
+            typeof window !== "undefined"
+              ? window.location.origin
+              : undefined,
+        };
+
         const res = await fetch("/api/sponsored/preview", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tier, geometry } as PreviewRequest),
+          body: JSON.stringify(body),
         });
+
         const data: PreviewResponse = await res.json();
         if (cancelled) return;
 
         if (!res.ok || !data.ok) {
           setError(data.message || "Could not calculate preview.");
-        } else {
-          setPreview(data);
+          return;
+        }
+
+        setPreview(data);
+
+        // If server returned purchasable sub-region geometry, push it to the map
+        const returnedGeom =
+          data.available ?? data.available_gj ?? data.geometry ?? null;
+        if (returnedGeom && onPreviewGeoJSON) {
+          onPreviewGeoJSON(returnedGeom);
         }
       } catch (e: any) {
         if (!cancelled) setError(e?.message ?? "Network error.");
@@ -81,11 +148,13 @@ export default function AreaSponsorModal({
       }
     }
 
-    run();
+    runPreview();
+
     return () => {
       cancelled = true;
     };
-  }, [open, tier, geometry]);
+    // Re-run when identifiers or geometry/tier change
+  }, [open, cleanerId, areaId, slot, resolvedTier, geometry, onPreviewGeoJSON, onClearPreview]);
 
   const priceLine = useMemo(() => {
     if (!preview) return "";
@@ -106,30 +175,43 @@ export default function AreaSponsorModal({
             maximumFractionDigits: 2,
           }).format(preview.setup_fee)
         : null;
-
     const size =
       typeof preview.km2 === "number"
         ? `${preview.km2.toFixed(2)} km²`
         : undefined;
 
-    const parts = [
-      size ? `Area: ${size}` : null,
-      monthly ? `Monthly: ${monthly}` : null,
-      setup ? `Setup: ${setup}` : null,
-    ].filter(Boolean);
-
-    return parts.join(" · ");
+    return [size && `Area: ${size}`, monthly && `Monthly: ${monthly}`, setup && `Setup: ${setup}`]
+      .filter(Boolean)
+      .join(" · ");
   }, [preview]);
+
+  function handleClose() {
+    if (onClearPreview) onClearPreview();
+    onClose();
+  }
 
   async function handleCheckout() {
     setCheckingOut(true);
     setError(null);
     try {
+      const body: CheckoutRequest = {
+        cleanerId,
+        areaId,
+        slot,
+        tier: resolvedTier,
+        geometry,
+        return_url:
+          typeof window !== "undefined"
+            ? window.location.origin
+            : undefined,
+      };
+
       const res = await fetch("/api/sponsored/checkout", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tier, geometry } as CheckoutRequest),
+        body: JSON.stringify(body),
       });
+
       const data: CheckoutResponse = await res.json();
 
       if (!res.ok || !data.ok || !data.url) {
@@ -158,11 +240,12 @@ export default function AreaSponsorModal({
       <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-xl">
         <div className="mb-4 flex items-start justify-between">
           <h2 className="text-xl font-bold">
-            Sponsor preview — {tier.toUpperCase()}
+            Sponsor preview
+            {resolvedTier ? ` — ${resolvedTier.toUpperCase()}` : ""}
           </h2>
           <button
             className="rounded-lg px-3 py-1.5 text-sm hover:bg-gray-100"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={!canInteract}
             aria-label="Close"
           >
@@ -199,7 +282,7 @@ export default function AreaSponsorModal({
         <div className="mt-4 flex items-center justify-end gap-2">
           <button
             className="rounded-lg border border-gray-300 px-4 py-2 text-sm hover:bg-gray-50"
-            onClick={onClose}
+            onClick={handleClose}
             disabled={!canInteract}
           >
             Cancel
@@ -207,7 +290,7 @@ export default function AreaSponsorModal({
           <button
             className="rounded-lg bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
             onClick={handleCheckout}
-            disabled={!preview || !!error || !open || loading || checkingOut}
+            disabled={!!error || !open || loading || checkingOut}
           >
             {checkingOut ? "Redirecting…" : "Proceed to Checkout"}
           </button>
