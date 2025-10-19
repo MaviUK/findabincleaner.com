@@ -10,11 +10,16 @@ type PreviewErr = { ok?: false; error?: string };
 type PreviewResp = PreviewOk | PreviewErr;
 
 useEffect(() => {
+  if (!open) return;
+
   let cancelled = false;
+  const controller = new AbortController();
+
+  // clear any previous overlay right away so the user
+  // doesn’t see a stale highlight while we recompute
+  onClearPreview?.();
 
   async function run() {
-    if (!open) return;
-
     setErr(null);
     setComputing(true);
     setAreaKm2(null);
@@ -25,6 +30,7 @@ useEffect(() => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ cleanerId, areaId, slot }),
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -33,8 +39,7 @@ useEffect(() => {
       }
 
       const json: PreviewResp = await res.json();
-
-      if (cancelled) return;
+      if (cancelled || controller.signal.aborted) return;
 
       if (!("ok" in json) || !json.ok) {
         throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
@@ -43,12 +48,17 @@ useEffect(() => {
       setAreaKm2(json.area_km2);
       setMonthly(json.monthly_price);
 
-      // hand the overlay to the map (only once)
-      if (json.final_geojson && onPreviewGeoJSON) onPreviewGeoJSON(json.final_geojson);
+      if (json.final_geojson && onPreviewGeoJSON) {
+        onPreviewGeoJSON(json.final_geojson);
+      }
     } catch (e: any) {
-      if (!cancelled) setErr(e?.message || "Failed to compute preview");
+      if (!cancelled && !controller.signal.aborted) {
+        setErr(e?.message || "Failed to compute preview");
+      }
     } finally {
-      if (!cancelled) setComputing(false);
+      if (!cancelled && !controller.signal.aborted) {
+        setComputing(false);
+      }
     }
   }
 
@@ -56,8 +66,9 @@ useEffect(() => {
 
   return () => {
     cancelled = true;
-    // clear preview overlay once when modal closes or deps change
+    controller.abort();
     onClearPreview?.();
   };
-  // keep deps minimal so we call exactly once per logical open
+// Intentionally keep deps minimal so it runs once per open
+// eslint-disable-next-line react-hooks/exhaustive-deps
 }, [open, cleanerId, areaId, slot]);
