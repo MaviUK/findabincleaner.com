@@ -5,11 +5,11 @@ type Slot = 1 | 2 | 3;
 
 type PreviewOk = {
   ok: true;
-  area_km2: number;
-  monthly_price: number;
-  // Your function’s clipped region key:
+  area_km2: number | string;
+  monthly_price: number | string;
+  // Primary clipped region key:
   final_geojson: any | null;
-  // ...but we’ll also tolerate other keys:
+  // Tolerated alternates:
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -27,9 +27,9 @@ type Props = {
   areaId: string;
   slot: Slot;
 
-  /** Optional: when preview returns a clipped MultiPolygon, draw it on the map */
+  /** When preview returns a clipped region, draw it on the map */
   onPreviewGeoJSON?: (multi: any) => void;
-  /** Optional: clear any previously drawn preview overlay */
+  /** Clear any previously drawn preview overlay */
   onClearPreview?: () => void;
 };
 
@@ -37,7 +37,7 @@ function labelForSlot(s: Slot) {
   return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
 }
 
-// Be liberal in what we accept so backend key changes don’t break the UI
+// Liberal geometry picker so backend key tweaks don’t break UI
 function pickClippedGeom(json: any) {
   return (
     json?.final_geojson ??
@@ -66,6 +66,20 @@ export default function AreaSponsorModal({
   const [monthly, setMonthly] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [wasClipped, setWasClipped] = useState<boolean>(false);
+
+  // Close on Escape
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        handleClose();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
 
   // Fetch preview once per open; cancel on close; clear overlay on cleanup
   useEffect(() => {
@@ -104,10 +118,12 @@ export default function AreaSponsorModal({
           throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
         }
 
-        setAreaKm2(json.area_km2);
-        setMonthly(json.monthly_price);
+        // Coerce numbers safely
+        const a = Number((json as PreviewOk).area_km2);
+        const m = Number((json as PreviewOk).monthly_price);
+        setAreaKm2(Number.isFinite(a) ? a : null);
+        setMonthly(Number.isFinite(m) ? m : null);
 
-        // Use clipped geometry if provided; otherwise don’t draw anything new.
         const clipped = pickClippedGeom(json);
         if (clipped && onPreviewGeoJSON) {
           setWasClipped(true);
@@ -135,23 +151,45 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cleanerId, areaId, slot]);
 
+  const nfGBP = useMemo(
+    () =>
+      new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: "GBP",
+        maximumFractionDigits: 2,
+      }),
+    []
+  );
+
   const priceLine = useMemo(() => {
     if (areaKm2 == null && monthly == null) return "—";
     const a = areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`;
-    const m = monthly == null ? "—" : `£${monthly.toFixed(2)}/month`;
+    const m = monthly == null ? "—" : `${nfGBP.format(monthly)}/month`;
     return `Area: ${a} · Monthly: ${m}`;
-  }, [areaKm2, monthly]);
+  }, [areaKm2, monthly, nfGBP]);
 
-  if (!open) return null;
+  const hasPurchasableRegion = areaKm2 != null && areaKm2 > 0;
+
+  function handleClose() {
+    onClearPreview?.();
+    onClose();
+  }
 
   async function handleCheckout() {
+    if (!hasPurchasableRegion) return; // just in case
     setCheckingOut(true);
     setErr(null);
     try {
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ cleanerId, areaId, slot }),
+        body: JSON.stringify({
+          cleanerId,
+          areaId,
+          slot,
+          // optional: helps your function redirect back
+          return_url: typeof window !== "undefined" ? window.location.origin : undefined,
+        }),
       });
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
@@ -166,17 +204,20 @@ export default function AreaSponsorModal({
     }
   }
 
-  function handleClose() {
-    onClearPreview?.();
-    onClose();
-  }
+  if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-xl shadow-lg w-full max-w-lg">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">Sponsor #{slot} — {labelForSlot(slot)}</div>
-          <button className="text-gray-600 hover:text-black" onClick={handleClose}>
+          <div className="font-semibold">
+            Sponsor #{slot} — {labelForSlot(slot)}
+          </div>
+          <button
+            className="text-gray-600 hover:text-black disabled:opacity-50"
+            onClick={handleClose}
+            disabled={computing || checkingOut}
+          >
             Close
           </button>
         </div>
@@ -200,32 +241,61 @@ export default function AreaSponsorModal({
               </span>
             </div>
             <div className="mt-1 flex items-center justify-between">
-              <span>Monthly price ({labelForSlot(slot)}):</span>
+              <span>
+                Monthly price (<span className="font-medium">{labelForSlot(slot)}</span>):
+              </span>
               <span className="tabular-nums">
-                {monthly == null ? "—" : `£${monthly.toFixed(2)}/month`}
+                {monthly == null ? "—" : `${nfGBP.format(monthly)}/month`}
               </span>
             </div>
 
             {computing && (
               <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
             )}
-            {wasClipped && !computing && (
+
+            {!computing && areaKm2 === 0 && (
+              <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                None of your drawn area is purchasable for this slot. Try adjusting your polygon.
+              </div>
+            )}
+
+            {wasClipped && !computing && areaKm2! > 0 && (
               <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
                 Preview shows only the purchasable sub-region on the map.
               </div>
             )}
           </div>
+
+          {!computing && hasPurchasableRegion && (
+            <input
+              type="text"
+              className="mt-2 w-full rounded border border-gray-200 px-3 py-2 text-sm"
+              readOnly
+              value={priceLine}
+              aria-label="Price summary"
+            />
+          )}
         </div>
 
         <div className="px-4 py-3 border-t flex justify-end gap-2">
-          <button className="btn" onClick={handleClose} disabled={checkingOut}>
+          <button
+            className="btn"
+            onClick={handleClose}
+            disabled={checkingOut}
+          >
             Cancel
           </button>
           <button
-            className="btn btn-primary"
+            className="btn btn-primary disabled:opacity-50"
             onClick={handleCheckout}
-            disabled={checkingOut || computing}
-            title={computing ? "Please wait for the preview" : undefined}
+            disabled={checkingOut || computing || !hasPurchasableRegion}
+            title={
+              computing
+                ? "Please wait for the preview"
+                : !hasPurchasableRegion
+                ? "No purchasable area in your selection"
+                : undefined
+            }
           >
             {checkingOut ? "Starting checkout…" : "Continue to checkout"}
           </button>
