@@ -156,6 +156,45 @@ export default function ServiceAreaEditor({
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
+  // ---- LIVE PREVIEW OVERLAY (what the buyer will actually get) ----
+  const [previewPolys, setPreviewPolys] = useState<google.maps.Polygon[]>([]);
+
+  const clearPreview = useCallback(() => {
+    previewPolys.forEach((p) => p.setMap(null));
+    setPreviewPolys([]);
+  }, [previewPolys]);
+
+  const drawPreview = useCallback(
+    (multi: any, color = "#10b981") => {
+      // multi is GeoJSON MultiPolygon
+      clearPreview();
+      if (!isLoaded || !mapRef.current) return;
+      if (!multi || multi.type !== "MultiPolygon") return;
+
+      const style: google.maps.PolygonOptions = {
+        ...polyStyle,
+        editable: false,
+        draggable: false,
+        fillOpacity: 0.18,
+        strokeOpacity: 0.95,
+        strokeWeight: 3,
+        strokeColor: color,
+        fillColor: color,
+        zIndex: 9999,
+      };
+
+      const newPolys: google.maps.Polygon[] = [];
+      (multi.coordinates as number[][][][]).forEach((poly) => {
+        const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+        const gpoly = new google.maps.Polygon({ paths, ...style });
+        gpoly.setMap(mapRef.current!);
+        newPolys.push(gpoly);
+      });
+      setPreviewPolys(newPolys);
+    },
+    [clearPreview, isLoaded]
+  );
+
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
     setDraftPolys([]);
@@ -234,6 +273,7 @@ export default function ServiceAreaEditor({
   const editArea = useCallback(
     (area: ServiceAreaRow) => {
       resetDraft();
+      clearPreview(); // ensure preview isn’t lingering while editing
       setActiveAreaId(area.id);
       setDraftName(area.name);
       const gj = area.gj;
@@ -248,7 +288,7 @@ export default function ServiceAreaEditor({
       });
       setDraftPolys(newPolys);
     },
-    [resetDraft]
+    [resetDraft, clearPreview]
   );
 
   const saveDraft = useCallback(async () => {
@@ -616,23 +656,29 @@ export default function ServiceAreaEditor({
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
-          onClose={() => setSponsorOpen(false)}
+          onClose={() => {
+            setSponsorOpen(false);
+            clearPreview(); // remove overlay on close
+          }}
           cleanerId={cleanerId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
+          // NEW: show/hide preview overlay from modal
+          onPreviewGeoJSON={(multi) => drawPreview(multi)}
+          onClearPreview={() => clearPreview()}
         />
       )}
 
       {/* Manage modal (used when parent doesn't intercept) */}
       {manageOpen && manageAreaId && (
-  <AreaManageModal
-    open={manageOpen}
-    onClose={() => setManageOpen(false)}
-    cleanerId={cleanerId}          // ⬅️ add this
-    areaId={manageAreaId}
-    slot={manageSlot}
-  />
-)}
+        <AreaManageModal
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          cleanerId={cleanerId}
+          areaId={manageAreaId}
+          slot={manageSlot}
+        />
+      )}
     </>
   );
 }
