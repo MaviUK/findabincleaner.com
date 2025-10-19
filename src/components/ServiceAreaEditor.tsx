@@ -431,9 +431,18 @@ export default function ServiceAreaEditor({
                 const mine2 = !!s2?.owner_business_id && s2.owner_business_id === cleanerId;
                 const mine3 = !!s3?.owner_business_id && s3.owner_business_id === cleanerId;
 
-                const dis1 = !!s1?.taken && !mine1;
-                const dis2 = !!s2?.taken && !mine2;
-                const dis3 = !!s3?.taken && !mine3;
+                // If the cleaner owns any slot in this area, the other two become unavailable
+                const ownsAny = mine1 || mine2 || mine3;
+
+                // taken-by-someone-else flags
+                const taken1ByOther = !!s1?.taken && !mine1;
+                const taken2ByOther = !!s2?.taken && !mine2;
+                const taken3ByOther = !!s3?.taken && !mine3;
+
+                // Final disabled flags: either taken by someone else OR you already own a different slot
+                const dis1 = taken1ByOther || (!mine1 && ownsAny);
+                const dis2 = taken2ByOther || (!mine2 && ownsAny);
+                const dis3 = taken3ByOther || (!mine3 && ownsAny);
 
                 // route click either to manage (owned) or sponsor (new)
                 const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
@@ -453,6 +462,15 @@ export default function ServiceAreaEditor({
                   setSponsorSlot(slot);
                   setSponsorOpen(true);
                 };
+
+                const titleFor = (mine: boolean, slotState?: SlotState) =>
+                  mine
+                    ? "You sponsor this slot"
+                    : ownsAny
+                    ? "You already sponsor a slot in this area"
+                    : slotState?.taken
+                    ? `Status: ${slotState?.status || "taken"}`
+                    : "Available";
 
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
@@ -479,7 +497,7 @@ export default function ServiceAreaEditor({
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(1, mine1, dis1)}
                         disabled={dis1}
-                        title={s1?.taken ? `Status: ${s1?.status || "taken"}` : "Available"}
+                        title={titleFor(mine1, s1)}
                       >
                         {s1?.taken ? (mine1 ? "Manage #1" : "Taken #1") : "Sponsor #1"}
                       </button>
@@ -488,7 +506,7 @@ export default function ServiceAreaEditor({
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(2, mine2, dis2)}
                         disabled={dis2}
-                        title={s2?.taken ? `Status: ${s2?.status || "taken"}` : "Available"}
+                        title={titleFor(mine2, s2)}
                       >
                         {s2?.taken ? (mine2 ? "Manage #2" : "Taken #2") : "Sponsor #2"}
                       </button>
@@ -497,7 +515,7 @@ export default function ServiceAreaEditor({
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(3, mine3, dis3)}
                         disabled={dis3}
-                        title={s3?.taken ? `Status: ${s3?.status || "taken"}` : "Available"}
+                        title={titleFor(mine3, s3)}
                       >
                         {s3?.taken ? (mine3 ? "Manage #3" : "Taken #3") : "Sponsor #3"}
                       </button>
