@@ -1,160 +1,161 @@
-import { useEffect, useState } from "react";
+// src/components/AreaManageModal.tsx
+import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
+  /** cleaners.id (your “business id”) */
+  cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
 };
 
-// Shape returned by /.netlify/functions/subscription-get
-type SubView = {
-  area_name?: string | null;
-  status: string;
-  next_renewal_iso?: string | null;
-  price_monthly_pennies?: number | null;
-  currency?: string | null;
-  hosted_invoice_url?: string | null;
-  invoice_pdf?: string | null;
+type GetSubOk = {
+  ok: true;
+  subscription: {
+    area_name: string | null;
+    status: string | null;
+    current_period_end: string | null;
+    price_monthly_pennies: number | null;
+  };
 };
 
-export default function AreaManageModal({ open, onClose, areaId, slot }: Props) {
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [view, setView] = useState<SubView | null>(null);
-  const [working, setWorking] = useState(false);
+type GetSubErr = {
+  ok: false;
+  error?: string;
+  notFound?: boolean;
+};
 
+type GetSubResp = GetSubOk | GetSubErr;
+
+export default function AreaManageModal({
+  open,
+  onClose,
+  cleanerId,
+  areaId,
+  slot,
+}: Props) {
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
+
+  const title = useMemo(() => `Manage Slot #${slot}`, [slot]);
+
+  // Load current subscription for this business/area/slot
   useEffect(() => {
-    if (!open) return;
-    (async () => {
+    let cancelled = false;
+
+    async function run() {
+      if (!open) return;
       setLoading(true);
       setErr(null);
+      setSub(null);
       try {
         const res = await fetch("/.netlify/functions/subscription-get", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ areaId, slot }),
+          body: JSON.stringify({
+            businessId: cleanerId,  // IMPORTANT
+            areaId,
+            slot,
+          }),
         });
-        const json = await res.json();
-        if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-        setView(json as SubView);
+        const json: GetSubResp = await res.json();
+
+        if (cancelled) return;
+
+        if ("ok" in json && json.ok) {
+          setSub(json.subscription);
+        } else if ("notFound" in json && json.notFound) {
+          setErr("No active subscription was found for this slot.");
+        } else {
+          setErr(("error" in json && json.error) || "Failed to load subscription.");
+        }
       } catch (e: any) {
-        setErr(e?.message || "Failed to load subscription.");
+        if (!cancelled) setErr(e?.message || "Failed to load subscription.");
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
-    })();
-  }, [open, areaId, slot]);
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, cleanerId, areaId, slot]);
 
   async function cancelAtPeriodEnd() {
-    if (!confirm("Cancel at the end of the current billing period?")) return;
+    setLoading(true);
+    setErr(null);
     try {
-      setWorking(true);
       const res = await fetch("/.netlify/functions/subscription-cancel", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ areaId, slot }),
+        body: JSON.stringify({
+          businessId: cleanerId,  // IMPORTANT
+          areaId,
+          slot,
+        }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `HTTP ${res.status}`);
-      // reflect new status locally
-      setView((v) => (v ? { ...v, status: json.status || "canceled" } : v));
+      const json: { ok?: boolean; error?: string } = await res.json();
+      if (!json?.ok) throw new Error(json?.error || "Cancel failed");
+
+      onClose();
+      alert("Your sponsorship will be cancelled at the end of the current period.");
     } catch (e: any) {
-      alert(e?.message || "Cancel failed");
+      setErr(e?.message || "Cancel failed");
     } finally {
-      setWorking(false);
+      setLoading(false);
     }
   }
 
-  const price =
-    view?.price_monthly_pennies != null
-      ? `${(view.price_monthly_pennies / 100).toFixed(2)} ${(view.currency || "gbp").toUpperCase()}/mo`
-      : null;
+  if (!open) return null;
 
   return (
-    <div
-      className={`fixed inset-0 z-50 ${open ? "" : "pointer-events-none"}`}
-      aria-hidden={!open}
-    >
-      {/* Backdrop */}
-      <div
-        className={`absolute inset-0 bg-black/40 transition-opacity ${open ? "opacity-100" : "opacity-0"}`}
-        onClick={onClose}
-      />
-      {/* Centered card — matches the look of AreaSponsorModal */}
-      <div className="absolute inset-0 flex items-center justify-center px-4">
-        <div
-          className={`w-full max-w-xl rounded-xl bg-white shadow-xl transition-transform ${
-            open ? "scale-100" : "scale-95"
-          }`}
-        >
-          <div className="px-5 py-4 border-b flex items-center justify-between">
-            <div className="font-semibold">
-              {view?.area_name ? `Manage ${view.area_name} — Slot #${slot}` : `Manage Slot #${slot}`}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <h3 className="font-semibold">{title}</h3>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div className="px-4 py-4 space-y-3">
+          {err && (
+            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {err}
             </div>
-            <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
-              Close
-            </button>
-          </div>
+          )}
 
-          <div className="px-5 py-4 space-y-3">
-            {loading && <div>Loading…</div>}
-            {err && <div className="text-red-600">{err}</div>}
+          {loading && <div className="text-sm text-gray-600">Loading…</div>}
 
-            {!loading && !err && view && (
-              <>
-                <div className="text-sm">
-                  <div>
-                    <span className="font-medium">Status:</span> {view.status}
-                  </div>
-                  {view.next_renewal_iso && (
-                    <div>
-                      <span className="font-medium">Next renewal:</span>{" "}
-                      {new Date(view.next_renewal_iso).toLocaleString()}
-                    </div>
-                  )}
-                  {price && (
-                    <div>
-                      <span className="font-medium">Price:</span> {price}
-                    </div>
-                  )}
-                </div>
+          {!loading && sub && (
+            <div className="text-sm space-y-1">
+              <div>
+                <span className="font-medium">Area:</span> {sub.area_name || "—"}
+              </div>
+              <div>
+                <span className="font-medium">Status:</span> {sub.status || "unknown"}
+              </div>
+              <div>
+                <span className="font-medium">Next renewal:</span>{" "}
+                {sub.current_period_end ? new Date(sub.current_period_end).toLocaleString() : "—"}
+              </div>
+              <div>
+                <span className="font-medium">Price:</span>{" "}
+                {typeof sub.price_monthly_pennies === "number"
+                  ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
+                  : "—"}
+              </div>
+            </div>
+          )}
+        </div>
 
-                {(view.hosted_invoice_url || view.invoice_pdf) && (
-                  <div className="text-sm">
-                    <div className="font-medium mb-1">Latest invoice</div>
-                    <div className="flex gap-3">
-                      {view.hosted_invoice_url && (
-                        <a className="underline" href={view.hosted_invoice_url} target="_blank" rel="noreferrer">
-                          Open
-                        </a>
-                      )}
-                      {view.invoice_pdf && (
-                        <a className="underline" href={view.invoice_pdf} target="_blank" rel="noreferrer">
-                          PDF
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-1">
-                  <button
-                    className="btn"
-                    onClick={cancelAtPeriodEnd}
-                    disabled={working || view.status === "canceled"}
-                  >
-                    {working ? "Cancelling…" : "Cancel at period end"}
-                  </button>
-                </div>
-
-                <p className="text-xs text-gray-500">
-                  To update payment method or billing details, use <span className="font-medium">Manage billing</span> at
-                  the top of the dashboard.
-                </p>
-              </>
-            )}
-          </div>
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
+          <button className="btn" onClick={cancelAtPeriodEnd} disabled={loading}>
+            Cancel at period end
+          </button>
         </div>
       </div>
     </div>
