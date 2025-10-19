@@ -1,54 +1,81 @@
 import { createClient } from "@supabase/supabase-js";
 
-const RATE_PER_KM2_PER_MONTH = Number(process.env.RATE_PER_KM2_PER_MONTH || 15);
-const MIN_PRICE_PER_MONTH   = Number(process.env.MIN_PRICE_PER_MONTH || 5);
-
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-const cors = {
+// CORS + JSON helper
+const CORS = {
   "content-type": "application/json",
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST,OPTIONS",
   "access-control-allow-headers": "Content-Type, Authorization",
 };
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: CORS });
+
+// Slot-aware envs with safe fallbacks
+const num = (v, d) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+};
+const RATE_GOLD   = num(process.env.RATE_GOLD_PER_KM2_PER_MONTH,   num(process.env.RATE_PER_KM2_PER_MONTH, 15));
+const RATE_SILVER = num(process.env.RATE_SILVER_PER_KM2_PER_MONTH, RATE_GOLD);
+const RATE_BRONZE = num(process.env.RATE_BRONZE_PER_KM2_PER_MONTH, RATE_GOLD);
+
+const MIN_GOLD   = num(process.env.MIN_GOLD_PRICE_PER_MONTH,   num(process.env.MIN_PRICE_PER_MONTH, 1));
+const MIN_SILVER = num(process.env.MIN_SILVER_PRICE_PER_MONTH, MIN_GOLD);
+const MIN_BRONZE = num(process.env.MIN_BRONZE_PRICE_PER_MONTH, MIN_GOLD);
+
+function rateFor(slot) {
+  return slot === 1 ? RATE_GOLD : slot === 2 ? RATE_SILVER : RATE_BRONZE;
+}
+function minFor(slot) {
+  return slot === 1 ? MIN_GOLD : slot === 2 ? MIN_SILVER : MIN_BRONZE;
+}
 
 export default async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, drawnGeoJSON, months = 1 } = await req.json();
-    if (!cleanerId || !drawnGeoJSON) return json({ error: "cleanerId and drawnGeoJSON required" }, 400);
+    const { cleanerId, areaId, slot } = await req.json();
 
-    // Clip preview (no writes)
-    const { data, error } = await sb.rpc("clip_available_slot1_preview", {
-      p_cleaner: cleanerId,
-      p_geojson: drawnGeoJSON,
-    });
-    if (error) throw error;
-
-    if (!data || data.length === 0) {
-      return json({ ok: true, area_km2: 0, monthly_price: 0, total_price: 0, final_geojson: null });
+    // Basic validation
+    const slotNum = Number(slot);
+    if (!cleanerId || !areaId || ![1, 2, 3].includes(slotNum)) {
+      return json({ error: "cleanerId, areaId, and slot (1|2|3) are required" }, 400);
     }
 
-    const { area_m2, final_geojson } = data[0];
-    const km2 = area_m2 / 1_000_000;
-    const monthly = Math.max(km2 * RATE_PER_KM2_PER_MONTH, MIN_PRICE_PER_MONTH);
-    const total = monthly * Math.max(1, Number(months));
+    // Call your RPC that clips out already-purchased areas and gives the remaining piece
+    // Change the RPC name/params here if your SQL uses different names.
+    const { data, error } = await sb.rpc("get_area_preview", {
+      _area_id: areaId,
+      _slot: slotNum,
+      _drawn_geojson: null,      // we are using the saved area geometry
+      _exclude_cleaner: null,    // don’t exclude buyer; function should clip by existing subs
+    });
+
+    if (error) {
+      console.error("[sponsored-preview] RPC error:", error);
+      return json({ error: "Failed to compute available area" }, 500);
+    }
+
+    // Some deployments return an array row
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_km2 = num(row?.area_km2, 0);
+    const final_geojson = row?.final_geojson ?? null;
+
+    // Price: max(minimum, area * rate)
+    const monthly_price = Math.max(minFor(slotNum), Math.max(0, area_km2) * rateFor(slotNum));
 
     return json({
       ok: true,
-      area_km2: Number(km2.toFixed(5)),
-      monthly_price: Number(monthly.toFixed(2)),
-      total_price: Number(total.toFixed(2)),
+      slot: slotNum,
+      area_km2: Number(area_km2.toFixed(6)),
+      monthly_price: Number(monthly_price.toFixed(2)),
       final_geojson,
     });
   } catch (e) {
-    console.error(e);
-    return json({ error: e.message || "Failed preview" }, 500);
+    console.error("[sponsored-preview] handler error:", e);
+    return json({ error: e?.message || "Internal error" }, 500);
   }
 };
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: cors });
-}
