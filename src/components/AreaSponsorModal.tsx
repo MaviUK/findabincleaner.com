@@ -1,16 +1,16 @@
-// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-  /** BUSINESS id (cleaners.id). We keep the prop name for compatibility. */
+  /** BUSINESS id (cleaners.id). */
   cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
   mode?: "sponsor" | "manage";
 };
 
+/** ----- Manage types ----- */
 type GetSubOk = {
   ok: true;
   subscription: {
@@ -20,14 +20,21 @@ type GetSubOk = {
     price_monthly_pennies: number | null;
   };
 };
-
-type GetSubErr = {
-  ok: false;
-  error?: string;
-  notFound?: boolean;
-};
-
+type GetSubErr = { ok: false; error?: string; notFound?: boolean };
 type GetSubResp = GetSubOk | GetSubErr;
+
+/** ----- Preview types ----- */
+type PreviewOk = {
+  ok: true;
+  slot: number;
+  tier: string;
+  area_km2: number;
+  monthly_price: number;
+  total_price: number;
+  final_geojson: any | null;
+};
+type PreviewErr = { ok?: false; error?: string };
+type PreviewResp = PreviewOk | PreviewErr;
 
 export default function AreaSponsorModal({
   open,
@@ -41,19 +48,15 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
+  // preview state
+  const [prevLoading, setPrevLoading] = useState(false);
+  const [preview, setPreview] = useState<PreviewOk | null>(null);
+  const [prevErr, setPrevErr] = useState<string | null>(null);
+
   const title = useMemo(
     () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
     [mode, slot]
   );
-
-  // Clear state whenever the modal fully closes
-  useEffect(() => {
-    if (!open) {
-      setErr(null);
-      setSub(null);
-      setLoading(false);
-    }
-  }, [open]);
 
   // Load current sub details in manage mode
   useEffect(() => {
@@ -61,26 +64,18 @@ export default function AreaSponsorModal({
 
     async function run() {
       if (!open || mode !== "manage") return;
-
-      // Quick param validation for clearer UI feedback
-      if (!cleanerId || !areaId || !slot) {
-        setErr("Missing params");
-        return;
-      }
-
       setLoading(true);
       setErr(null);
       setSub(null);
-
       try {
-        const body = { businessId: cleanerId, areaId, slot }; // send BUSINESS id
+        const body = { businessId: cleanerId, areaId, slot };
         const res = await fetch("/.netlify/functions/subscription-get", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         });
-
         const json: GetSubResp = await res.json();
+
         if (cancelled) return;
 
         if ("ok" in json && json.ok) {
@@ -105,14 +100,10 @@ export default function AreaSponsorModal({
   }, [open, mode, areaId, slot, cleanerId]);
 
   async function cancelAtPeriodEnd() {
-    if (!cleanerId || !areaId || !slot) {
-      setErr("Missing params");
-      return;
-    }
     setLoading(true);
     setErr(null);
     try {
-      const body = { businessId: cleanerId, areaId, slot }; // BUSINESS id
+      const body = { businessId: cleanerId, areaId, slot };
       const res = await fetch("/.netlify/functions/subscription-cancel", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -130,11 +121,34 @@ export default function AreaSponsorModal({
     }
   }
 
-  async function proceedToCheckout() {
-    if (!cleanerId || !areaId || !slot) {
-      setErr("Missing params");
-      return;
+  async function previewPrice() {
+    setPrevLoading(true);
+    setPrevErr(null);
+    setPreview(null);
+    try {
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          cleanerId,
+          areaId,
+          slot,
+          // If you ever send a hand-drawn shape from the map, pass it as `drawnGeoJSON`
+        }),
+      });
+      const json: PreviewResp = await res.json();
+      if (!("ok" in json) || !json.ok) {
+        throw new Error(("error" in json && json.error) || "Preview unavailable");
+      }
+      setPreview(json);
+    } catch (e: any) {
+      setPrevErr(e?.message || "Preview failed");
+    } finally {
+      setPrevLoading(false);
     }
+  }
+
+  async function proceedToCheckout() {
     setLoading(true);
     setErr(null);
     try {
@@ -142,9 +156,10 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId, // OK for sponsor flow (server uses metadata; webhook writes)
+          cleanerId,
           areaId,
           slot,
+          // drawnGeoJSON: ... // optional if you add custom-drawn purchase
         }),
       });
       const data = await res.json();
@@ -162,17 +177,10 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="sponsor-manage-title"
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 id="sponsor-manage-title" className="font-semibold">
-            {title}
-          </h3>
+          <h3 className="font-semibold">{title}</h3>
           <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
             Close
           </button>
@@ -205,21 +213,48 @@ export default function AreaSponsorModal({
                   <div>
                     <span className="font-medium">Price:</span>{" "}
                     {typeof sub.price_monthly_pennies === "number"
-                      ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
+                      ? `£${(sub.price_monthly_pennies / 100).toFixed(2)}/mo`
                       : "—"}
                   </div>
                 </div>
               )}
             </>
           ) : (
-            <div className="text-sm">
-              Result:{" "}
-              <span className="font-medium">
-                Some part of this area is available for #{slot}.
-              </span>
-              <br />
-              We’ll only bill the portion that's actually available for this slot.
-            </div>
+            <>
+              <div className="text-sm">
+                Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
+                <br />
+                We’ll only bill the portion that's actually available for this slot.
+              </div>
+
+              {/* Preview panel */}
+              <div className="rounded border p-3 bg-gray-50">
+                <div className="flex items-center justify-between gap-2">
+                  <button className="btn" onClick={previewPrice} disabled={prevLoading}>
+                    {prevLoading ? "Previewing…" : "Preview price"}
+                  </button>
+                  {prevErr && (
+                    <div className="text-xs text-red-600">{prevErr}</div>
+                  )}
+                </div>
+
+                {preview && (
+                  <div className="mt-3 text-sm space-y-1">
+                    <div>
+                      <span className="font-medium">Tier:</span> {preview.tier} (#{preview.slot})
+                    </div>
+                    <div>
+                      <span className="font-medium">Billable area:</span>{" "}
+                      {preview.area_km2.toFixed(4)} km²
+                    </div>
+                    <div>
+                      <span className="font-medium">Monthly price:</span>{" "}
+                      £{preview.monthly_price.toFixed(2)}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
 
