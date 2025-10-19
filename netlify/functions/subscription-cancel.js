@@ -2,10 +2,7 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -14,64 +11,58 @@ const json = (body, status = 200) =>
   });
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
+  let body;
   try {
-    const { businessId, cleanerId, areaId, slot } = await req.json();
-
-    if (!areaId || !slot || ![1, 2, 3].includes(Number(slot))) {
-      return json({ ok: false, error: "Missing areaId/slot" }, 400);
-    }
-
-    // Resolve business id from cleanerId if needed
-    let bid = businessId || null;
-    if (!bid && cleanerId) {
-      const { data, error } = await supabase
-        .from("cleaners")
-        .select("id")
-        .eq("user_id", cleanerId)
-        .maybeSingle();
-      if (error) {
-        console.error("[sub-cancel] cleaners lookup error:", error);
-        return json({ ok: false, error: "Lookup failed" }, 500);
-      }
-      bid = data ? data.id : null;
-    }
-
-    if (!bid) return json({ ok: false, error: "Missing params" }, 400);
-
-    // Find subscription
-    const { data: sub, error: subErr } = await supabase
-      .from("sponsored_subscriptions")
-      .select("id, stripe_subscription_id, status")
-      .eq("business_id", bid)
-      .eq("area_id", areaId)
-      .eq("slot", Number(slot))
-      .maybeSingle();
-
-    if (subErr) {
-      console.error("[sub-cancel] query error:", subErr);
-      return json({ ok: false, error: "Query failed" }, 500);
-    }
-
-    if (!sub || !sub.stripe_subscription_id) {
-      return json({ ok: false, error: "Subscription not found" }, 404);
-    }
-
-    // Cancel at period end on Stripe
-    await stripe.subscriptions.update(sub.stripe_subscription_id, {
-      cancel_at_period_end: true,
-    });
-
-    // Mirror locally
-    await supabase
-      .from("sponsored_subscriptions")
-      .update({ status: "canceled" })
-      .eq("id", sub.id);
-
-    return json({ ok: true });
-  } catch (e) {
-    console.error("[sub-cancel] handler error:", e);
-    return json({ ok: false, error: e && e.message ? e.message : "Server error" }, 500);
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
   }
-};
+
+  const businessId = body?.businessId || null; // cleaners.id
+  const areaId = body?.areaId || null;
+  const slot = Number(body?.slot) || null;
+
+  console.log("[subscription-cancel] payload:", { businessId, areaId, slot });
+
+  if (!businessId || !areaId || !slot) {
+    return json({ ok: false, error: "Missing params" }, 400);
+  }
+
+  // Look up the user’s subscription in our DB to find the Stripe sub id
+  const { data: subRow, error: subErr } = await supabase
+    .from("sponsored_subscriptions")
+    .select("id, stripe_subscription_id")
+    .eq("business_id", businessId)
+    .eq("area_id", areaId)
+    .eq("slot", slot)
+    .maybeSingle();
+
+  if (subErr) {
+    console.error("[subscription-cancel] DB error:", subErr);
+    return json({ ok: false, error: "DB error" }, 500);
+  }
+  if (!subRow?.stripe_subscription_id) {
+    return json({ ok: false, error: "Subscription not found" }, 404);
+  }
+
+  // Cancel at period end on Stripe
+  await stripe.subscriptions.update(subRow.stripe_subscription_id, {
+    cancel_at_period_end: true,
+  });
+
+  // Mirror locally
+  const { error: updErr } = await supabase
+    .from("sponsored_subscriptions")
+    .update({ status: "canceled" })
+    .eq("id", subRow.id);
+
+  if (updErr) {
+    console.error("[subscription-cancel] local mirror error:", updErr);
+    // Still report ok (Stripe change is what matters), but surface the local failure
+    return json({ ok: true, warn: "Stripe updated; local status not updated" });
+  }
+
+  return json({ ok: true });
+}
