@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 type Props = {
   open: boolean;
   onClose: () => void;
-  cleanerId: string; // NOTE: for mode==='manage' this is actually the BUSINESS (cleaners.id)
+  /** This is the BUSINESS id (cleaners.id). We keep the prop name for compatibility. */
+  cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
   mode?: "sponsor" | "manage";
@@ -18,9 +19,14 @@ type GetSubOk = {
     price_monthly_pennies: number | null;
   };
 };
-type GetSubResp =
-  | GetSubOk
-  | { ok: false; notFound?: boolean; error?: string };
+
+type GetSubErr = {
+  ok: false;
+  error?: string;
+  notFound?: boolean;
+};
+
+type GetSubResp = GetSubOk | GetSubErr;
 
 export default function AreaSponsorModal({
   open,
@@ -34,28 +40,22 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
-  // build a nice title
   const title = useMemo(
-    () =>
-      mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`,
+    () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
     [mode, slot]
   );
 
-  // When opening in manage mode, fetch current sub details
+  // Load current sub details in manage mode
   useEffect(() => {
     let cancelled = false;
+
     async function run() {
       if (!open || mode !== "manage") return;
       setLoading(true);
       setErr(null);
       setSub(null);
       try {
-        const body: any = { areaId, slot };
-        // IMPORTANT:
-        // Back end expects either {businessId} OR {cleanerId (auth uid)}.
-        // We pass BUSINESS id here under businessId to avoid "Missing params".
-        body.businessId = cleanerId;
-
+        const body = { businessId: cleanerId, areaId, slot }; // IMPORTANT: send BUSINESS id
         const res = await fetch("/.netlify/functions/subscription-get", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -70,7 +70,8 @@ export default function AreaSponsorModal({
         } else if ("notFound" in json && json.notFound) {
           setErr("No active subscription was found for this slot.");
         } else {
-          setErr(json.error || "Failed to load subscription.");
+          const msg = ("error" in json && json.error) || "Failed to load subscription.";
+          setErr(msg);
         }
       } catch (e: any) {
         if (!cancelled) setErr(e?.message || "Failed to load subscription.");
@@ -78,6 +79,7 @@ export default function AreaSponsorModal({
         if (!cancelled) setLoading(false);
       }
     }
+
     run();
     return () => {
       cancelled = true;
@@ -88,19 +90,15 @@ export default function AreaSponsorModal({
     setLoading(true);
     setErr(null);
     try {
-      const body: any = { areaId, slot };
-      // Same rule as above: send BUSINESS id as businessId
-      body.businessId = cleanerId;
-
+      const body = { businessId: cleanerId, areaId, slot }; // IMPORTANT: send BUSINESS id
       const res = await fetch("/.netlify/functions/subscription-cancel", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
       });
-      const json = await res.json();
-      if (!json?.ok) {
-        throw new Error(json?.error || "Cancel failed");
-      }
+      const json: { ok?: boolean; error?: string } = await res.json();
+      if (!json?.ok) throw new Error(json?.error || "Cancel failed");
+
       onClose();
       alert("Your sponsorship will be cancelled at the end of the current period.");
     } catch (e: any) {
@@ -118,7 +116,7 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId, // for sponsor flow this is fine (back end reads meta / webhook)
+          cleanerId, // fine for sponsor flow (server uses metadata + webhook)
           areaId,
           slot,
         }),
@@ -160,12 +158,10 @@ export default function AreaSponsorModal({
               {!loading && sub && (
                 <div className="text-sm space-y-1">
                   <div>
-                    <span className="font-medium">Area:</span>{" "}
-                    {sub.area_name || "—"}
+                    <span className="font-medium">Area:</span> {sub.area_name || "—"}
                   </div>
                   <div>
-                    <span className="font-medium">Status:</span>{" "}
-                    {sub.status || "unknown"}
+                    <span className="font-medium">Status:</span> {sub.status || "unknown"}
                   </div>
                   <div>
                     <span className="font-medium">Next renewal:</span>{" "}
@@ -183,31 +179,21 @@ export default function AreaSponsorModal({
               )}
             </>
           ) : (
-            <>
-              <div className="text-sm">
-                Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
-                <br />
-                We’ll only bill the portion that's actually available for this slot.
-              </div>
-            </>
+            <div className="text-sm">
+              Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
+              <br />
+              We’ll only bill the portion that's actually available for this slot.
+            </div>
           )}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
           {mode === "manage" ? (
-            <button
-              className="btn"
-              onClick={cancelAtPeriodEnd}
-              disabled={loading}
-            >
+            <button className="btn" onClick={cancelAtPeriodEnd} disabled={loading}>
               Cancel at period end
             </button>
           ) : (
-            <button
-              className="btn btn-primary"
-              onClick={proceedToCheckout}
-              disabled={loading}
-            >
+            <button className="btn btn-primary" onClick={proceedToCheckout} disabled={loading}>
               Continue to checkout
             </button>
           )}
