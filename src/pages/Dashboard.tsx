@@ -6,6 +6,7 @@ import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AreasSponsorList from "../components/AreasSponsorList";
 import AnalyticsOverview from "../components/AnalyticsOverview";
+import AreaSponsorModal from "../components/AreaSponsorModal"; // <-- NEW
 
 type Cleaner = {
   id: string;
@@ -38,6 +39,11 @@ export default function Dashboard() {
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0); // bump to make children refetch
   const [openingPortal, setOpeningPortal] = useState(false);
+
+  // NEW: Manage modal state
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageAreaId, setManageAreaId] = useState<string | null>(null);
+  const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
@@ -260,10 +266,16 @@ export default function Dashboard() {
               </div>
 
               <div className="rounded-xl overflow-hidden border">
-                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint Gold/Silver/Bronze */}
+                {/* Pass sponsorshipVersion so the editor/map can refetch & repaint */}
                 <ServiceAreaEditor
                   cleanerId={cleaner.id}
                   sponsorshipVersion={sponsorshipVersion}
+                  onSlotAction={(area, slot) => {
+                    // Open "Manage Slot" modal with the right params
+                    setManageAreaId(area.id);
+                    setManageSlot(slot);
+                    setManageOpen(true);
+                  }}
                 />
               </div>
 
@@ -282,6 +294,18 @@ export default function Dashboard() {
             </div>
           </section>
         </>
+      )}
+
+      {/* Manage modal (opens when user clicks "Manage #n") */}
+      {manageOpen && manageAreaId && (
+        <AreaSponsorModal
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          cleanerId={cleaner.id}   // BUSINESS id (cleaners.id)
+          areaId={manageAreaId}    // service_areas.id
+          slot={manageSlot}
+          mode="manage"
+        />
       )}
     </main>
   );
