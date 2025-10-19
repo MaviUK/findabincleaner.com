@@ -625,13 +625,14 @@ export default function ServiceAreaEditor({
 
       {/* Manage modal (used when parent doesn't intercept) */}
       {manageOpen && manageAreaId && (
-        <AreaManageModal
-          open={manageOpen}
-          onClose={() => setManageOpen(false)}
-          areaId={manageAreaId}
-          slot={manageSlot}
-        />
-      )}
+  <AreaManageModal
+    open={manageOpen}
+    onClose={() => setManageOpen(false)}
+    cleanerId={cleanerId}          // ⬅️ add this
+    areaId={manageAreaId}
+    slot={manageSlot}
+  />
+)}
     </>
   );
 }
