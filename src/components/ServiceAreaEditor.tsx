@@ -156,44 +156,22 @@ export default function ServiceAreaEditor({
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
-  // ---- LIVE PREVIEW OVERLAY (what the buyer will actually get) ----
-  const [previewPolys, setPreviewPolys] = useState<google.maps.Polygon[]>([]);
+  // ---- PREVIEW OVERLAY (declarative; avoids flashing) ----
+  const [previewGeo, setPreviewGeo] = useState<any | null>(null);
 
-  const clearPreview = useCallback(() => {
-    previewPolys.forEach((p) => p.setMap(null));
-    setPreviewPolys([]);
-  }, [previewPolys]);
+  const clearPreview = useCallback(() => setPreviewGeo(null), []);
+  const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
 
-  const drawPreview = useCallback(
-    (multi: any, color = "#10b981") => {
-      // multi is GeoJSON MultiPolygon
-      clearPreview();
-      if (!isLoaded || !mapRef.current) return;
-      if (!multi || multi.type !== "MultiPolygon") return;
-
-      const style: google.maps.PolygonOptions = {
-        ...polyStyle,
-        editable: false,
-        draggable: false,
-        fillOpacity: 0.18,
-        strokeOpacity: 0.95,
-        strokeWeight: 3,
-        strokeColor: color,
-        fillColor: color,
-        zIndex: 9999,
-      };
-
-      const newPolys: google.maps.Polygon[] = [];
-      (multi.coordinates as number[][][][]).forEach((poly) => {
-        const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-        const gpoly = new google.maps.Polygon({ paths, ...style });
-        gpoly.setMap(mapRef.current!);
-        newPolys.push(gpoly);
-      });
-      setPreviewPolys(newPolys);
-    },
-    [clearPreview, isLoaded]
-  );
+  // Convert preview GeoJSON to paths once (stable between renders)
+  const previewPolys = useMemo(() => {
+    if (!previewGeo || previewGeo.type !== "MultiPolygon") return [];
+    const out: { paths: { lat: number; lng: number }[][] }[] = [];
+    (previewGeo.coordinates as number[][][][]).forEach((poly) => {
+      const rings = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+      out.push({ paths: rings });
+    });
+    return out;
+  }, [previewGeo]);
 
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
@@ -262,13 +240,14 @@ export default function ServiceAreaEditor({
 
   const startNewArea = useCallback(() => {
     resetDraft();
+    clearPreview(); // ensure preview is not visible while drawing
     setCreating(true);
     setDraftName("New Service Area");
     setTimeout(
       () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
       0
     );
-  }, [resetDraft]);
+  }, [resetDraft, clearPreview]);
 
   const editArea = useCallback(
     (area: ServiceAreaRow) => {
@@ -645,6 +624,25 @@ export default function ServiceAreaEditor({
                     return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
                   });
                 })}
+
+              {/* Preview overlay – drawn on top */}
+              {previewPolys.map((p, i) => (
+                <Polygon
+                  key={`preview-${i}`}
+                  paths={p.paths}
+                  options={{
+                    strokeWeight: 3,
+                    strokeOpacity: 1,
+                    strokeColor: "#14b8a6", // teal
+                    fillColor: "#14b8a6",
+                    fillOpacity: 0.22,
+                    clickable: false,
+                    editable: false,
+                    draggable: false,
+                    zIndex: 9999,
+                  }}
+                />
+              ))}
             </GoogleMap>
           ) : (
             <div className="card card-pad">Loading map…</div>
@@ -663,7 +661,7 @@ export default function ServiceAreaEditor({
           cleanerId={cleanerId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
-          // NEW: show/hide preview overlay from modal
+          // allow modal to show/hide the clipped area it computed
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
           onClearPreview={() => clearPreview()}
         />
