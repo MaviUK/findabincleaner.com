@@ -115,6 +115,58 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
+/** Accept Polygon/MultiPolygon/Feature/FeatureCollection and return array of rings-paths for <Polygon /> */
+function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
+  if (!geo) return [];
+
+  // FeatureCollection
+  if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
+    return geo.features.flatMap((f: any) => geoToPaths(f));
+  }
+
+  // Feature
+  if (geo.type === "Feature" && geo.geometry) {
+    return geoToPaths(geo.geometry);
+  }
+
+  // Geometry
+  if (geo.type === "MultiPolygon" && Array.isArray(geo.coordinates)) {
+    return (geo.coordinates as number[][][][]).map((poly) => ({
+      paths: poly.map((ring) =>
+        ring.map((pair) => {
+          // tolerate accidental [lat,lng]
+          const [a, b] = pair;
+          const lng = typeof a === "number" && typeof b === "number" ? a : (pair as any)[0];
+          const lat = typeof a === "number" && typeof b === "number" ? b : (pair as any)[1];
+          return { lat, lng };
+        })
+      ),
+    }));
+  }
+
+  if (geo.type === "Polygon" && Array.isArray(geo.coordinates)) {
+    return [
+      {
+        paths: (geo.coordinates as number[][][]).map((ring) =>
+          ring.map((pair) => {
+            const [a, b] = pair;
+            const lng = typeof a === "number" && typeof b === "number" ? a : (pair as any)[0];
+            const lat = typeof a === "number" && typeof b === "number" ? b : (pair as any)[1];
+            return { lat, lng };
+          })
+        ),
+      },
+    ];
+  }
+
+  // Some functions return a raw "multi" object or nested under { geometry } etc.
+  if (geo.geometry) return geoToPaths(geo.geometry);
+  if (geo.geojson) return geoToPaths(geo.geojson);
+  if (geo.multi) return geoToPaths(geo.multi);
+
+  return [];
+}
+
 type Props = {
   cleanerId: string;
   sponsorshipVersion?: number;
@@ -156,22 +208,12 @@ export default function ServiceAreaEditor({
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
-  // ---- PREVIEW OVERLAY (declarative; avoids flashing) ----
+  // ---- PREVIEW OVERLAY (clipped purchasable sub-region) ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
-
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
   const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
-
-  // Convert preview GeoJSON to paths once (stable between renders)
-  const previewPolys = useMemo(() => {
-    if (!previewGeo || previewGeo.type !== "MultiPolygon") return [];
-    const out: { paths: { lat: number; lng: number }[][] }[] = [];
-    (previewGeo.coordinates as number[][][][]).forEach((poly) => {
-      const rings = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-      out.push({ paths: rings });
-    });
-    return out;
-  }, [previewGeo]);
+  const previewPolys = useMemo(() => geoToPaths(previewGeo), [previewGeo]);
+  const previewActiveForArea = sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
   const resetDraft = useCallback(() => {
     draftPolys.forEach((p) => p.setMap(null));
@@ -610,14 +652,22 @@ export default function ServiceAreaEditor({
                 serviceAreas.map((a) => {
                   const gj = a.gj;
                   if (!gj || gj.type !== "MultiPolygon") return null;
+
                   const paint = areaPaint(a.id);
+                  const previewIsForThisArea =
+                    previewActiveForArea && sponsorAreaId === a.id;
+
                   const style: google.maps.PolygonOptions = {
                     ...polyStyle,
                     editable: false,
                     draggable: false,
+                    // When preview for this area is active, dim the base paint so only the clipped region stands out
+                    fillOpacity: previewIsForThisArea ? 0.05 : 0.35,
+                    strokeOpacity: previewIsForThisArea ? 0.5 : 0.9,
                     fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
                     strokeColor: paint?.stroke ?? "#555",
                   };
+
                   return (gj.coordinates as number[][][][]).map((poly, i) => {
                     const rings = poly;
                     const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
