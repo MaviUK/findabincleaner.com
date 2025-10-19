@@ -1,5 +1,5 @@
 // src/components/AreaSponsorModal.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 type Slot = 1 | 2 | 3;
 
@@ -7,7 +7,15 @@ type PreviewOk = {
   ok: true;
   area_km2: number;
   monthly_price: number;
+  // Your function’s clipped region key:
   final_geojson: any | null;
+  // ...but we’ll also tolerate other keys:
+  available?: any;
+  available_gj?: any;
+  available_geojson?: any;
+  geometry?: any;
+  geojson?: any;
+  multi?: any;
 };
 type PreviewErr = { ok?: false; error?: string };
 type PreviewResp = PreviewOk | PreviewErr;
@@ -25,6 +33,24 @@ type Props = {
   onClearPreview?: () => void;
 };
 
+function labelForSlot(s: Slot) {
+  return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
+}
+
+// Be liberal in what we accept so backend key changes don’t break the UI
+function pickClippedGeom(json: any) {
+  return (
+    json?.final_geojson ??
+    json?.available ??
+    json?.available_gj ??
+    json?.available_geojson ??
+    json?.geometry ??
+    json?.geojson ??
+    json?.multi ??
+    null
+  );
+}
+
 export default function AreaSponsorModal({
   open,
   onClose,
@@ -39,6 +65,7 @@ export default function AreaSponsorModal({
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
   const [monthly, setMonthly] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [wasClipped, setWasClipped] = useState<boolean>(false);
 
   // Fetch preview once per open; cancel on close; clear overlay on cleanup
   useEffect(() => {
@@ -55,6 +82,7 @@ export default function AreaSponsorModal({
       setComputing(true);
       setAreaKm2(null);
       setMonthly(null);
+      setWasClipped(false);
 
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
@@ -79,8 +107,11 @@ export default function AreaSponsorModal({
         setAreaKm2(json.area_km2);
         setMonthly(json.monthly_price);
 
-        if (json.final_geojson && onPreviewGeoJSON) {
-          onPreviewGeoJSON(json.final_geojson);
+        // Use clipped geometry if provided; otherwise don’t draw anything new.
+        const clipped = pickClippedGeom(json);
+        if (clipped && onPreviewGeoJSON) {
+          setWasClipped(true);
+          onPreviewGeoJSON(clipped);
         }
       } catch (e: any) {
         if (!cancelled && !controller.signal.aborted) {
@@ -104,10 +135,14 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cleanerId, areaId, slot]);
 
-  if (!open) return null;
+  const priceLine = useMemo(() => {
+    if (areaKm2 == null && monthly == null) return "—";
+    const a = areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`;
+    const m = monthly == null ? "—" : `£${monthly.toFixed(2)}/month`;
+    return `Area: ${a} · Monthly: ${m}`;
+  }, [areaKm2, monthly]);
 
-  const labelForSlot = (s: Slot) =>
-    s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
+  if (!open) return null;
 
   async function handleCheckout() {
     setCheckingOut(true);
@@ -131,12 +166,17 @@ export default function AreaSponsorModal({
     }
   }
 
+  function handleClose() {
+    onClearPreview?.();
+    onClose();
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-xl shadow-lg w-full max-w-lg">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">Sponsor #{slot}</div>
-          <button className="text-gray-600 hover:text-black" onClick={onClose}>
+          <div className="font-semibold">Sponsor #{slot} — {labelForSlot(slot)}</div>
+          <button className="text-gray-600 hover:text-black" onClick={handleClose}>
             Close
           </button>
         </div>
@@ -149,13 +189,12 @@ export default function AreaSponsorModal({
           )}
 
           <p className="text-sm text-gray-700">
-            Some part of this area is available for #{slot}. We’ll only bill the
-            portion that’s actually available for this slot.
+            We’ll only bill the part of your drawn area that’s actually available for slot #{slot}.
           </p>
 
           <div className="border rounded p-3 text-sm text-gray-800">
             <div className="flex items-center justify-between">
-              <span>Available area for slot #{slot}:</span>
+              <span>Available area:</span>
               <span className="tabular-nums">
                 {areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`}
               </span>
@@ -170,11 +209,16 @@ export default function AreaSponsorModal({
             {computing && (
               <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
             )}
+            {wasClipped && !computing && (
+              <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
+                Preview shows only the purchasable sub-region on the map.
+              </div>
+            )}
           </div>
         </div>
 
         <div className="px-4 py-3 border-t flex justify-end gap-2">
-          <button className="btn" onClick={onClose} disabled={checkingOut}>
+          <button className="btn" onClick={handleClose} disabled={checkingOut}>
             Cancel
           </button>
           <button
