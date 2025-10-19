@@ -51,6 +51,30 @@ function pickClippedGeom(json: any) {
   );
 }
 
+// Fallback to “area-availability” if preview didn’t include a clipped region
+async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
+  const res = await fetch("/.netlify/functions/area-availability", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ areaId, slot }),
+    signal,
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
+  }
+  const j = await res.json();
+  return (
+    j?.available_geojson ??
+    j?.final_geojson ??
+    j?.available ??
+    j?.geojson ??
+    j?.geometry ??
+    j?.multi ??
+    null
+  );
+}
+
 export default function AreaSponsorModal({
   open,
   onClose,
@@ -99,6 +123,7 @@ export default function AreaSponsorModal({
       setWasClipped(false);
 
       try {
+        // 1) Price + (maybe) clipped geometry from preview
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -126,8 +151,21 @@ export default function AreaSponsorModal({
         setAreaKm2(Number.isFinite(aNum) ? aNum : null);
         setMonthly(Number.isFinite(mNum) ? mNum : null);
 
-        const clipped = pickClippedGeom(json);
-        if (clipped && onPreviewGeoJSON) {
+        // 2) Try to draw clipped geometry from preview
+        let clipped = pickClippedGeom(json);
+
+        // 3) Fallback to availability if preview lacked a clipped region
+        if (!clipped) {
+          try {
+            const avail = await fetchAvailability(areaId, slot, controller.signal);
+            if (!cancelled && avail && onPreviewGeoJSON) {
+              setWasClipped(true);
+              onPreviewGeoJSON(avail);
+            }
+          } catch {
+            // Availability fetch is a best-effort for visuals; ignore errors
+          }
+        } else if (onPreviewGeoJSON) {
           setWasClipped(true);
           onPreviewGeoJSON(clipped);
         }
@@ -281,11 +319,7 @@ export default function AreaSponsorModal({
         </div>
 
         <div className="px-4 py-3 border-t flex justify-end gap-2">
-          <button
-            className="btn"
-            onClick={handleClose}
-            disabled={checkingOut}
-          >
+          <button className="btn" onClick={handleClose} disabled={checkingOut}>
             Cancel
           </button>
           <button
