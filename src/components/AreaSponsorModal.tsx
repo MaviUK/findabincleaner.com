@@ -1,22 +1,30 @@
-// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-
   /** BUSINESS id (cleaners.id) */
   cleanerId: string;
   areaId: string;
   slot: 1 | 2 | 3;
-
-  /** Let parent map paint the computed, billable portion of the area. */
-  onPreviewGeoJSON?: (multi: any) => void;
-  /** Ask parent to clear any painted preview. */
+  mode?: "sponsor" | "manage";
+  /** OPTIONAL: if you draw the billable polygon on the map */
+  onPreviewGeoJSON?: (multi: any | null) => void;
   onClearPreview?: () => void;
 };
 
-/** Preview API response types */
+type GetSubOk = {
+  ok: true;
+  subscription: {
+    area_name: string | null;
+    status: string | null;
+    current_period_end: string | null;
+    price_monthly_pennies: number | null;
+  };
+};
+type GetSubErr = { ok: false; error?: string; notFound?: boolean };
+type GetSubResp = GetSubOk | GetSubErr;
+
 type PreviewOk = {
   ok: true;
   area_km2: number;
@@ -26,84 +34,146 @@ type PreviewOk = {
 type PreviewErr = { ok: false; error?: string };
 type PreviewResp = PreviewOk | PreviewErr;
 
-function isPreviewOk(x: PreviewResp): x is PreviewOk {
-  return (x as any)?.ok === true;
-}
-
 export default function AreaSponsorModal({
   open,
   onClose,
   cleanerId,
   areaId,
   slot,
+  mode = "sponsor",
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  const title = useMemo(() => `Sponsor #${slot}`, [slot]);
-
-  // Separate states so preview can hang/fail without blocking checkout
-  const [computing, setComputing] = useState(false);
-  const [checkingOut, setCheckingOut] = useState(false);
-
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [areaKm2, setAreaKm2] = useState<number | null>(null);
-  const [price, setPrice] = useState<number | null>(null);
+  const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
-  // Load the *billable* portion + price when the modal opens
+  // preview state
+  const [computing, setComputing] = useState(false);
+  const [previewKm2, setPreviewKm2] = useState<number | null>(null);
+  const [previewPrice, setPreviewPrice] = useState<number | null>(null);
+
+  const title = useMemo(
+    () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
+    [mode, slot]
+  );
+
+  // Load current sub details in manage mode
   useEffect(() => {
-    const ac = new AbortController();
+    let cancelled = false;
 
     async function run() {
-      if (!open) return;
-
-      setComputing(true);
+      if (!open || mode !== "manage") return;
+      setLoading(true);
       setErr(null);
-      setAreaKm2(null);
-      setPrice(null);
-
+      setSub(null);
       try {
-        // Optional: 12s timeout so we don't hang forever
-        const timeout = new Promise<Response>((_, reject) =>
-          setTimeout(() => reject(new Error("Preview timed out")), 12000)
-        );
-
-        const req = fetch("/.netlify/functions/sponsored-preview", {
+        const body = { businessId: cleanerId, areaId, slot };
+        const res = await fetch("/.netlify/functions/subscription-get", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cleanerId, areaId, slot }),
-          signal: ac.signal,
+          body: JSON.stringify(body),
         });
+        const json: GetSubResp = await res.json();
+        if (cancelled) return;
 
-        const res = (await Promise.race([req, timeout])) as Response;
-        const json: PreviewResp = await res.json();
-        if (ac.signal.aborted) return;
-
-        if (isPreviewOk(json)) {
-          setAreaKm2(json.area_km2);
-          setPrice(json.monthly_price);
-          if (json.final_geojson && onPreviewGeoJSON) onPreviewGeoJSON(json.final_geojson);
+        if ("ok" in json && json.ok) {
+          setSub(json.subscription);
+        } else if ("notFound" in json && json.notFound) {
+          setErr("No active subscription was found for this slot.");
         } else {
-          const msg = json?.error || "Failed to compute available area";
-          setErr(msg);
+          setErr(("error" in json && json.error) || "Failed to load subscription.");
         }
       } catch (e: any) {
-        if (!ac.signal.aborted) setErr(e?.message || "Failed to compute available area");
+        if (!cancelled) setErr(e?.message || "Failed to load subscription.");
       } finally {
-        if (!ac.signal.aborted) setComputing(false);
+        if (!cancelled) setLoading(false);
       }
     }
 
     run();
-
-    // Cleanup / clear painted preview when inputs change or modal closes
     return () => {
-      ac.abort();
-      onClearPreview?.();
+      cancelled = true;
     };
-  }, [open, cleanerId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
+  }, [open, mode, areaId, slot, cleanerId]);
+
+  // Preview the billable area + price in sponsor mode
+  useEffect(() => {
+    if (!open || mode !== "sponsor") return;
+
+    let cancelled = false;
+    setComputing(true);
+    setErr(null);
+    setPreviewKm2(null);
+    setPreviewPrice(null);
+    onPreviewGeoJSON?.(null);
+
+    // 10s timeout so we never spin forever
+    const controller = new AbortController();
+    const to = setTimeout(() => controller.abort(), 10000);
+
+    (async () => {
+      try {
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cleanerId, areaId, slot }),
+          signal: controller.signal,
+        });
+
+        const json: PreviewResp = await res.json();
+
+        if (cancelled) return;
+
+        if ("ok" in json && json.ok) {
+          setPreviewKm2(json.area_km2);
+          setPreviewPrice(json.monthly_price);
+          if (json.final_geojson) onPreviewGeoJSON?.(json.final_geojson);
+        } else {
+          // clear any drawn overlay if server reports an error
+          onClearPreview?.();
+          setErr(("error" in json && json.error) || "Failed to compute available area.");
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          onClearPreview?.();
+          setErr(e?.name === "AbortError" ? "Preview timed out." : (e?.message || "Preview failed."));
+        }
+      } finally {
+        if (!cancelled) setComputing(false);
+        clearTimeout(to);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      clearTimeout(to);
+      controller.abort();
+    };
+  }, [open, mode, cleanerId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
+
+  async function cancelAtPeriodEnd() {
+    setLoading(true);
+    setErr(null);
+    try {
+      const res = await fetch("/.netlify/functions/subscription-cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ businessId: cleanerId, areaId, slot }),
+      });
+      const json: { ok?: boolean; error?: string } = await res.json();
+      if (!json?.ok) throw new Error(json?.error || "Cancel failed");
+      onClose();
+      alert("Your sponsorship will be cancelled at the end of the current period.");
+    } catch (e: any) {
+      setErr(e?.message || "Cancel failed");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   async function proceedToCheckout() {
-    setCheckingOut(true);
+    setLoading(true);
     setErr(null);
     try {
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
@@ -119,26 +189,18 @@ export default function AreaSponsorModal({
       }
     } catch (e: any) {
       setErr(e?.message || "Could not start checkout");
-      setCheckingOut(false);
+      setLoading(false);
     }
   }
 
-  // Close helper that also clears the painted preview
-  function handleClose() {
-    onClearPreview?.();
-    onClose();
-  }
-
   if (!open) return null;
-
-  const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
       <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <h3 className="font-semibold">{title}</h3>
-          <button className="text-sm opacity-70 hover:opacity-100" onClick={handleClose}>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
             Close
           </button>
         </div>
@@ -146,32 +208,73 @@ export default function AreaSponsorModal({
         <div className="px-4 py-4 space-y-3">
           {err && (
             <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-              {err} — you can still continue to checkout; pricing will be finalized by Stripe/webhooks.
+              {err}
             </div>
           )}
 
-          <p className="text-sm text-gray-700">
-            Some part of this area is available for #{slot}. We’ll only bill the portion that’s actually
-            available for this slot.
-          </p>
-
-          <div className="text-sm border rounded p-2 bg-gray-50">
-            <div className="flex items-center justify-between">
-              <span className="font-medium">Available area for slot #{slot}:</span>
-              <span>{areaKm2 != null ? `${areaKm2.toFixed(5)} km²` : "—"}</span>
-            </div>
-            <div className="flex items-center justify-between mt-1">
-              <span className="font-medium">Monthly price ({tierName}):</span>
-              <span>{price != null ? `£${price.toFixed(2)}/month` : "—"}</span>
-            </div>
-            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
-          </div>
+          {mode === "manage" ? (
+            <>
+              {loading && <div className="text-sm text-gray-600">Loading…</div>}
+              {!loading && sub && (
+                <div className="text-sm space-y-1">
+                  <div>
+                    <span className="font-medium">Area:</span> {sub.area_name || "—"}
+                  </div>
+                  <div>
+                    <span className="font-medium">Status:</span> {sub.status || "unknown"}
+                  </div>
+                  <div>
+                    <span className="font-medium">Next renewal:</span>{" "}
+                    {sub.current_period_end
+                      ? new Date(sub.current_period_end).toLocaleString()
+                      : "—"}
+                  </div>
+                  <div>
+                    <span className="font-medium">Price:</span>{" "}
+                    {typeof sub.price_monthly_pennies === "number"
+                      ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
+                      : "—"}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="text-sm">
+                Some part of this area is available for #{slot}. We’ll only bill the portion that’s
+                actually available for this slot.
+              </div>
+              <div className="rounded border p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span>Available area for slot #{slot}:</span>
+                  <span className="font-medium">
+                    {previewKm2 != null ? `${previewKm2.toFixed(5)} km²` : "—"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span>Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):</span>
+                  <span className="font-medium">
+                    {previewPrice != null ? `£${previewPrice.toFixed(2)}/month` : "—"}
+                  </span>
+                </div>
+                {computing && (
+                  <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
-          <button className="btn btn-primary" onClick={proceedToCheckout} disabled={checkingOut}>
-            {checkingOut ? "Starting checkout…" : "Continue to checkout"}
-          </button>
+          {mode === "manage" ? (
+            <button className="btn" onClick={cancelAtPeriodEnd} disabled={loading}>
+              Cancel at period end
+            </button>
+          ) : (
+            <button className="btn btn-primary" onClick={proceedToCheckout} disabled={loading}>
+              Continue to checkout
+            </button>
+          )}
         </div>
       </div>
     </div>
