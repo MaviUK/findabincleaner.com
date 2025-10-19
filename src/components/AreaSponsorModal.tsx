@@ -19,16 +19,11 @@ type Props = {
 /** Preview API response types */
 type PreviewOk = {
   ok: true;
-  area_km2: number;                 // billable area for this slot
-  monthly_price: number;            // computed monthly price for this slot
-  final_geojson: any | null;        // MultiPolygon of the billable geometry
+  area_km2: number;
+  monthly_price: number;
+  final_geojson: any | null;
 };
-
-type PreviewErr = {
-  ok: false;
-  error?: string;
-};
-
+type PreviewErr = { ok: false; error?: string };
 type PreviewResp = PreviewOk | PreviewErr;
 
 function isPreviewOk(x: PreviewResp): x is PreviewOk {
@@ -46,7 +41,10 @@ export default function AreaSponsorModal({
 }: Props) {
   const title = useMemo(() => `Sponsor #${slot}`, [slot]);
 
-  const [loading, setLoading] = useState(false);
+  // Separate states so preview can hang/fail without blocking checkout
+  const [computing, setComputing] = useState(false);
+  const [checkingOut, setCheckingOut] = useState(false);
+
   const [err, setErr] = useState<string | null>(null);
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
   const [price, setPrice] = useState<number | null>(null);
@@ -58,38 +56,40 @@ export default function AreaSponsorModal({
     async function run() {
       if (!open) return;
 
-      setLoading(true);
+      setComputing(true);
       setErr(null);
       setAreaKm2(null);
       setPrice(null);
 
       try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
+        // Optional: 12s timeout so we don't hang forever
+        const timeout = new Promise<Response>((_, reject) =>
+          setTimeout(() => reject(new Error("Preview timed out")), 12000)
+        );
+
+        const req = fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cleanerId, areaId, slot }),
           signal: ac.signal,
         });
 
+        const res = (await Promise.race([req, timeout])) as Response;
         const json: PreviewResp = await res.json();
         if (ac.signal.aborted) return;
 
         if (isPreviewOk(json)) {
           setAreaKm2(json.area_km2);
           setPrice(json.monthly_price);
-
-          // Ask the parent to paint this computed “billable” geometry on the map.
-          if (json.final_geojson && onPreviewGeoJSON) {
-            onPreviewGeoJSON(json.final_geojson);
-          }
+          if (json.final_geojson && onPreviewGeoJSON) onPreviewGeoJSON(json.final_geojson);
         } else {
           const msg = json?.error || "Failed to compute available area";
-          throw new Error(msg);
+          setErr(msg);
         }
       } catch (e: any) {
         if (!ac.signal.aborted) setErr(e?.message || "Failed to compute available area");
       } finally {
-        if (!ac.signal.aborted) setLoading(false);
+        if (!ac.signal.aborted) setComputing(false);
       }
     }
 
@@ -103,7 +103,7 @@ export default function AreaSponsorModal({
   }, [open, cleanerId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
 
   async function proceedToCheckout() {
-    setLoading(true);
+    setCheckingOut(true);
     setErr(null);
     try {
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
@@ -119,7 +119,7 @@ export default function AreaSponsorModal({
       }
     } catch (e: any) {
       setErr(e?.message || "Could not start checkout");
-      setLoading(false);
+      setCheckingOut(false);
     }
   }
 
@@ -130,6 +130,8 @@ export default function AreaSponsorModal({
   }
 
   if (!open) return null;
+
+  const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -144,44 +146,31 @@ export default function AreaSponsorModal({
         <div className="px-4 py-4 space-y-3">
           {err && (
             <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-              {err}
+              {err} — you can still continue to checkout; pricing will be finalized by Stripe/webhooks.
             </div>
           )}
 
           <p className="text-sm text-gray-700">
-            Result: Some part of this area is available for #{slot}. We’ll only bill the portion
-            that’s actually available for this slot.
+            Some part of this area is available for #{slot}. We’ll only bill the portion that’s actually
+            available for this slot.
           </p>
 
           <div className="text-sm border rounded p-2 bg-gray-50">
             <div className="flex items-center justify-between">
               <span className="font-medium">Available area for slot #{slot}:</span>
-              <span>
-                {areaKm2 != null ? `${areaKm2.toFixed(5)} km²` : "—"}
-              </span>
+              <span>{areaKm2 != null ? `${areaKm2.toFixed(5)} km²` : "—"}</span>
             </div>
             <div className="flex items-center justify-between mt-1">
-              <span className="font-medium">
-                Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):
-              </span>
-              <span>
-                {price != null ? `£${price.toFixed(2)}/month` : "—"}
-              </span>
+              <span className="font-medium">Monthly price ({tierName}):</span>
+              <span>{price != null ? `£${price.toFixed(2)}/month` : "—"}</span>
             </div>
-
-            {loading && (
-              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
-            )}
+            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
           </div>
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
-          <button
-            className="btn btn-primary"
-            onClick={proceedToCheckout}
-            disabled={loading}
-          >
-            Continue to checkout
+          <button className="btn btn-primary" onClick={proceedToCheckout} disabled={checkingOut}>
+            {checkingOut ? "Starting checkout…" : "Continue to checkout"}
           </button>
         </div>
       </div>
