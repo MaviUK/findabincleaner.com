@@ -1,3 +1,4 @@
+// src/components/AreaSponsorModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
@@ -10,6 +11,7 @@ type Props = {
   mode?: "sponsor" | "manage";
 };
 
+// ---- Types for "manage" (existing subscription) ----
 type GetSubOk = {
   ok: true;
   subscription: {
@@ -22,15 +24,17 @@ type GetSubOk = {
 type GetSubErr = { ok: false; error?: string; notFound?: boolean };
 type GetSubResp = GetSubOk | GetSubErr;
 
-type PreviewRespOk = {
+// ---- Types for "sponsor" preview ----
+type PreviewOk = {
   ok: true;
+  tier: string;
+  slot: number;
   area_km2: number;
   monthly_price: number;
   total_price: number;
-  final_geojson?: any | null;
 };
-type PreviewRespErr = { ok?: false; error?: string };
-type PreviewResp = PreviewRespOk | PreviewRespErr;
+type PreviewErr = { ok?: false; error?: string };
+type PreviewResp = PreviewOk | PreviewErr;
 
 export default function AreaSponsorModal({
   open,
@@ -42,22 +46,25 @@ export default function AreaSponsorModal({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  // manage
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewErr, setPreviewErr] = useState<string | null>(null);
-  const [preview, setPreview] = useState<PreviewRespOk | null>(null);
+  // preview
+  const [areaKm2, setAreaKm2] = useState<number | null>(null);
+  const [monthly, setMonthly] = useState<number | null>(null);
+  const [tier, setTier] = useState<string | null>(null);
 
   const title = useMemo(
     () => (mode === "manage" ? `Manage Slot #${slot}` : `Sponsor #${slot}`),
     [mode, slot]
   );
 
-  // Manage view: load summary
+  // Load current sub details in manage mode
   useEffect(() => {
     let cancelled = false;
 
-    async function run() {
+    async function runManage() {
       if (!open || mode !== "manage") return;
       setLoading(true);
       setErr(null);
@@ -86,46 +93,51 @@ export default function AreaSponsorModal({
       }
     }
 
-    run();
+    runManage();
     return () => {
       cancelled = true;
     };
   }, [open, mode, areaId, slot, cleanerId]);
 
-  // Sponsor view: auto-preview on open
+  // Auto preview price in sponsor mode (no “Preview price” button)
   useEffect(() => {
-    if (!open || mode !== "sponsor") return;
-    previewPrice();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, mode, areaId, slot, cleanerId]);
+    let cancelled = false;
 
-  async function previewPrice() {
-    setPreviewLoading(true);
-    setPreviewErr(null);
-    try {
-      const res = await fetch("/.netlify/functions/sponsored-preview", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          cleanerId,      // business id — used to exclude your own sub if needed
-          areaId,         // << tell server which area
-          slot,           // << and which slot
-          drawnGeoJSON: null,
-          months: 1,
-        }),
-      });
-      const json: PreviewResp = await res.json();
-      if (!json || (json as any).ok === false) {
-        throw new Error((json as PreviewRespErr)?.error || "Preview failed");
+    async function runPreview() {
+      if (!open || mode !== "sponsor") return;
+      setLoading(true);
+      setErr(null);
+      setAreaKm2(null);
+      setMonthly(null);
+      setTier(null);
+      try {
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cleanerId, areaId, slot }),
+        });
+        const json: PreviewResp = await res.json();
+        if (cancelled) return;
+
+        if ("ok" in json && json.ok) {
+          setAreaKm2(json.area_km2);
+          setMonthly(json.monthly_price);
+          setTier(json.tier);
+        } else {
+          setErr(("error" in json && json.error) || "Failed to preview price.");
+        }
+      } catch (e: any) {
+        if (!cancelled) setErr(e?.message || "Failed to preview price.");
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-      setPreview(json as PreviewRespOk);
-    } catch (e: any) {
-      setPreviewErr(e?.message || "Preview failed");
-      setPreview(null);
-    } finally {
-      setPreviewLoading(false);
     }
-  }
+
+    runPreview();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode, cleanerId, areaId, slot]);
 
   async function cancelAtPeriodEnd() {
     setLoading(true);
@@ -139,6 +151,7 @@ export default function AreaSponsorModal({
       });
       const json: { ok?: boolean; error?: string } = await res.json();
       if (!json?.ok) throw new Error(json?.error || "Cancel failed");
+
       onClose();
       alert("Your sponsorship will be cancelled at the end of the current period.");
     } catch (e: any) {
@@ -155,13 +168,7 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          cleanerId,
-          areaId,
-          slot,
-          months: 1,
-          drawnGeoJSON: null,
-        }),
+        body: JSON.stringify({ cleanerId, areaId, slot }),
       });
       const data = await res.json();
       if (data?.url) {
@@ -176,19 +183,6 @@ export default function AreaSponsorModal({
   }
 
   if (!open) return null;
-
-  const areaText =
-    preview && Number.isFinite(preview.area_km2)
-      ? `${preview.area_km2.toFixed(4)} km²`
-      : "—";
-
-  const priceText =
-    preview && Number.isFinite(preview.monthly_price)
-      ? `£${preview.monthly_price.toFixed(2)}/month`
-      : "—";
-
-  const disableCheckout =
-    mode === "sponsor" && !!preview && preview.area_km2 === 0;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
@@ -227,48 +221,36 @@ export default function AreaSponsorModal({
                   <div>
                     <span className="font-medium">Price:</span>{" "}
                     {typeof sub.price_monthly_pennies === "number"
-                      ? `£${(sub.price_monthly_pennies / 100).toFixed(2)}/month`
+                      ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
                       : "—"}
                   </div>
                 </div>
               )}
             </>
           ) : (
-            <>
+            <div className="space-y-3">
               <div className="text-sm">
-                <div className="mb-1">
-                  Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
-                </div>
-                <div className="text-gray-600">
-                  We’ll only bill the portion that’s actually available for this slot.
-                </div>
+                Result: <span className="font-medium">Some part of this area is available for #{slot}.</span>
+                <br />
+                We’ll only bill the portion that's actually available for this slot.
               </div>
 
-              <div className="rounded border p-2 text-sm">
-                {previewLoading && <div className="text-gray-600">Calculating available area…</div>}
-                {previewErr && <div className="text-red-700">Preview failed: {previewErr}</div>}
-                {!previewLoading && !previewErr && (
-                  <div className="space-y-1">
-                    <div>
-                      <span className="font-medium">Available area for slot #{slot}:</span> {areaText}
-                    </div>
-                    <div>
-                      <span className="font-medium">Monthly price:</span> {priceText}
-                    </div>
-                    {preview && preview.area_km2 === 0 && (
-                      <div className="text-amber-700">
-                        Nothing is currently available in your shape for this slot.
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="mt-2">
-                  <button className="btn" onClick={previewPrice} disabled={previewLoading}>
-                    {previewLoading ? "Previewing…" : "Preview price"}
-                  </button>
+              <div className="rounded border p-3 text-sm text-gray-700 bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <span>Available area for slot #{slot}:</span>
+                  <span className="font-medium">
+                    {loading || areaKm2 === null ? "—" : `${areaKm2.toFixed(4)} km²`}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between mt-1">
+                  <span>Monthly price{tier ? ` (${tier})` : ""}:</span>
+                  <span className="font-medium">
+                    {loading || monthly === null ? "—" : `£${monthly.toFixed(2)}/month`}
+                  </span>
                 </div>
               </div>
-            </>
+              {/* The old “Preview price” row has been removed on purpose */}
+            </div>
           )}
         </div>
 
@@ -278,12 +260,7 @@ export default function AreaSponsorModal({
               Cancel at period end
             </button>
           ) : (
-            <button
-              className="btn btn-primary"
-              onClick={proceedToCheckout}
-              disabled={loading || disableCheckout}
-              title={disableCheckout ? "No available area to purchase for this slot." : undefined}
-            >
+            <button className="btn btn-primary" onClick={proceedToCheckout} disabled={loading}>
               Continue to checkout
             </button>
           )}
