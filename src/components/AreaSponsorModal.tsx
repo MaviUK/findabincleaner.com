@@ -7,9 +7,9 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  // Primary clipped region key:
+  // Primary clipped region key (preferred):
   final_geojson: any | null;
-  // Tolerated alternates:
+  // Tolerated alternates (back-compat):
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -27,7 +27,7 @@ type Props = {
   areaId: string;
   slot: Slot;
 
-  /** When preview returns a clipped region, draw it on the map */
+  /** Draw the clipped region on the map (if provided) */
   onPreviewGeoJSON?: (multi: any) => void;
   /** Clear any previously drawn preview overlay */
   onClearPreview?: () => void;
@@ -37,7 +37,7 @@ function labelForSlot(s: Slot) {
   return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
 }
 
-// Liberal geometry picker so backend key tweaks don’t break UI
+/** Be liberal in what we accept so backend key tweaks don’t break the UI */
 function pickClippedGeom(json: any) {
   return (
     json?.final_geojson ??
@@ -51,7 +51,7 @@ function pickClippedGeom(json: any) {
   );
 }
 
-// Fallback to “area-availability” if preview didn’t include a clipped region
+/** Fallback: fetch the truly available sub-region for (areaId, slot) */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
   const res = await fetch("/.netlify/functions/area-availability", {
     method: "POST",
@@ -64,15 +64,21 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
     throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
   const j = await res.json();
-  return (
+  // Return best-guess geometry key
+  const geom =
     j?.available_geojson ??
     j?.final_geojson ??
     j?.available ??
     j?.geojson ??
     j?.geometry ??
     j?.multi ??
-    null
-  );
+    null;
+
+  // Also surface km2 if present (for quick checks)
+  const km2 =
+    Number(j?.km2_available ?? j?.area_km2 ?? j?.km2 ?? j?.available_km2 ?? 0);
+
+  return { geom, km2: Number.isFinite(km2) ? km2 : 0 };
 }
 
 export default function AreaSponsorModal({
@@ -157,13 +163,13 @@ export default function AreaSponsorModal({
         // 3) Fallback to availability if preview lacked a clipped region
         if (!clipped) {
           try {
-            const avail = await fetchAvailability(areaId, slot, controller.signal);
-            if (!cancelled && avail && onPreviewGeoJSON) {
+            const { geom } = await fetchAvailability(areaId, slot, controller.signal);
+            if (!cancelled && geom && onPreviewGeoJSON) {
               setWasClipped(true);
-              onPreviewGeoJSON(avail);
+              onPreviewGeoJSON(geom);
             }
           } catch {
-            // Availability fetch is a best-effort for visuals; ignore errors
+            // Availability fetch is best-effort for visuals; ignore drawing error
           }
         } else if (onPreviewGeoJSON) {
           setWasClipped(true);
@@ -215,8 +221,24 @@ export default function AreaSponsorModal({
     onClose();
   }
 
+  // HARD GATE: verify availability again just before checkout
   async function handleCheckout() {
-    if (!hasPurchasableRegion) return; // safety
+    // quick preflight to avoid starting checkout when nothing is left
+    try {
+      const { km2 } = await fetchAvailability(areaId, slot);
+      if (!Number.isFinite(km2) || km2 <= 0) {
+        setErr(
+          "This slot has no purchasable area left. Another business already has Sponsor #" +
+            String(slot) +
+            " here."
+        );
+        return;
+      }
+    } catch (e: any) {
+      setErr(e?.message || "Could not verify availability.");
+      return;
+    }
+
     setCheckingOut(true);
     setErr(null);
     try {
