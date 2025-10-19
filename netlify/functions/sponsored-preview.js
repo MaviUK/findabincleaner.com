@@ -1,7 +1,18 @@
-// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+
+// Per-slot pricing (fallbacks let you test locally)
+const RATE = {
+  1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1),   // Gold
+  2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? 0.75), // Silver
+  3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? 0.5),  // Bronze
+};
+const MIN = {
+  1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? 1),
+  2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? 0.75),
+  3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
+};
 
 const cors = {
   "content-type": "application/json",
@@ -10,82 +21,56 @@ const cors = {
   "access-control-allow-headers": "Content-Type, Authorization",
 };
 
-function readNum(name, fallback) {
-  const raw = process.env[name];
-  if (raw === undefined || raw === null) return fallback;
-  const n = Number(String(raw).trim());
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function tierRates(slot) {
-  switch (Number(slot)) {
-    case 1:
-      return {
-        rate: readNum("RATE_GOLD_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 15)),
-        min:  readNum("MIN_GOLD_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 1)),
-        label: "Gold",
-      };
-    case 2:
-      return {
-        rate: readNum("RATE_SILVER_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 12)),
-        min:  readNum("MIN_SILVER_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.75)),
-        label: "Silver",
-      };
-    case 3:
-      return {
-        rate: readNum("RATE_BRONZE_PER_KM2_PER_MONTH", readNum("RATE_PER_KM2_PER_MONTH", 10)),
-        min:  readNum("MIN_BRONZE_PRICE_PER_MONTH",  readNum("MIN_PRICE_PER_MONTH", 0.5)),
-        label: "Bronze",
-      };
-    default:
-      return {
-        rate: readNum("RATE_PER_KM2_PER_MONTH", 15),
-        min:  readNum("MIN_PRICE_PER_MONTH", 1),
-        label: "Unknown",
-      };
-  }
-}
-
-function json(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: cors });
-}
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: cors });
 
 export default async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot, drawnGeoJSON, months = 1 } = await req.json();
+    const { cleanerId, areaId, slot } = await req.json();
     if (!cleanerId || !areaId || !slot) return json({ error: "cleanerId, areaId, slot required" }, 400);
 
-    // Ask Postgres to compute the available portion for this slot
-    const { data, error } = await sb.rpc("get_area_preview", {
-      _area_id: areaId,
-      _slot: Number(slot),
-      _drawn_geojson: drawnGeoJSON ?? null,
-      _exclude_cleaner: cleanerId, // exclude user’s own paid shapes from “already taken”
+    // Choose the slot-specific clipping RPC
+    const proc = slot === 1
+      ? "clip_available_slot1_preview"
+      : slot === 2
+      ? "clip_available_slot2_preview"
+      : "clip_available_slot3_preview";
+
+    // This RPC must return: [{ area_m2, final_geojson }]
+    const { data, error } = await sb.rpc(proc, {
+      p_cleaner: cleanerId, // helps exclude the buyer’s own polygons, if needed
+      p_area_id: areaId,
     });
+
     if (error) {
-      console.error("[sponsored-preview] get_area_preview error:", error);
-      return json({ error: "Failed to compute area/price" }, 500);
+      console.error("[sponsored-preview] rpc error:", error);
+      return json({ error: "Failed to compute available area" }, 500);
     }
 
-    const area_km2 = Number((Array.isArray(data) ? data[0]?.area_km2 : data?.area_km2) ?? 0);
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_m2 = Number(row?.area_m2 ?? 0);
+    const km2 = Math.max(0, area_m2 / 1_000_000);
 
-    const { rate, min, label } = tierRates(slot);
-    const monthly = Math.max(min, Math.max(0, area_km2) * rate);
-    const total = monthly * Math.max(1, Number(months));
+    const rate = RATE[slot] ?? 1;
+    const min  = MIN[slot] ?? 1;
+    const monthly = Math.max(min, km2 * rate);
+
+    const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
     return json({
       ok: true,
-      tier: label,
-      slot: Number(slot),
-      area_km2: Number(area_km2.toFixed(5)),
+      slot,
+      tier: tierName,
+      area_km2: Number(km2.toFixed(5)),
       monthly_price: Number(monthly.toFixed(2)),
-      total_price: Number(total.toFixed(2)),
+      total_price: Number(monthly.toFixed(2)), // single month here
+      final_geojson: row?.final_geojson ?? null,
     });
   } catch (e) {
-    console.error("[sponsored-preview] error:", e);
-    return json({ error: e?.message || "Failed preview" }, 500);
+    console.error(e);
+    return json({ error: e?.message || "Preview failed" }, 500);
   }
 };
