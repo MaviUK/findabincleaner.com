@@ -1,4 +1,3 @@
-// netlify/functions/sponsored-checkout.js
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
@@ -16,60 +15,66 @@ const MIN = {
   3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
 };
 
+const ACTIVEISH = new Set([
+  "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
+]);
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
+
 const siteBase = () =>
   (process.env.PUBLIC_SITE_URL ||
     process.env.DEPLOY_PRIME_URL ||
     process.env.URL ||
     "http://localhost:8888").replace(/\/+$/, "");
 
-// Duplicate guard (same business/area/slot)
+/** Same business/area/slot duplicate guard */
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data } = await supabase
       .from("sponsored_subscriptions")
-      .select("id,status,stripe_subscription_id,stripe_payment_intent_id")
+      .select("id,status,stripe_payment_intent_id")
       .eq("business_id", business_id)
       .eq("area_id", area_id)
       .eq("slot", Number(slot))
       .limit(1);
+
     if (!data?.length) return false;
     const row = data[0];
-    const activeish = new Set([
-      "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
-    ]);
-    return activeish.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch {
     return false;
   }
 }
 
-// 1) Authoritative clipping via slot-specific RPC (best for fully-taken checks)
-async function tryClipAvailableRPC(cleanerId, areaId, slot) {
-  const proc =
-    Number(slot) === 1
-      ? "clip_available_slot1_preview"
-      : Number(slot) === 2
-      ? "clip_available_slot2_preview"
-      : "clip_available_slot3_preview";
-
-  const { data, error } = await supabase.rpc(proc, {
-    p_cleaner: cleanerId,
-    p_area_id: areaId,
+/** Authoritative: ask our own function which paints “Taken #1” in the UI */
+async function isAreaSlotTakenByAnother(areaId, slot, myBusinessId) {
+  const base = siteBase();
+  const res = await fetch(`${base}/.netlify/functions/area-sponsorship`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ areaIds: [areaId] }),
   });
+  if (!res.ok) {
+    // Be conservative on errors — block checkout if we cannot verify safely
+    return true;
+  }
+  const body = await res.json();
+  const area = (body?.areas || []).find((a) => String(a.area_id) === String(areaId));
+  if (!area) return false;
 
-  if (error) throw error;
+  const slotInfo = (area.slots || []).find((s) => Number(s.slot) === Number(slot));
+  if (!slotInfo) return false;
 
-  const row = Array.isArray(data) ? data[0] : data;
-  const area_m2 = Number(row?.area_m2 ?? 0);
-  const km2 = Math.max(0, area_m2 / 1_000_000);
-  return { km2 };
+  const taken = Boolean(slotInfo.taken);
+  const owner = slotInfo.owner_business_id ?? null;
+
+  return taken && String(owner) !== String(myBusinessId);
 }
 
-// 2) Fallback to the same preview the UI uses (keeps Slot #2 working)
+/** Reuse preview for exact remaining km² and monthly price */
 async function serverPreview(cleanerId, areaId, slot) {
   const base = siteBase();
   const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
@@ -81,10 +86,10 @@ async function serverPreview(cleanerId, areaId, slot) {
     const txt = await res.text().catch(() => "");
     throw new Error(`preview ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
-  const jsonBody = await res.json();
-  if (!jsonBody?.ok) throw new Error(jsonBody?.error || "Preview failed");
-  const km2 = Number(jsonBody.area_km2);
-  const monthly = Number(jsonBody.monthly_price);
+  const j = await res.json();
+  if (!j?.ok) throw new Error(j?.error || "Preview failed");
+  const km2 = Number(j.area_km2);
+  const monthly = Number(j.monthly_price);
   return {
     km2: Number.isFinite(km2) ? km2 : 0,
     monthly: Number.isFinite(monthly) ? monthly : null,
@@ -105,7 +110,9 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
   if (cleaner.user_id) {
     const { data: profile } = await supabase
       .from("profiles")
-      .select("email").eq("id", cleaner.user_id).maybeSingle();
+      .select("email")
+      .eq("id", cleaner.user_id)
+      .maybeSingle();
     email = profile?.email || null;
   }
 
@@ -135,40 +142,27 @@ export default async (req) => {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // Same-business duplicate guard
+    // 1) Same-business duplicate guard
     if (await hasExistingSponsorship(cleanerId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // ---- HARD AVAILABILITY CHECK ----
-    // 1) First, use slot-specific clipping RPC (best at detecting “fully taken” cases like Slot #1).
-    let km2 = 0;
-    try {
-      ({ km2 } = await tryClipAvailableRPC(cleanerId, areaId, Number(slot)));
-    } catch (rpcErr) {
-      // 2) If RPC for this slot fails on your stack (e.g., Slot #2), fall back to preview.
-      const fallback = await serverPreview(cleanerId, areaId, Number(slot));
-      km2 = fallback.km2;
+    // 2) Authoritative “someone else owns this slot” guard
+    const takenByAnother = await isAreaSlotTakenByAnother(areaId, slot, cleanerId);
+    if (takenByAnother) {
+      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
+    // 3) Compute remaining km² + price as the UI does
+    const { km2, monthly } = await serverPreview(cleanerId, areaId, Number(slot));
     if (!Number.isFinite(km2) || km2 <= 0) {
-      return json({ error: `Sponsor #${slot} is already fully taken in this area.` }, 409);
+      return json({ error: `Sponsor #${slot} has no purchasable area left in this region.` }, 409);
     }
 
-    // Price (trust preview monthly if present, else compute)
-    let monthly = null;
-    try {
-      const pv = await serverPreview(cleanerId, areaId, Number(slot));
-      monthly = pv.monthly;
-      km2 = pv.km2; // keep in sync with what the UI showed
-    } catch {
-      // ignore, we already have km2; compute monthly below
-    }
+    const monthlyPrice = monthly ?? Math.max((MIN[slot] ?? 1), km2 * (RATE[slot] ?? 1));
+    const unitAmount = toPence(monthlyPrice);
 
-    const computedMonthly = monthly ?? Math.max((MIN[slot] ?? 1), km2 * (RATE[slot] ?? 1));
-    const unitAmount = toPence(computedMonthly);
-
-    // Stripe checkout
+    // 4) Stripe
     const customerId = await ensureStripeCustomerForCleaner(cleanerId);
     const site = siteBase();
     const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
@@ -184,7 +178,7 @@ export default async (req) => {
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount / 100).toFixed(2)}/month`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount/100).toFixed(2)}/month`,
             },
           },
           quantity: 1,
@@ -200,11 +194,7 @@ export default async (req) => {
           tier: tierName,
         },
       },
-      metadata: {
-        cleaner_id: String(cleanerId),
-        area_id: String(areaId),
-        slot: String(slot),
-      },
+      metadata: { cleaner_id: String(cleanerId), area_id: String(areaId), slot: String(slot) },
       success_url: `${site}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/#/dashboard?checkout=cancel`,
     });
