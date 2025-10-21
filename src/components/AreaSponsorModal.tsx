@@ -46,11 +46,11 @@ function pickClippedGeom(json: any) {
   );
 }
 
-/** Call area-availability in a way that works with either POST body or GET query. */
+/** Visual-only fallback: works with either POST JSON or GET query. */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
   const url = "/.netlify/functions/area-availability";
 
-  // 1) Try POST JSON (snake_case)
+  // Try POST first (snake_case)
   let res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -58,7 +58,7 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
     signal,
   });
 
-  // If the backend still says params are missing, try GET with query params.
+  // If server says params missing, try GET (older handlers)
   if (
     res.status === 400 &&
     (await res.clone().text()).includes("area_id and slot are required")
@@ -84,6 +84,26 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
 
   const km2 = Number(j?.km2_available ?? j?.area_km2 ?? j?.km2 ?? j?.available_km2 ?? 0);
   return { geom, km2: Number.isFinite(km2) ? km2 : 0 };
+}
+
+/** Authoritative recheck before checkout: ask sponsored-preview again */
+async function verifyFromPreview(cleanerId: string, areaId: string, slot: Slot) {
+  const res = await fetch("/.netlify/functions/sponsored-preview", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cleanerId, areaId, slot }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
+  }
+  const json: PreviewResp = await res.json();
+  if (!("ok" in json) || !json.ok) {
+    const msg = (json as PreviewErr)?.error || "Failed to compute preview";
+    throw new Error(msg);
+  }
+  const km2 = Number((json as PreviewOk).area_km2);
+  return Number.isFinite(km2) ? km2 : 0;
 }
 
 export default function AreaSponsorModal({
@@ -160,7 +180,7 @@ export default function AreaSponsorModal({
 
         let clipped = pickClippedGeom(json);
 
-        // 2) If preview did not include a clipped region, ask availability directly
+        // 2) If preview did not include a clipped region, ask availability directly (visual only)
         if (!clipped) {
           try {
             const { geom } = await fetchAvailability(areaId, slot, controller.signal);
@@ -220,10 +240,10 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // Verify availability immediately before checkout
+  // Verify availability immediately before checkout using the authoritative preview
   async function handleCheckout() {
     try {
-      const { km2 } = await fetchAvailability(areaId, slot);
+      const km2 = await verifyFromPreview(cleanerId, areaId, slot);
       if (!Number.isFinite(km2) || km2 <= 0) {
         setErr(`This slot has no purchasable area left. Another business already has Sponsor #${slot}.`);
         return;
