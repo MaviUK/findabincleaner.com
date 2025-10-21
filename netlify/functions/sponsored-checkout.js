@@ -1,3 +1,4 @@
+// netlify/functions/sponsored-checkout.js
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
@@ -16,28 +17,35 @@ const MIN = {
 };
 
 const ACTIVEISH = new Set([
-  "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "incomplete_expired",
+  "paused", // if you use it
 ]);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
-
 const siteBase = () =>
   (process.env.PUBLIC_SITE_URL ||
     process.env.DEPLOY_PRIME_URL ||
     process.env.URL ||
     "http://localhost:8888").replace(/\/+$/, "");
 
-/** Same business/area/slot duplicate guard */
-async function hasExistingSponsorship(business_id, area_id, slot) {
+/* ---------------------------------- guards --------------------------------- */
+
+// same-business duplicate guard
+async function hasExistingSponsorship(myBusinessId, areaId, slot) {
   try {
     const { data } = await supabase
       .from("sponsored_subscriptions")
-      .select("id,status,stripe_payment_intent_id")
-      .eq("business_id", business_id)
-      .eq("area_id", area_id)
+      .select("status,stripe_payment_intent_id")
+      .eq("business_id", myBusinessId)
+      .eq("area_id", areaId)
       .eq("slot", Number(slot))
       .limit(1);
 
@@ -49,32 +57,31 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
   }
 }
 
-/** Authoritative: ask our own function which paints “Taken #1” in the UI */
-async function isAreaSlotTakenByAnother(areaId, slot, myBusinessId) {
-  const base = siteBase();
-  const res = await fetch(`${base}/.netlify/functions/area-sponsorship`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ areaIds: [areaId] }),
-  });
-  if (!res.ok) {
-    // Be conservative on errors — block checkout if we cannot verify safely
+// HARD BLOCK: someone else already owns/reserved (area_id, slot)
+async function isOwnedByAnother(areaId, slot, myBusinessId) {
+  try {
+    const { data, error } = await supabase
+      .from("sponsored_subscriptions")
+      .select("business_id,status,stripe_payment_intent_id")
+      .eq("area_id", areaId)
+      .eq("slot", Number(slot))
+      .neq("business_id", myBusinessId); // only others
+
+    if (error) throw error;
+    if (!data?.length) return false;
+
+    for (const row of data) {
+      const owned = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+      if (owned) return true;
+    }
+    return false;
+  } catch {
+    // if we can't verify ownership, be conservative and block
     return true;
   }
-  const body = await res.json();
-  const area = (body?.areas || []).find((a) => String(a.area_id) === String(areaId));
-  if (!area) return false;
-
-  const slotInfo = (area.slots || []).find((s) => Number(s.slot) === Number(slot));
-  if (!slotInfo) return false;
-
-  const taken = Boolean(slotInfo.taken);
-  const owner = slotInfo.owner_business_id ?? null;
-
-  return taken && String(owner) !== String(myBusinessId);
 }
 
-/** Reuse preview for exact remaining km² and monthly price */
+// use the same preview endpoint the UI uses for remaining km² and price
 async function serverPreview(cleanerId, areaId, slot) {
   const base = siteBase();
   const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
@@ -133,6 +140,8 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
   return customerId;
 }
 
+/* --------------------------------- handler --------------------------------- */
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
@@ -142,28 +151,27 @@ export default async (req) => {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // 1) Same-business duplicate guard
-    if (await hasExistingSponsorship(cleanerId, areaId, slot)) {
+    // 1) same-business duplicate guard
+    if (await hasExistingSponsorship(String(cleanerId), String(areaId), Number(slot))) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // 2) Authoritative “someone else owns this slot” guard
-    const takenByAnother = await isAreaSlotTakenByAnother(areaId, slot, cleanerId);
-    if (takenByAnother) {
+    // 2) someone else already owns (area, slot) — BLOCK
+    if (await isOwnedByAnother(String(areaId), Number(slot), String(cleanerId))) {
       return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    // 3) Compute remaining km² + price as the UI does
-    const { km2, monthly } = await serverPreview(cleanerId, areaId, Number(slot));
+    // 3) compute remaining km² + price from preview (what the UI showed)
+    const { km2, monthly } = await serverPreview(String(cleanerId), String(areaId), Number(slot));
     if (!Number.isFinite(km2) || km2 <= 0) {
       return json({ error: `Sponsor #${slot} has no purchasable area left in this region.` }, 409);
     }
 
-    const monthlyPrice = monthly ?? Math.max((MIN[slot] ?? 1), km2 * (RATE[slot] ?? 1));
+    const monthlyPrice = monthly ?? Math.max(MIN[slot] ?? 1, km2 * (RATE[slot] ?? 1));
     const unitAmount = toPence(monthlyPrice);
 
-    // 4) Stripe
-    const customerId = await ensureStripeCustomerForCleaner(cleanerId);
+    // 4) stripe checkout
+    const customerId = await ensureStripeCustomerForCleaner(String(cleanerId));
     const site = siteBase();
     const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
 
@@ -178,7 +186,7 @@ export default async (req) => {
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount/100).toFixed(2)}/month`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount / 100).toFixed(2)}/month`,
             },
           },
           quantity: 1,
