@@ -7,7 +7,8 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  final_geojson: any | null;
+  final_geojson: any | null; // preferred clipped-geometry key
+  // tolerated alternates for back-compat:
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -45,20 +46,26 @@ function pickClippedGeom(json: any) {
   );
 }
 
-/** Ensure area-availability call matches backend’s expectations exactly */
+/** Call area-availability in a way that works with either POST body or GET query. */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
-  const body = {
-    // send snake_case only (most likely what backend expects)
-    area_id: areaId,
-    slot: Number(slot),
-  };
+  const url = "/.netlify/functions/area-availability";
 
-  const res = await fetch("/.netlify/functions/area-availability", {
+  // 1) Try POST JSON (snake_case)
+  let res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ area_id: areaId, slot: Number(slot) }),
     signal,
   });
+
+  // If the backend still says params are missing, try GET with query params.
+  if (
+    res.status === 400 &&
+    (await res.clone().text()).includes("area_id and slot are required")
+  ) {
+    const qs = new URLSearchParams({ area_id: areaId, slot: String(Number(slot)) });
+    res = await fetch(`${url}?${qs.toString()}`, { method: "GET", signal });
+  }
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
@@ -66,7 +73,6 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
   }
 
   const j = await res.json();
-
   const geom =
     j?.available_geojson ??
     j?.final_geojson ??
@@ -96,6 +102,7 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [wasClipped, setWasClipped] = useState<boolean>(false);
 
+  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -106,12 +113,16 @@ export default function AreaSponsorModal({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Fetch preview + draw available sub-region
   useEffect(() => {
     if (!open) return;
+
     let cancelled = false;
     const controller = new AbortController();
+
     onClearPreview?.();
 
     async function run() {
@@ -122,12 +133,14 @@ export default function AreaSponsorModal({
       setWasClipped(false);
 
       try {
+        // 1) pricing (and maybe geometry) from preview
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ cleanerId, areaId, slot }),
           signal: controller.signal,
         });
+
         if (!res.ok) {
           const txt = await res.text().catch(() => "");
           throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
@@ -135,8 +148,10 @@ export default function AreaSponsorModal({
 
         const json: PreviewResp = await res.json();
         if (cancelled || controller.signal.aborted) return;
-        if (!("ok" in json) || !json.ok)
+
+        if (!("ok" in json) || !json.ok) {
           throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
+        }
 
         const aNum = Number((json as PreviewOk).area_km2);
         const mNum = Number((json as PreviewOk).monthly_price);
@@ -145,29 +160,40 @@ export default function AreaSponsorModal({
 
         let clipped = pickClippedGeom(json);
 
+        // 2) If preview did not include a clipped region, ask availability directly
         if (!clipped) {
-          const { geom } = await fetchAvailability(areaId, slot, controller.signal);
-          if (!cancelled && geom && onPreviewGeoJSON) {
-            setWasClipped(true);
-            onPreviewGeoJSON(geom);
+          try {
+            const { geom } = await fetchAvailability(areaId, slot, controller.signal);
+            if (!cancelled && geom && onPreviewGeoJSON) {
+              setWasClipped(true);
+              onPreviewGeoJSON(geom);
+            }
+          } catch {
+            // ignore draw error
           }
         } else if (onPreviewGeoJSON) {
           setWasClipped(true);
           onPreviewGeoJSON(clipped);
         }
       } catch (e: any) {
-        if (!cancelled && !controller.signal.aborted) setErr(e?.message || "Failed to compute preview");
+        if (!cancelled && !controller.signal.aborted) {
+          setErr(e?.message || "Failed to compute preview");
+        }
       } finally {
-        if (!cancelled && !controller.signal.aborted) setComputing(false);
+        if (!cancelled && !controller.signal.aborted) {
+          setComputing(false);
+        }
       }
     }
 
     run();
+
     return () => {
       cancelled = true;
       controller.abort();
       onClearPreview?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, cleanerId, areaId, slot]);
 
   const nfGBP = useMemo(
@@ -194,6 +220,7 @@ export default function AreaSponsorModal({
     onClose();
   }
 
+  // Verify availability immediately before checkout
   async function handleCheckout() {
     try {
       const { km2 } = await fetchAvailability(areaId, slot);
