@@ -56,7 +56,8 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
   const res = await fetch("/.netlify/functions/area-availability", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ areaId, slot }),
+    // FIX: backend expects area_id, not areaId
+    body: JSON.stringify({ area_id: areaId, slot }),
     signal,
   });
   if (!res.ok) {
@@ -75,8 +76,7 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
     null;
 
   // Also surface km2 if present (for quick checks)
-  const km2 =
-    Number(j?.km2_available ?? j?.area_km2 ?? j?.km2 ?? j?.available_km2 ?? 0);
+  const km2 = Number(j?.km2_available ?? j?.area_km2 ?? j?.km2 ?? j?.available_km2 ?? 0);
 
   return { geom, km2: Number.isFinite(km2) ? km2 : 0 };
 }
@@ -296,7 +296,7 @@ export default function AreaSponsorModal({
             We’ll only bill the part of your drawn area that’s actually available for slot #{slot}.
           </p>
 
-          <div className="border rounded p-3 text-sm text-gray-800">
+        <div className="border rounded p-3 text-sm text-gray-800">
             <div className="flex items-center justify-between">
               <span>Available area:</span>
               <span className="tabular-nums">
