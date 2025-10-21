@@ -22,12 +22,11 @@ const json = (body, status = 200) =>
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () =>
   (process.env.PUBLIC_SITE_URL ||
-    process.env.DEPLOY_PRIME_URL || // Netlify preview env
-    process.env.URL ||              // Netlify production env
-    "http://localhost:8888"
-  ).replace(/\/+$/, "");
+    process.env.DEPLOY_PRIME_URL ||
+    process.env.URL ||
+    "http://localhost:8888").replace(/\/+$/, "");
 
-// Duplicate guard for SAME business/area/slot
+// Duplicate guard (same business/area/slot)
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data } = await supabase
@@ -48,6 +47,50 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
   }
 }
 
+// 1) Authoritative clipping via slot-specific RPC (best for fully-taken checks)
+async function tryClipAvailableRPC(cleanerId, areaId, slot) {
+  const proc =
+    Number(slot) === 1
+      ? "clip_available_slot1_preview"
+      : Number(slot) === 2
+      ? "clip_available_slot2_preview"
+      : "clip_available_slot3_preview";
+
+  const { data, error } = await supabase.rpc(proc, {
+    p_cleaner: cleanerId,
+    p_area_id: areaId,
+  });
+
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  const area_m2 = Number(row?.area_m2 ?? 0);
+  const km2 = Math.max(0, area_m2 / 1_000_000);
+  return { km2 };
+}
+
+// 2) Fallback to the same preview the UI uses (keeps Slot #2 working)
+async function serverPreview(cleanerId, areaId, slot) {
+  const base = siteBase();
+  const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cleanerId, areaId, slot }),
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`preview ${res.status}${txt ? ` – ${txt}` : ""}`);
+  }
+  const jsonBody = await res.json();
+  if (!jsonBody?.ok) throw new Error(jsonBody?.error || "Preview failed");
+  const km2 = Number(jsonBody.area_km2);
+  const monthly = Number(jsonBody.monthly_price);
+  return {
+    km2: Number.isFinite(km2) ? km2 : 0,
+    monthly: Number.isFinite(monthly) ? monthly : null,
+  };
+}
+
 async function ensureStripeCustomerForCleaner(cleanerId) {
   const { data: cleaner, error } = await supabase
     .from("cleaners")
@@ -66,7 +109,6 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
     email = profile?.email || null;
   }
 
-  // Reuse by email if found
   let customerId = null;
   if (email) {
     const list = await stripe.customers.list({ email, limit: 1 });
@@ -84,28 +126,6 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
   return customerId;
 }
 
-// Authoritative re-check using the same logic as the UI preview
-async function serverPreview(cleanerId, areaId, slot) {
-  const base = siteBase();
-  const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cleanerId, areaId, slot }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`preview ${res.status}${txt ? ` – ${txt}` : ""}`);
-  }
-  const json = await res.json();
-  if (!json?.ok) throw new Error(json?.error || "Preview failed");
-  const km2 = Number(json.area_km2);
-  const monthly = Number(json.monthly_price);
-  return {
-    km2: Number.isFinite(km2) ? km2 : 0,
-    monthly: Number.isFinite(monthly) ? monthly : null,
-  };
-}
-
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
@@ -115,20 +135,40 @@ export default async (req) => {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
+    // Same-business duplicate guard
     if (await hasExistingSponsorship(cleanerId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // >>> Reuse preview logic (this is what fixed Slot #2)
-    const { km2, monthly } = await serverPreview(cleanerId, areaId, Number(slot));
+    // ---- HARD AVAILABILITY CHECK ----
+    // 1) First, use slot-specific clipping RPC (best at detecting “fully taken” cases like Slot #1).
+    let km2 = 0;
+    try {
+      ({ km2 } = await tryClipAvailableRPC(cleanerId, areaId, Number(slot)));
+    } catch (rpcErr) {
+      // 2) If RPC for this slot fails on your stack (e.g., Slot #2), fall back to preview.
+      const fallback = await serverPreview(cleanerId, areaId, Number(slot));
+      km2 = fallback.km2;
+    }
+
     if (!Number.isFinite(km2) || km2 <= 0) {
       return json({ error: `Sponsor #${slot} is already fully taken in this area.` }, 409);
     }
 
-    // If preview returned a monthly value, trust it; otherwise compute from env
+    // Price (trust preview monthly if present, else compute)
+    let monthly = null;
+    try {
+      const pv = await serverPreview(cleanerId, areaId, Number(slot));
+      monthly = pv.monthly;
+      km2 = pv.km2; // keep in sync with what the UI showed
+    } catch {
+      // ignore, we already have km2; compute monthly below
+    }
+
     const computedMonthly = monthly ?? Math.max((MIN[slot] ?? 1), km2 * (RATE[slot] ?? 1));
     const unitAmount = toPence(computedMonthly);
 
+    // Stripe checkout
     const customerId = await ensureStripeCustomerForCleaner(cleanerId);
     const site = siteBase();
     const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
@@ -144,7 +184,7 @@ export default async (req) => {
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount/100).toFixed(2)}/month`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount / 100).toFixed(2)}/month`,
             },
           },
           quantity: 1,
