@@ -16,93 +16,81 @@ const MIN = {
   3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
 };
 
-// Treat these as "owned or reserved"
-const ACTIVEISH = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "paused",
-  "requires_payment_method",
-  "requires_action",
-]);
-
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
-const siteBase = () =>
-  (process.env.PUBLIC_SITE_URL ||
-    process.env.DEPLOY_PRIME_URL ||
-    process.env.URL ||
-    "http://localhost:8888").replace(/\/+$/, "");
+const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// Normalize owner from a row that may use business_id or cleaner_id
-const ownerIdFromRow = (row) => row?.business_id ?? row?.cleaner_id ?? null;
+// What we consider "currently owning a slot"
+const ACTIVEish = new Set(["active", "trialing", "past_due", "unpaid"]);
+// Columns some schemas have to mark the record ended
+const maybeEnded = (row) =>
+  Boolean(
+    row?.ended_at ||
+      row?.cancelled_at || // British
+      row?.canceled_at ||  // American
+      row?.expires_at
+  );
 
-/** SAME business duplicate guard */
-async function hasExistingForSameBusiness(myId, areaId, slot) {
-  const { data, error } = await supabase
-    .from("sponsored_subscriptions")
-    .select("status,stripe_payment_intent_id,business_id,cleaner_id")
-    .eq("area_id", areaId)
-    .eq("slot", Number(slot))
-    .or(`business_id.eq.${myId},cleaner_id.eq.${myId}`);
-
-  if (error) {
-    console.error("[checkout] same-biz guard error:", error);
-    return false;
-  }
-  for (const row of data || []) {
-    const owned = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-    if (owned) return true;
-  }
-  return false;
+function rowOwner(row) {
+  // Coalesce different schemas
+  if (row?.business_id != null) return String(row.business_id);
+  if (row?.cleaner_id != null) return String(row.cleaner_id);
+  if (row?.owner_id != null) return String(row.owner_id);
+  return null;
 }
 
-/** HARD BLOCK: any other owner on (area, slot) */
-async function isOwnedByAnother(areaId, slot, myId) {
+// Is this record "currently held" (counts as owned)?
+function countsAsCurrent(row) {
+  // A current sub must be active-like and not ended
+  if (!ACTIVEish.has(String(row?.status || "").toLowerCase())) return false;
+  if (maybeEnded(row)) return false;
+  // presence of a subscription id strengthens this, but we don't require it
+  return true;
+}
+
+// Owns slot by someone else?
+async function isSlotOwnedByAnother(areaId, slot, myCleanerId) {
   const { data, error } = await supabase
     .from("sponsored_subscriptions")
-    .select("business_id,cleaner_id,status,stripe_payment_intent_id")
+    .select("area_id,slot,status,business_id,cleaner_id,owner_id,ended_at,cancelled_at,canceled_at,expires_at,stripe_subscription_id")
     .eq("area_id", areaId)
     .eq("slot", Number(slot));
 
   if (error) {
-    console.error("[checkout] other-owner query error:", error);
-    return true; // conservative
+    console.error("[checkout] isSlotOwnedByAnother query error:", error);
+    // Be conservative if the DB errors — block to prevent oversell
+    return true;
   }
+
   for (const row of data || []) {
-    const owner = ownerIdFromRow(row);
-    const owned = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-    const isOther = owner && String(owner) !== String(myId);
-    if (owned && isOther) return true;
+    const owner = rowOwner(row);
+    if (!owner || owner === String(myCleanerId)) continue;
+    if (countsAsCurrent(row)) return true;
   }
   return false;
 }
 
-// Use preview for authoritative remaining-km²/price for *this slot*
-async function serverPreview(cleanerId, areaId, slot) {
-  const base = siteBase();
-  const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cleanerId, areaId, slot }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`preview ${res.status}${txt ? ` – ${txt}` : ""}`);
+// Already have a current sub for THIS cleaner/area/slot?
+async function hasCurrentForCleaner(areaId, slot, myCleanerId) {
+  const { data, error } = await supabase
+    .from("sponsored_subscriptions")
+    .select("area_id,slot,status,business_id,cleaner_id,owner_id,ended_at,cancelled_at,canceled_at,expires_at,stripe_subscription_id")
+    .eq("area_id", areaId)
+    .eq("slot", Number(slot));
+
+  if (error) {
+    console.error("[checkout] hasCurrentForCleaner query error:", error);
+    return false;
   }
-  const j = await res.json();
-  if (!j?.ok) throw new Error(j?.error || "Preview failed");
-  const km2 = Number(j.area_km2);
-  const monthly = Number(j.monthly_price);
-  return {
-    km2: Number.isFinite(km2) ? km2 : 0,
-    monthly: Number.isFinite(monthly) ? monthly : null,
-  };
+
+  for (const row of data || []) {
+    const owner = rowOwner(row);
+    if (owner !== String(myCleanerId)) continue;
+    if (countsAsCurrent(row)) return true;
+  }
+  return false;
 }
 
 async function ensureStripeCustomerForCleaner(cleanerId) {
@@ -125,6 +113,7 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
     email = profile?.email || null;
   }
 
+  // Reuse by email if found
   let customerId = null;
   if (email) {
     const list = await stripe.customers.list({ email, limit: 1 });
@@ -146,33 +135,52 @@ export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const body = await req.json();
-    const cleanerId = String(body?.cleanerId ?? "");
-    const areaId = String(body?.areaId ?? "");
-    const slot = Number(body?.slot);
-
-    if (!cleanerId || !areaId || ![1, 2, 3].includes(slot)) {
+    const { cleanerId, areaId, slot } = await req.json();
+    if (!cleanerId || !areaId || ![1, 2, 3].includes(Number(slot))) {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // 1) same-business duplicate guard
-    if (await hasExistingForSameBusiness(cleanerId, areaId, slot)) {
-      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
-    }
-
-    // 2) hard block if any other owner exists
-    if (await isOwnedByAnother(areaId, slot, cleanerId)) {
+    // 0) If another business already owns this (area, slot), block
+    if (await isSlotOwnedByAnother(areaId, slot, String(cleanerId))) {
       return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    // 3) compute remaining km² and price (authoritative)
-    const { km2, monthly } = await serverPreview(cleanerId, areaId, slot);
-    if (!Number.isFinite(km2) || km2 <= 0) {
-      return json({ error: `Sponsor #${slot} has no purchasable area left in this region.` }, 409);
+    // 1) If THIS cleaner already has a current sub for this (area, slot), block duplicate
+    if (await hasCurrentForCleaner(areaId, slot, String(cleanerId))) {
+      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    const monthlyPrice = monthly ?? Math.max(MIN[slot] ?? 1, km2 * (RATE[slot] ?? 1));
-    const unitAmount = toPence(monthlyPrice);
+    // 2) Authoritative available area for this slot
+    const proc =
+      slot === 1
+        ? "clip_available_slot1_preview"
+        : slot === 2
+        ? "clip_available_slot2_preview"
+        : "clip_available_slot3_preview";
+
+    const { data, error } = await supabase.rpc(proc, {
+      p_cleaner: cleanerId,  // important to pass caller
+      p_area_id: areaId,
+    });
+
+    if (error) {
+      console.error("[checkout] clipping rpc error:", error);
+      return json({ error: "Failed to compute available area" }, 500);
+    }
+
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_m2 = Number(row?.area_m2 ?? row?.area_sq_m ?? 0);
+    const km2 = Math.max(0, area_m2 / 1_000_000);
+
+    if (km2 <= 0) {
+      return json({ error: `This slot has no purchasable area left for this region.` }, 409);
+    }
+
+    // 3) Price
+    const rate = RATE[slot] ?? 1;
+    const min  = MIN[slot] ?? 1;
+    const monthly_price = Math.max(min, km2 * rate);
+    const unit_amount   = toPence(monthly_price);
 
     // 4) Stripe checkout
     const customerId = await ensureStripeCustomerForCleaner(cleanerId);
@@ -186,11 +194,11 @@ export default async (req) => {
         {
           price_data: {
             currency: "gbp",
-            unit_amount: unitAmount,
+            unit_amount,
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount / 100).toFixed(2)}/month`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
             },
           },
           quantity: 1,
@@ -198,15 +206,19 @@ export default async (req) => {
       ],
       subscription_data: {
         metadata: {
-          cleaner_id: cleanerId,
-          area_id: areaId,
+          cleaner_id: String(cleanerId),
+          area_id: String(areaId),
           slot: String(slot),
           available_area_km2: km2.toFixed(6),
-          monthly_price_pennies: String(unitAmount),
+          monthly_price_pennies: String(unit_amount),
           tier: tierName,
         },
       },
-      metadata: { cleaner_id: cleanerId, area_id: areaId, slot: String(slot) },
+      metadata: {
+        cleaner_id: String(cleanerId),
+        area_id: String(areaId),
+        slot: String(slot),
+      },
       success_url: `${site}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/#/dashboard?checkout=cancel`,
     });
