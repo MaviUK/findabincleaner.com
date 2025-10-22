@@ -16,6 +16,7 @@ const MIN = {
   3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
 };
 
+// treat these as "owned or reserved"
 const ACTIVEISH = new Set([
   "active",
   "trialing",
@@ -23,7 +24,9 @@ const ACTIVEISH = new Set([
   "unpaid",
   "incomplete",
   "incomplete_expired",
-  "paused", // if you use it
+  "paused",
+  "requires_payment_method",
+  "requires_action",
 ]);
 
 const json = (body, status = 200) =>
@@ -36,52 +39,71 @@ const siteBase = () =>
     process.env.URL ||
     "http://localhost:8888").replace(/\/+$/, "");
 
-/* ---------------------------------- guards --------------------------------- */
+// Helper: resolve "owner id" from a row that may store business in different columns
+const ownerIdFromRow = (row) => {
+  // prefer business_id if present, else cleaner_id
+  return row?.business_id ?? row?.cleaner_id ?? null;
+};
 
-// same-business duplicate guard
-async function hasExistingSponsorship(myBusinessId, areaId, slot) {
-  try {
-    const { data } = await supabase
-      .from("sponsored_subscriptions")
-      .select("status,stripe_payment_intent_id")
-      .eq("business_id", myBusinessId)
-      .eq("area_id", areaId)
-      .eq("slot", Number(slot))
-      .limit(1);
-
-    if (!data?.length) return false;
-    const row = data[0];
-    return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-  } catch {
-    return false;
-  }
-}
-
-// HARD BLOCK: someone else already owns/reserved (area_id, slot)
-async function isOwnedByAnother(areaId, slot, myBusinessId) {
+/** SAME business duplicate guard */
+async function hasExistingForSameBusiness(myId, areaId, slot) {
   try {
     const { data, error } = await supabase
       .from("sponsored_subscriptions")
-      .select("business_id,status,stripe_payment_intent_id")
+      .select("status,stripe_payment_intent_id,business_id,cleaner_id,area_id,slot")
       .eq("area_id", areaId)
       .eq("slot", Number(slot))
-      .neq("business_id", myBusinessId); // only others
+      .or(`business_id.eq.${myId},cleaner_id.eq.${myId}`)
+      .limit(5);
 
-    if (error) throw error;
-    if (!data?.length) return false;
-
-    for (const row of data) {
-      const owned = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    if (error) {
+      console.error("[checkout] same-biz guard query error:", error);
+      return false;
+    }
+    console.log("[checkout] same-biz rows:", data?.length ?? 0);
+    for (const row of data || []) {
+      const owned =
+        ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
       if (owned) return true;
     }
     return false;
-  } catch {
-    // if we can't verify ownership, be conservative and block
-    return true;
+  } catch (e) {
+    console.error("[checkout] same-biz guard exception:", e);
+    return false;
   }
 }
 
-// use the same preview endpoint the UI uses for remaining km² and price
+/** HARD BLOCK: any other owner on (area, slot) */
+async function isOwnedByAnother(areaId, slot, myId) {
+  try {
+    const { data, error } = await supabase
+      .from("sponsored_subscriptions")
+      .select("business_id,cleaner_id,status,stripe_payment_intent_id,area_id,slot")
+      .eq("area_id", areaId)
+      .eq("slot", Number(slot));
+
+    if (error) {
+      console.error("[checkout] other-owner query error:", error);
+      return true; // be conservative
+    }
+    console.log("[checkout] other-owner rows:", data?.length ?? 0, data);
+
+    for (const row of data || []) {
+      const owner = ownerIdFromRow(row);
+      const owned =
+        ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+      const isOther = owner && String(owner) !== String(myId);
+      console.log("[checkout] row check:", { owner, status: row.status, owned, isOther });
+      if (owned && isOther) return true;
+    }
+    return false;
+  } catch (e) {
+    console.error("[checkout] other-owner exception:", e);
+    return true; // be conservative
+  }
+}
+
+// Use the same preview endpoint to compute remaining km² and price
 async function serverPreview(cleanerId, areaId, slot) {
   const base = siteBase();
   const res = await fetch(`${base}/.netlify/functions/sponsored-preview`, {
@@ -140,29 +162,32 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
   return customerId;
 }
 
-/* --------------------------------- handler --------------------------------- */
-
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot } = await req.json();
-    if (!cleanerId || !areaId || ![1, 2, 3].includes(Number(slot))) {
+    const body = await req.json();
+    const cleanerId = String(body?.cleanerId ?? "");
+    const areaId = String(body?.areaId ?? "");
+    const slot = Number(body?.slot);
+
+    if (!cleanerId || !areaId || ![1, 2, 3].includes(slot)) {
       return json({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
     // 1) same-business duplicate guard
-    if (await hasExistingSponsorship(String(cleanerId), String(areaId), Number(slot))) {
+    if (await hasExistingForSameBusiness(cleanerId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // 2) someone else already owns (area, slot) — BLOCK
-    if (await isOwnedByAnother(String(areaId), Number(slot), String(cleanerId))) {
+    // 2) hard block if any other owner exists
+    const taken = await isOwnedByAnother(areaId, slot, cleanerId);
+    if (taken) {
       return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    // 3) compute remaining km² + price from preview (what the UI showed)
-    const { km2, monthly } = await serverPreview(String(cleanerId), String(areaId), Number(slot));
+    // 3) compute remaining km² and price
+    const { km2, monthly } = await serverPreview(cleanerId, areaId, slot);
     if (!Number.isFinite(km2) || km2 <= 0) {
       return json({ error: `Sponsor #${slot} has no purchasable area left in this region.` }, 409);
     }
@@ -170,10 +195,10 @@ export default async (req) => {
     const monthlyPrice = monthly ?? Math.max(MIN[slot] ?? 1, km2 * (RATE[slot] ?? 1));
     const unitAmount = toPence(monthlyPrice);
 
-    // 4) stripe checkout
-    const customerId = await ensureStripeCustomerForCleaner(String(cleanerId));
+    // 4) stripe
+    const customerId = await ensureStripeCustomerForCleaner(cleanerId);
     const site = siteBase();
-    const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
+    const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -186,7 +211,7 @@ export default async (req) => {
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount / 100).toFixed(2)}/month`,
+              description: `Available area: ${km2.toFixed(4)} km² • £${(unitAmount/100).toFixed(2)}/month`,
             },
           },
           quantity: 1,
@@ -194,15 +219,15 @@ export default async (req) => {
       ],
       subscription_data: {
         metadata: {
-          cleaner_id: String(cleanerId),
-          area_id: String(areaId),
+          cleaner_id: cleanerId,
+          area_id: areaId,
           slot: String(slot),
           available_area_km2: km2.toFixed(6),
           monthly_price_pennies: String(unitAmount),
           tier: tierName,
         },
       },
-      metadata: { cleaner_id: String(cleanerId), area_id: String(areaId), slot: String(slot) },
+      metadata: { cleaner_id: cleanerId, area_id: areaId, slot: String(slot) },
       success_url: `${site}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
       cancel_url: `${site}/#/dashboard?checkout=cancel`,
     });
