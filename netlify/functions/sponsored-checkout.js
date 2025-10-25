@@ -5,30 +5,36 @@ import { createClient } from "@supabase/supabase-js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// tier rates / mins
-const RATE = {
-  1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1),
-  2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? 0.75),
-  3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? 0.5),
-};
-const MIN = {
-  1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? 1),
-  2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? 0.75),
-  3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? 0.5),
-};
-
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// Duplicate guard for SAME business/area/slot
+const readNum = (name, fallback) => {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) ? v : fallback;
+};
+
+const RATE_DEFAULT = readNum("RATE_PER_KM2_PER_MONTH", 15);
+const MIN_DEFAULT  = readNum("MIN_PRICE_PER_MONTH", 1);
+
+const RATE = {
+  1: readNum("RATE_GOLD_PER_KM2_PER_MONTH", RATE_DEFAULT),
+  2: readNum("RATE_SILVER_PER_KM2_PER_MONTH", RATE_DEFAULT),
+  3: readNum("RATE_BRONZE_PER_KM2_PER_MONTH", RATE_DEFAULT),
+};
+const MIN = {
+  1: readNum("MIN_GOLD_PRICE_PER_MONTH", MIN_DEFAULT),
+  2: readNum("MIN_SILVER_PRICE_PER_MONTH", MIN_DEFAULT),
+  3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
+};
+
 async function hasExistingSponsorship(business_id, area_id, slot) {
   try {
     const { data } = await supabase
       .from("sponsored_subscriptions")
-      .select("id,status,stripe_subscription_id,stripe_payment_intent_id")
+      .select("id,status,stripe_payment_intent_id")
       .eq("business_id", business_id)
       .eq("area_id", area_id)
       .eq("slot", Number(slot))
@@ -36,12 +42,7 @@ async function hasExistingSponsorship(business_id, area_id, slot) {
     if (!data?.length) return false;
     const row = data[0];
     const activeish = new Set([
-      "active",
-      "trialing",
-      "past_due",
-      "unpaid",
-      "incomplete",
-      "incomplete_expired",
+      "active","trialing","past_due","unpaid","incomplete","incomplete_expired",
     ]);
     return activeish.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch {
@@ -90,48 +91,50 @@ export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { businessId, areaId, slot } = await req.json();
-    if (!businessId || !areaId || ![1, 2, 3].includes(Number(slot))) {
-      return json({ error: "businessId, areaId, slot required" }, 400);
+    const body = await req.json().catch(() => ({}));
+    const businessId = body.businessId || body.cleanerId;
+    const areaId = body.areaId || body.area_id;
+    const slot = Number(body.slot);
+
+    if (!businessId || !areaId || ![1, 2, 3].includes(slot)) {
+      return json({ error: "businessId/cleanerId, areaId, slot required" }, 400);
     }
 
     if (await hasExistingSponsorship(businessId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // HARD availability check using slot-specific clipper
-    const proc =
-      Number(slot) === 1
-        ? "clip_available_slot1_preview"
-        : Number(slot) === 2
-        ? "clip_available_slot2_preview"
-        : "clip_available_slot3_preview";
-
-    const { data, error } = await supabase.rpc(proc, {
-      p_cleaner: businessId, // your RPC expects a cleaner id; same UUID as business_id
-      p_area_id: areaId,
+    // IMPORTANT: match the preview call exactly (_exclude_cleaner: null)
+    const { data, error } = await supabase.rpc("get_area_preview", {
+      _area_id: areaId,
+      _slot: slot,
+      _drawn_geojson: null,
+      _exclude_cleaner: null,
     });
+
     if (error) {
-      console.error("[checkout] clipping rpc error:", error);
+      console.error("[sponsored-checkout] get_area_preview error:", error);
       return json({ error: "Failed to compute available area" }, 500);
     }
 
     const row = Array.isArray(data) ? data[0] : data;
-    const area_m2 = Number(row?.area_m2 ?? 0);
-    const km2 = Math.max(0, area_m2 / 1_000_000);
-
-    if (!Number.isFinite(km2) || km2 <= 0) {
+    const area_km2 = Number(row?.area_km2 ?? 0);
+    if (!Number.isFinite(area_km2)) {
+      console.error("[sponsored-checkout] invalid area_km2 payload:", row);
+      return json({ error: "Failed to compute available area" }, 500);
+    }
+    if (area_km2 <= 0) {
       return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    const rate = RATE[slot] ?? 1;
-    const min = MIN[slot] ?? 1;
-    const monthly_price = Math.max(min, km2 * rate);
-    const unit_amount = toPence(monthly_price);
+    const rate = RATE[slot] ?? RATE_DEFAULT;
+    const min  = MIN[slot]  ?? MIN_DEFAULT;
+    const monthly_price = Math.max(min, Math.max(0, area_km2) * rate);
+    const unit_amount   = toPence(monthly_price);
 
     const customerId = await ensureStripeCustomerForBusiness(businessId);
     const site = siteBase();
-    const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
+    const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -140,11 +143,11 @@ export default async (req) => {
         {
           price_data: {
             currency: "gbp",
-            unit_amount,
+            unit_amount: unit_amount,
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
-              description: `Available area: ${km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
+              description: `Available area: ${area_km2.toFixed(4)} km² • £${monthly_price.toFixed(2)}/month`,
             },
           },
           quantity: 1,
@@ -153,15 +156,17 @@ export default async (req) => {
       subscription_data: {
         metadata: {
           business_id: String(businessId),
+          cleaner_id: String(businessId),
           area_id: String(areaId),
           slot: String(slot),
-          available_area_km2: km2.toFixed(6),
+          available_area_km2: area_km2.toFixed(6),
           monthly_price_pennies: String(unit_amount),
           tier: tierName,
         },
       },
       metadata: {
         business_id: String(businessId),
+        cleaner_id: String(businessId),
         area_id: String(areaId),
         slot: String(slot),
       },
@@ -171,7 +176,7 @@ export default async (req) => {
 
     return json({ url: session.url });
   } catch (e) {
-    console.error("[checkout] error:", e);
+    console.error("[sponsored-checkout] fatal:", e);
     return json({ error: e?.message || "checkout failed" }, 500);
   }
 };
