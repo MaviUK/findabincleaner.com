@@ -5,6 +5,7 @@ import { createClient } from "@supabase/supabase-js";
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
+// tier rates / mins
 const RATE = {
   1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1),
   2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? 0.75),
@@ -22,70 +23,40 @@ const json = (body, status = 200) =>
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// ---------------------------------------------------------
-// Ownership guards (VERY strict)
-// ---------------------------------------------------------
-const ACTIVEish = new Set(["active", "trialing", "past_due", "unpaid"]);
-
-const norm = (v) => (v == null ? null : String(v).toLowerCase());
-
-const isEnded = (row) =>
-  Boolean(row?.ended_at || row?.cancelled_at || row?.canceled_at || row?.expires_at);
-
-const isCurrentStripeBacked = (row) =>
-  ACTIVEish.has(norm(row?.status)) &&
-  !isEnded(row) &&
-  // require an actual subscription on file to count as "owned"
-  !!row?.stripe_subscription_id;
-
-const rowOwnerId = (row) =>
-  row?.business_id ?? row?.cleaner_id ?? row?.owner_id ?? null;
-
-async function fetchSubRows(areaId, slot) {
-  const { data, error } = await supabase
-    .from("sponsored_subscriptions")
-    .select(
-      "id,area_id,slot,status,business_id,cleaner_id,owner_id,ended_at,cancelled_at,canceled_at,expires_at,stripe_subscription_id"
-    )
-    .eq("area_id", areaId)
-    .eq("slot", Number(slot));
-  if (error) {
-    console.error("[checkout] fetchSubRows error:", error);
-    return [];
+// Duplicate guard for SAME business/area/slot
+async function hasExistingSponsorship(business_id, area_id, slot) {
+  try {
+    const { data } = await supabase
+      .from("sponsored_subscriptions")
+      .select("id,status,stripe_subscription_id,stripe_payment_intent_id")
+      .eq("business_id", business_id)
+      .eq("area_id", area_id)
+      .eq("slot", Number(slot))
+      .limit(1);
+    if (!data?.length) return false;
+    const row = data[0];
+    const activeish = new Set([
+      "active",
+      "trialing",
+      "past_due",
+      "unpaid",
+      "incomplete",
+      "incomplete_expired",
+    ]);
+    return activeish.has(row.status) || Boolean(row.stripe_payment_intent_id);
+  } catch {
+    return false;
   }
-  return data || [];
 }
 
-async function isOwnedByAnother(areaId, slot, myCleanerId) {
-  const rows = await fetchSubRows(areaId, slot);
-  for (const r of rows) {
-    const owner = rowOwnerId(r);
-    if (norm(owner) === norm(myCleanerId)) continue; // it's me, skip
-    if (isCurrentStripeBacked(r)) return true;
-  }
-  return false;
-}
-
-async function hasMyCurrent(areaId, slot, myCleanerId) {
-  const rows = await fetchSubRows(areaId, slot);
-  for (const r of rows) {
-    const owner = rowOwnerId(r);
-    if (norm(owner) !== norm(myCleanerId)) continue;
-    if (isCurrentStripeBacked(r)) return true;
-  }
-  return false;
-}
-
-// ---------------------------------------------------------
-
-async function ensureStripeCustomerForCleaner(cleanerId) {
+async function ensureStripeCustomerForBusiness(businessId) {
   const { data: cleaner, error } = await supabase
     .from("cleaners")
     .select("id,business_name,stripe_customer_id,user_id")
-    .eq("id", cleanerId)
+    .eq("id", businessId)
     .maybeSingle();
   if (error) throw error;
-  if (!cleaner) throw new Error("Cleaner not found");
+  if (!cleaner) throw new Error("Business not found");
   if (cleaner.stripe_customer_id) return cleaner.stripe_customer_id;
 
   let email = null;
@@ -107,11 +78,11 @@ async function ensureStripeCustomerForCleaner(cleanerId) {
     const created = await stripe.customers.create({
       email: email || undefined,
       name: cleaner.business_name || undefined,
-      metadata: { cleaner_id: cleanerId },
+      metadata: { business_id: businessId },
     });
     customerId = created.id;
   }
-  await supabase.from("cleaners").update({ stripe_customer_id: customerId }).eq("id", cleanerId);
+  await supabase.from("cleaners").update({ stripe_customer_id: customerId }).eq("id", businessId);
   return customerId;
 }
 
@@ -119,31 +90,25 @@ export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   try {
-    const { cleanerId, areaId, slot } = await req.json();
-    if (!cleanerId || !areaId || ![1, 2, 3].includes(Number(slot))) {
-      return json({ error: "cleanerId, areaId, slot required" }, 400);
+    const { businessId, areaId, slot } = await req.json();
+    if (!businessId || !areaId || ![1, 2, 3].includes(Number(slot))) {
+      return json({ error: "businessId, areaId, slot required" }, 400);
     }
 
-    // 0) Block if another business truly owns (Stripe-backed, active-like, not ended)
-    if (await isOwnedByAnother(areaId, slot, cleanerId)) {
-      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
-    }
-
-    // 1) Block duplicate if THIS cleaner already has a current Stripe-backed sub
-    if (await hasMyCurrent(areaId, slot, cleanerId)) {
+    if (await hasExistingSponsorship(businessId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // 2) Compute available area for this slot (authoritative server clipping)
+    // HARD availability check using slot-specific clipper
     const proc =
-      slot === 1
+      Number(slot) === 1
         ? "clip_available_slot1_preview"
-        : slot === 2
+        : Number(slot) === 2
         ? "clip_available_slot2_preview"
         : "clip_available_slot3_preview";
 
     const { data, error } = await supabase.rpc(proc, {
-      p_cleaner: cleanerId,
+      p_cleaner: businessId, // your RPC expects a cleaner id; same UUID as business_id
       p_area_id: areaId,
     });
     if (error) {
@@ -152,23 +117,21 @@ export default async (req) => {
     }
 
     const row = Array.isArray(data) ? data[0] : data;
-    const area_m2 = Number(row?.area_m2 ?? row?.area_sq_m ?? 0);
+    const area_m2 = Number(row?.area_m2 ?? 0);
     const km2 = Math.max(0, area_m2 / 1_000_000);
 
-    if (km2 <= 0) {
-      return json({ error: "This slot has no purchasable area left for this region." }, 409);
+    if (!Number.isFinite(km2) || km2 <= 0) {
+      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    // 3) Price
     const rate = RATE[slot] ?? 1;
     const min = MIN[slot] ?? 1;
     const monthly_price = Math.max(min, km2 * rate);
     const unit_amount = toPence(monthly_price);
 
-    // 4) Stripe checkout session
-    const customerId = await ensureStripeCustomerForCleaner(cleanerId);
+    const customerId = await ensureStripeCustomerForBusiness(businessId);
     const site = siteBase();
-    const tierName = slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze";
+    const tierName = Number(slot) === 1 ? "Gold" : Number(slot) === 2 ? "Silver" : "Bronze";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -189,7 +152,7 @@ export default async (req) => {
       ],
       subscription_data: {
         metadata: {
-          cleaner_id: String(cleanerId),
+          business_id: String(businessId),
           area_id: String(areaId),
           slot: String(slot),
           available_area_km2: km2.toFixed(6),
@@ -198,7 +161,7 @@ export default async (req) => {
         },
       },
       metadata: {
-        cleaner_id: String(cleanerId),
+        business_id: String(businessId),
         area_id: String(areaId),
         slot: String(slot),
       },
