@@ -22,8 +22,11 @@ type PreviewResp = PreviewOk | PreviewErr;
 type Props = {
   open: boolean;
   onClose: () => void;
-  /** businessId == cleanerId (same UUID in your DB) */
-  businessId: string;
+
+  /** You can pass either cleanerId or businessId (same UUID in your system) */
+  cleanerId?: string;
+  businessId?: string;
+
   areaId: string;
   slot: Slot;
 
@@ -60,7 +63,7 @@ async function callPreview(opts: {
   const res = await fetch("/.netlify/functions/sponsored-preview", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    // send synonyms so any backend version accepts it
+    // Send synonyms so any backend version accepts it
     body: JSON.stringify({
       cleanerId,
       businessId: cleanerId,
@@ -95,13 +98,15 @@ async function callPreview(opts: {
 export default function AreaSponsorModal({
   open,
   onClose,
+  cleanerId,
   businessId,
   areaId,
   slot,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  const cleanerId = businessId;
+  // Accept either prop name
+  const ownerId = (businessId ?? cleanerId) || "";
 
   const [computing, setComputing] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
@@ -126,7 +131,7 @@ export default function AreaSponsorModal({
 
   // Compute preview and draw clipped overlay
   useEffect(() => {
-    if (!open) return;
+    if (!open || !ownerId) return;
 
     let cancelled = false;
     const controller = new AbortController();
@@ -141,7 +146,7 @@ export default function AreaSponsorModal({
     (async () => {
       try {
         const { km2, monthly, geom } = await callPreview({
-          cleanerId,
+          cleanerId: ownerId,
           areaId,
           slot,
           signal: controller.signal,
@@ -173,7 +178,7 @@ export default function AreaSponsorModal({
       onClearPreview?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, cleanerId, areaId, slot]);
+  }, [open, ownerId, areaId, slot]);
 
   const nfGBP = useMemo(
     () =>
@@ -199,10 +204,10 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // HARD GATE: re-check using preview again just before checkout
+  // Re-check with preview again just before checkout (no area-availability call anywhere)
   async function handleCheckout() {
     try {
-      const { km2 } = await callPreview({ cleanerId, areaId, slot });
+      const { km2 } = await callPreview({ cleanerId: ownerId, areaId, slot });
       if (!Number.isFinite(km2) || km2 <= 0) {
         setErr(
           `This slot has no purchasable area left. Another business already has Sponsor #${slot} here.`
@@ -221,8 +226,8 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId,
-          businessId: cleanerId,
+          cleanerId: ownerId,
+          businessId: ownerId,
           areaId,
           area_id: areaId,
           slot: Number(slot),
@@ -321,7 +326,7 @@ export default function AreaSponsorModal({
           <button
             className="btn btn-primary disabled:opacity-50"
             onClick={handleCheckout}
-            disabled={checkingOut || computing || !hasPurchasableRegion}
+            disabled={checkingOut || computing || !hasPurchasableRegion || !ownerId}
             title={
               computing
                 ? "Please wait for the preview"
