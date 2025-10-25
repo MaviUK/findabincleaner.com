@@ -8,6 +8,10 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
+const ACTIVEISH = new Set([
+  "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
+]);
+
 const readNum = (name, fallback) => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) ? v : fallback;
@@ -27,11 +31,8 @@ const MIN = {
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-const ACTIVEISH = new Set([
-  "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
-]);
-
-async function hasExistingSponsorshipForSameBusiness(business_id, area_id, slot) {
+// same business duplicate guard
+async function hasExistingForSameBusiness(business_id, area_id, slot) {
   const { data, error } = await supabase
     .from("sponsored_subscriptions")
     .select("id,status,stripe_payment_intent_id")
@@ -45,6 +46,26 @@ async function hasExistingSponsorshipForSameBusiness(business_id, area_id, slot)
   }
   if (!data?.length) return false;
   const row = data[0];
+  return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+}
+
+// STRICT lock: someone else already owns this slot for the area
+async function slotOwnedByAnotherBusiness(area_id, slot, business_id) {
+  const { data, error } = await supabase
+    .from("sponsored_subscriptions")
+    .select("id,business_id,status,stripe_payment_intent_id")
+    .eq("area_id", area_id)
+    .eq("slot", Number(slot))
+    .neq("business_id", business_id)              // other business
+    .limit(1);
+  if (error) {
+    console.error("[checkout] owner check error:", error);
+    return true; // fail safe: block if uncertain
+  }
+  if (!data?.length) return false;
+
+  const row = data[0];
+  // treat any 'live-ish' status or a pending PI as an active lock
   return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
 }
 
@@ -98,12 +119,17 @@ export default async (req) => {
       return json({ error: "businessId/cleanerId, areaId, slot required" }, 400);
     }
 
-    // Prevent duplicates by the same business
-    if (await hasExistingSponsorshipForSameBusiness(businessId, areaId, slot)) {
-      return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
+    // **1) BLOCK if another business already owns this slot in this area**
+    if (await slotOwnedByAnotherBusiness(areaId, slot, businessId)) {
+      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
     }
 
-    // Compute the truly purchasable sub-region (authoritative)
+    // **2) prevent same-business duplicate**
+    if (await hasExistingForSameBusiness(businessId, areaId, slot)) {
+      return json({ error: "You already sponsor this slot for this area." }, 409);
+    }
+
+    // **3) compute available (optional; used for pricing)**
     const { data, error } = await supabase.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: slot,
@@ -117,18 +143,10 @@ export default async (req) => {
 
     const row = Array.isArray(data) ? data[0] : data;
     const area_km2 = Number(row?.area_km2 ?? 0);
-    if (!Number.isFinite(area_km2)) {
-      console.error("[sponsored-checkout] invalid area_km2 payload:", row);
-      return json({ error: "Failed to compute available area" }, 500);
-    }
-    if (area_km2 <= 0) {
-      return json({ error: `This slot has no purchasable area left.` }, 409);
-    }
-
-    const rate = RATE[slot] ?? RATE_DEFAULT;
-    const min  = MIN[slot]  ?? MIN_DEFAULT;
+    const rate = (slot in RATE ? RATE[slot] : RATE_DEFAULT);
+    const min  = (slot in MIN  ? MIN[slot]  : MIN_DEFAULT);
     const monthly_price = Math.max(min, Math.max(0, area_km2) * rate);
-    const unit_amount   = toPence(monthly_price);
+    const unit_amount = toPence(monthly_price);
 
     const customerId = await ensureStripeCustomerForBusiness(businessId);
     const site = siteBase();
@@ -141,7 +159,7 @@ export default async (req) => {
         {
           price_data: {
             currency: "gbp",
-            unit_amount: unit_amount,
+            unit_amount,
             recurring: { interval: "month", interval_count: 1 },
             product_data: {
               name: `Area sponsorship #${slot} (${tierName})`,
