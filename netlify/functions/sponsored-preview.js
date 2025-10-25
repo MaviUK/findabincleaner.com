@@ -3,115 +3,86 @@ import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+const RATE_GOLD = num(process.env.RATE_GOLD_PER_KM2_PER_MONTH, 1.0);
+const RATE_SILV = num(process.env.RATE_SILVER_PER_KM2_PER_MONTH, 0.75);
+const RATE_BRON = num(process.env.RATE_BRONZE_PER_KM2_PER_MONTH, 0.5);
 
-// ---------- pricing env helpers ----------
-function readNum(name, fallback) {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) ? v : fallback;
-}
-const RATE_DEFAULT = readNum("RATE_PER_KM2_PER_MONTH", 15);
-const MIN_DEFAULT  = readNum("MIN_PRICE_PER_MONTH", 1);
+const MIN_GOLD = num(process.env.MIN_GOLD_PRICE_PER_MONTH, 1.0);
+const MIN_SILV = num(process.env.MIN_SILVER_PRICE_PER_MONTH, 0.75);
+const MIN_BRON = num(process.env.MIN_BRONZE_PRICE_PER_MONTH, 0.5);
 
-const RATE_TIER = {
-  1: readNum("RATE_GOLD_PER_KM2_PER_MONTH", RATE_DEFAULT),
-  2: readNum("RATE_SILVER_PER_KM2_PER_MONTH", RATE_DEFAULT),
-  3: readNum("RATE_BRONZE_PER_KM2_PER_MONTH", RATE_DEFAULT),
+const CORS = {
+  "content-type": "application/json",
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "access-control-allow-headers": "Content-Type, Authorization",
 };
-const MIN_TIER = {
-  1: readNum("MIN_GOLD_PRICE_PER_MONTH", MIN_DEFAULT),
-  2: readNum("MIN_SILVER_PRICE_PER_MONTH", MIN_DEFAULT),
-  3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
-};
-
-// ---------- ownership lock ----------
-const ACTIVEISH = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-]);
-
-async function slotOwnedByAnotherBusiness(areaId, slot, businessId) {
-  try {
-    const { data, error } = await sb
-      .from("sponsored_subscriptions")
-      .select("id,business_id,status,stripe_payment_intent_id")
-      .eq("area_id", areaId)
-      .eq("slot", Number(slot))
-      .neq("business_id", businessId)
-      .limit(1);
-
-    if (error) {
-      console.error("[sponsored-preview] owner check error:", error);
-      // Fail-safe: if we can't verify, treat it as locked to avoid selling duplicates.
-      return true;
-    }
-    if (!data?.length) return false;
-
-    const row = data[0];
-    return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-  } catch (e) {
-    console.error("[sponsored-preview] owner check fatal:", e);
-    return true; // fail-safe
-  }
-}
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+  if (req.method !== "POST") return send({ error: "Method not allowed" }, 405);
 
   try {
-    const body = await req.json().catch(() => ({}));
-
-    // Be liberal about accepted keys
-    const businessId = body.businessId || body.cleanerId;
-    const areaId = body.areaId || body.area_id;
-    const slot = Number(body.slot);
-
-    if (!businessId || !areaId || ![1, 2, 3].includes(slot)) {
-      return json({ ok: false, error: "Missing params" }, 400);
+    const { cleanerId, areaId, slot } = await req.json();
+    if (!cleanerId || !areaId || !slot) {
+      return send({ error: "cleanerId, areaId, slot required" }, 400);
     }
 
-    // 1) HARD LOCK: if another business already owns this (area, slot), stop here
-    if (await slotOwnedByAnotherBusiness(areaId, slot, businessId)) {
-      return json({ ok: false, error: `Sponsor #${slot} is already owned for this area.` }, 200);
-    }
-
-    // 2) Otherwise, compute preview (area + clipped geometry) with your RPC
+    // IMPORTANT: this RPC must clip the requested area's geometry
+    // to the portion that is free for `slot`, excluding the caller’s own subscriptions.
+    //
+    // Expected return shape (single row):
+    //   { area_km2: number, final_geojson: GeoJSON | null }
+    //
+    // Implemented in SQL something like:
+    //   final_geojson = ST_AsGeoJSON(
+    //     ST_Multi(
+    //       ST_Intersection(area.geom, available_for_slot(slot, exclude_cleaner := cleanerId))
+    //     )
+    //   )::jsonb
+    //
     const { data, error } = await sb.rpc("get_area_preview", {
       _area_id: areaId,
-      _slot: slot,
-      _drawn_geojson: null,
-      // If your RPC supports it, exclude the requester to avoid counting their own coverage
-      _exclude_cleaner: businessId,
+      _slot: Number(slot),
+      _drawn_geojson: null,       // or a drawn override if you support it
+      _exclude_cleaner: cleanerId // ensures caller’s own live slots don’t block themselves
     });
+
     if (error) {
-      console.error("[sponsored-preview] get_area_preview error:", error);
-      return json({ ok: false, error: "Failed to compute area" }, 200);
+      console.error("[sponsored-preview] RPC error:", error);
+      return send({ error: "Failed to compute available geometry" }, 500);
     }
 
     const row = Array.isArray(data) ? data[0] : data;
     const area_km2 = Number(row?.area_km2 ?? 0);
     const final_geojson = row?.final_geojson ?? null;
 
-    const rate = RATE_TIER[slot] ?? RATE_DEFAULT;
-    const min  = MIN_TIER[slot]  ?? MIN_DEFAULT;
-    const monthly = Math.max(min, Math.max(0, area_km2) * rate);
+    // price by slot
+    const { rate, min } =
+      Number(slot) === 1 ? { rate: RATE_GOLD, min: MIN_GOLD } :
+      Number(slot) === 2 ? { rate: RATE_SILV, min: MIN_SILV } :
+                           { rate: RATE_BRON, min: MIN_BRON };
 
-    return json({
+    const monthly_price = round2(Math.max(min, Math.max(0, area_km2) * rate));
+
+    return send({
       ok: true,
-      area_km2: Number((area_km2 || 0).toFixed(6)),
-      monthly_price: Number(monthly.toFixed(2)),
-      final_geojson,
+      area_km2: round5(area_km2),
+      monthly_price,
+      final_geojson, // 👈 UI will draw exactly this (only the purchasable piece)
     });
   } catch (e) {
-    console.error("[sponsored-preview] fatal:", e);
-    return json({ ok: false, error: "Preview failed" }, 200);
+    console.error("[sponsored-preview] error:", e);
+    return send({ error: e?.message || "preview failed" }, 500);
   }
 };
+
+function send(body, status = 200) {
+  return new Response(JSON.stringify(body), { status, headers: CORS });
+}
+function num(v, d) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+function round2(n) { return Math.round(n * 100) / 100; }
+function round5(n) { return Math.round(n * 1e5) / 1e5; }
