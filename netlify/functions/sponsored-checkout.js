@@ -30,14 +30,16 @@ const MIN_TIER = {
   3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
 };
 
-// ---------- ownership lock ----------
-const ACTIVEISH = new Set([
+// ---------- ownership lock / states we treat as "taken" ----------
+const LIVE_OR_PENDING = new Set([
   "active",
   "trialing",
   "past_due",
   "unpaid",
   "incomplete",
   "incomplete_expired",
+  "provisional",
+  "pending",
 ]);
 
 async function slotOwnedByAnotherBusiness(areaId, slot, businessId) {
@@ -58,7 +60,8 @@ async function slotOwnedByAnotherBusiness(areaId, slot, businessId) {
     if (!data?.length) return false;
 
     const row = data[0];
-    return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    // Any live/pending-ish state OR a captured/created PI counts as owned.
+    return LIVE_OR_PENDING.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch (e) {
     console.error("[sponsored-checkout] owner check fatal:", e);
     return true; // fail-safe
@@ -92,7 +95,8 @@ export default async (req) => {
     const businessId = body.businessId || body.cleanerId;
     const areaId = body.areaId || body.area_id;
     const slot = Number(body.slot);
-    const returnUrl = body.return_url || process.env.PUBLIC_SITE_URL || "https://findabincleaner.netlify.app";
+    const returnUrl =
+      body.return_url || process.env.PUBLIC_SITE_URL || "https://findabincleaner.netlify.app";
 
     if (!businessId || !areaId || ![1, 2, 3].includes(slot)) {
       return json({ error: "Missing params" }, 400);
@@ -136,8 +140,28 @@ export default async (req) => {
       .single();
 
     if (insErr) {
+      // Decode common unique-constraint collisions so the UI shows the *real* reason
+      const code = insErr?.code || insErr?.details?.code;
+      const constraint = insErr?.constraint || insErr?.details?.constraint;
+
+      if (code === "23505") {
+        // Area-level lock (any slot in this area)
+        if (constraint === "ux_live_or_pending_area" || constraint === "ux_active_area_slot") {
+          return json({ error: "This area is already owned. No slots are available." }, 409);
+        }
+        // Exact slot in this area
+        if (constraint === "uniq_live_slot" || constraint === "uniq_live_or_pending_slot") {
+          return json({ error: `Sponsor #${slot} is already taken for this area.` }, 409);
+        }
+        // Platform-wide “same slot per business” rule (keep only if you intend it)
+        if (constraint === "uniq_active_slot_per_business") {
+          return json({
+            error: `Your business already has an active/pending subscription for Sponsor #${slot} in another area.`,
+          }, 409);
+        }
+      }
+
       console.error("[sponsored-checkout] insert provisional sub failed:", insErr);
-      // If a unique constraint exists (area_id, slot) it will fail here and that’s good
       return json({ error: "Could not create a provisional subscription." }, 409);
     }
 
@@ -168,7 +192,7 @@ export default async (req) => {
         fb_business_id: businessId,
         fb_sub_id: subId || "",
       },
-      // Optional: if you track / reuse customers, you can add customer or customer_email here
+      // If you persist/reuse Stripe customers, you can pass customer / customer_email here.
     });
 
     // 6) Save the session id on the provisional row
