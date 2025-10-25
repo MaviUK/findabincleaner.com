@@ -493,11 +493,12 @@ export default function ServiceAreaEditor({
                 const s2 = slotInfo(a.id, 2);
                 const s3 = slotInfo(a.id, 3);
 
-                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === myBusinessId;
-                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === myBusinessId;
-                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === myBusinessId;
+                // A slot is "mine" ONLY if it's actually taken and the owner is me
+                const mine1 = !!s1?.taken && s1.owner_business_id === myBusinessId;
+                const mine2 = !!s2?.taken && s2.owner_business_id === myBusinessId;
+                const mine3 = !!s3?.taken && s3.owner_business_id === myBusinessId;
 
-                // If the business owns any slot in this area, the other two become unavailable
+                // If I own any active slot in this area, the other two become unavailable
                 const ownsAny = mine1 || mine2 || mine3;
 
                 // taken-by-someone-else flags
@@ -505,7 +506,7 @@ export default function ServiceAreaEditor({
                 const taken2ByOther = !!s2?.taken && !mine2;
                 const taken3ByOther = !!s3?.taken && !mine3;
 
-                // Final disabled flags: either taken by someone else OR you already own a different slot
+                // Final disabled flags: either taken by someone else OR I already own a different slot
                 const dis1 = taken1ByOther || (!mine1 && ownsAny);
                 const dis2 = taken2ByOther || (!mine2 && ownsAny);
                 const dis3 = taken3ByOther || (!mine3 && ownsAny);
@@ -712,7 +713,7 @@ export default function ServiceAreaEditor({
             setSponsorOpen(false);
             clearPreview();
           }}
-          businessId={myBusinessId}   // << changed: modal expects businessId, not cleanerId
+          businessId={myBusinessId}   // modal expects businessId
           areaId={sponsorAreaId}
           slot={sponsorSlot}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
