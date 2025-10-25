@@ -31,18 +31,25 @@ export default async (req) => {
 
     if (error) throw error;
 
-    // build a per-area 3-slot status + paint (colors for overlay are your choice)
-    const byArea = new Map(areaIds.map((id) => [id, {
-      area_id: id,
-      slots: [
-        { slot: 1, taken: false, status: null, owner_business_id: null },
-        { slot: 2, taken: false, status: null, owner_business_id: null },
-        { slot: 3, taken: false, status: null, owner_business_id: null },
-      ],
-      paint: { tier: 0, fill: "rgba(0,0,0,0.0)", stroke: "#555" },
-    }]));
+    // build a per-area 3-slot status + paint
+    const byArea = new Map(
+      areaIds.map((id) => [
+        id,
+        {
+          area_id: id,
+          slots: [
+            { slot: 1, taken: false, status: null, owner_business_id: null },
+            { slot: 2, taken: false, status: null, owner_business_id: null },
+            { slot: 3, taken: false, status: null, owner_business_id: null },
+          ],
+          paint: { tier: 0, fill: "rgba(0,0,0,0.0)", stroke: "#555" },
+        },
+      ])
+    );
 
-    const ACTIVE = new Set(["active","trialing","past_due","unpaid","incomplete","incomplete_expired"]);
+    // Only truly live subs count as taken (exclude pending/failed checkout)
+    const ACTIVE = new Set(["active", "trialing", "past_due", "unpaid"]);
+    // (Everything else like 'canceled', 'incomplete', 'incomplete_expired' => not taken)
 
     for (const row of data || []) {
       const entry = byArea.get(row.area_id);
@@ -66,9 +73,12 @@ export default async (req) => {
       if (entry.slots[1].taken) tier = Math.max(tier, 2);
       if (entry.slots[2].taken) tier = Math.max(tier, 3);
 
-      if (tier === 1) entry.paint = { tier, fill: "rgba(255,215,0,0.35)", stroke: "#B8860B" };   // Gold
-      else if (tier === 2) entry.paint = { tier, fill: "rgba(192,192,192,0.35)", stroke: "#708090" }; // Silver
-      else if (tier === 3) entry.paint = { tier, fill: "rgba(205,127,50,0.35)", stroke: "#8B5A2B" };  // Bronze
+      if (tier === 1)
+        entry.paint = { tier, fill: "rgba(255,215,0,0.35)", stroke: "#B8860B" }; // Gold
+      else if (tier === 2)
+        entry.paint = { tier, fill: "rgba(192,192,192,0.35)", stroke: "#708090" }; // Silver
+      else if (tier === 3)
+        entry.paint = { tier, fill: "rgba(205,127,50,0.35)", stroke: "#8B5A2B" }; // Bronze
       else entry.paint = { tier: 0, fill: "rgba(0,0,0,0.0)", stroke: "#555" };
     }
 
