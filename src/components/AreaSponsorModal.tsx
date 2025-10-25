@@ -134,7 +134,12 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cleanerId, areaId, slot }),
+          body: JSON.stringify({
+            cleanerId,               // what some backends expect
+            businessId: cleanerId,   // alias for others
+            areaId,
+            slot,
+          }),
           signal: controller.signal,
         });
 
@@ -243,7 +248,8 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId, // backend expects cleanerId (your business UUID)
+          cleanerId,               // keep legacy key
+          businessId: cleanerId,   // and alias
           areaId,
           slot,
           return_url: typeof window !== "undefined" ? window.location.origin : undefined,
