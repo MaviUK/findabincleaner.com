@@ -7,9 +7,8 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  // Preferred geometry key:
-  final_geojson: any | null;
-  // Back-compat keys tolerated:
+  final_geojson: any | null; // preferred geometry key
+  // tolerated alternates for back-compat
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -49,44 +48,48 @@ function pickClippedGeom(json: any) {
   );
 }
 
-/** Robust availability call: send params in body AND on the query string. */
-async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
-  const qs = new URLSearchParams({
-    area_id: areaId,
-    slot: String(Number(slot)),
-  }).toString();
+/** Call preview and return numbers + (optional) geometry */
+async function callPreview(opts: {
+  cleanerId: string;
+  areaId: string;
+  slot: Slot;
+  signal?: AbortSignal;
+}) {
+  const { cleanerId, areaId, slot, signal } = opts;
 
-  const res = await fetch(`/.netlify/functions/area-availability?${qs}`, {
+  const res = await fetch("/.netlify/functions/sponsored-preview", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    // Send snake_case and camelCase to satisfy any handler
+    // send synonyms so any backend version accepts it
     body: JSON.stringify({
-      area_id: areaId,
+      cleanerId,
+      businessId: cleanerId,
       areaId,
+      area_id: areaId,
       slot: Number(slot),
     }),
     signal,
   });
 
   if (!res.ok) {
-    // surface server’s error text so the banner is informative
     const txt = await res.text().catch(() => "");
-    throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
+    throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
 
-  const j = await res.json();
+  const json: PreviewResp = await res.json();
+  if (!("ok" in json) || !json.ok) {
+    throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
+  }
 
-  const geom =
-    j?.available_geojson ??
-    j?.final_geojson ??
-    j?.available ??
-    j?.geojson ??
-    j?.geometry ??
-    j?.multi ??
-    null;
+  const areaNum = Number((json as PreviewOk).area_km2);
+  const monthlyNum = Number((json as PreviewOk).monthly_price);
+  const geom = pickClippedGeom(json);
 
-  const km2 = Number(j?.km2_available ?? j?.area_km2 ?? j?.km2 ?? j?.available_km2 ?? 0);
-  return { geom, km2: Number.isFinite(km2) ? km2 : 0 };
+  return {
+    km2: Number.isFinite(areaNum) ? areaNum : 0,
+    monthly: Number.isFinite(monthlyNum) ? monthlyNum : null,
+    geom,
+  };
 }
 
 export default function AreaSponsorModal({
@@ -121,7 +124,7 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Compute preview (price + clipped geometry). Clean up overlay on close.
+  // Compute preview and draw clipped overlay
   useEffect(() => {
     if (!open) return;
 
@@ -129,61 +132,29 @@ export default function AreaSponsorModal({
     const controller = new AbortController();
 
     onClearPreview?.();
+    setErr(null);
+    setComputing(true);
+    setAreaKm2(null);
+    setMonthly(null);
+    setWasClipped(false);
 
     (async () => {
-      setErr(null);
-      setComputing(true);
-      setAreaKm2(null);
-      setMonthly(null);
-      setWasClipped(false);
-
       try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            // send synonyms so any backend version accepts it
-            cleanerId,
-            businessId: cleanerId,
-            areaId,
-            area_id: areaId,
-            slot: Number(slot),
-          }),
+        const { km2, monthly, geom } = await callPreview({
+          cleanerId,
+          areaId,
+          slot,
           signal: controller.signal,
         });
 
-        if (!res.ok) {
-          const txt = await res.text().catch(() => "");
-          throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
-        }
-
-        const json: PreviewResp = await res.json();
         if (cancelled || controller.signal.aborted) return;
 
-        if (!("ok" in json) || !json.ok) {
-          throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
-        }
+        setAreaKm2(km2);
+        setMonthly(monthly);
 
-        const aNum = Number((json as PreviewOk).area_km2);
-        const mNum = Number((json as PreviewOk).monthly_price);
-        setAreaKm2(Number.isFinite(aNum) ? aNum : null);
-        setMonthly(Number.isFinite(mNum) ? mNum : null);
-
-        const clipped = pickClippedGeom(json);
-        if (clipped && onPreviewGeoJSON) {
+        if (geom && onPreviewGeoJSON) {
           setWasClipped(true);
-          onPreviewGeoJSON(clipped);
-        } else {
-          // fallback to availability for drawing only
-          try {
-            const { geom } = await fetchAvailability(areaId, slot, controller.signal);
-            if (!cancelled && geom && onPreviewGeoJSON) {
-              setWasClipped(true);
-              onPreviewGeoJSON(geom);
-            }
-          } catch {
-            /* ignore best-effort drawing error */
-          }
+          onPreviewGeoJSON(geom);
         }
       } catch (e: any) {
         if (!cancelled && !controller.signal.aborted) {
@@ -228,10 +199,10 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // HARD GATE just before checkout
+  // HARD GATE: re-check using preview again just before checkout
   async function handleCheckout() {
     try {
-      const { km2 } = await fetchAvailability(areaId, slot);
+      const { km2 } = await callPreview({ cleanerId, areaId, slot });
       if (!Number.isFinite(km2) || km2 <= 0) {
         setErr(
           `This slot has no purchasable area left. Another business already has Sponsor #${slot} here.`
