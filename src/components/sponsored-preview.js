@@ -7,9 +7,9 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  // Primary clipped region key (preferred):
+  // Preferred geometry key:
   final_geojson: any | null;
-  // Tolerated alternates (back-compat):
+  // Back-compat keys tolerated:
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -23,14 +23,12 @@ type PreviewResp = PreviewOk | PreviewErr;
 type Props = {
   open: boolean;
   onClose: () => void;
-  /** businessId == cleanerId in your DB (same UUID) */
+  /** businessId == cleanerId (same UUID in your DB) */
   businessId: string;
   areaId: string;
   slot: Slot;
 
-  /** Draw the clipped region on the map (if provided) */
   onPreviewGeoJSON?: (multi: any) => void;
-  /** Clear any previously drawn preview overlay */
   onClearPreview?: () => void;
 };
 
@@ -38,7 +36,6 @@ function labelForSlot(s: Slot) {
   return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
 }
 
-/** Accept a bunch of possible keys from the API for the clipped geometry */
 function pickClippedGeom(json: any) {
   return (
     json?.final_geojson ??
@@ -52,24 +49,31 @@ function pickClippedGeom(json: any) {
   );
 }
 
-/** Fallback: fetch the truly available sub-region for (areaId, slot) */
+/** Robust availability call: send params in body AND on the query string. */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
-  const body = {
-    // Some handlers expect snake_case, some camelCase. Send both.
+  const qs = new URLSearchParams({
     area_id: areaId,
-    areaId,
-    slot: Number(slot),
-  };
-  const res = await fetch("/.netlify/functions/area-availability", {
+    slot: String(Number(slot)),
+  }).toString();
+
+  const res = await fetch(`/.netlify/functions/area-availability?${qs}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    // Send snake_case and camelCase to satisfy any handler
+    body: JSON.stringify({
+      area_id: areaId,
+      areaId,
+      slot: Number(slot),
+    }),
     signal,
   });
+
   if (!res.ok) {
+    // surface server’s error text so the banner is informative
     const txt = await res.text().catch(() => "");
     throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
+
   const j = await res.json();
 
   const geom =
@@ -94,7 +98,7 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  const cleanerId = businessId; // your system uses the same UUID
+  const cleanerId = businessId;
 
   const [computing, setComputing] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
@@ -117,17 +121,16 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Fetch preview once per open; cancel on close; clear overlay on cleanup
+  // Compute preview (price + clipped geometry). Clean up overlay on close.
   useEffect(() => {
     if (!open) return;
 
     let cancelled = false;
     const controller = new AbortController();
 
-    // Clear any old overlay while we compute a new one
     onClearPreview?.();
 
-    async function run() {
+    (async () => {
       setErr(null);
       setComputing(true);
       setAreaKm2(null);
@@ -135,12 +138,11 @@ export default function AreaSponsorModal({
       setWasClipped(false);
 
       try {
-        // 1) Price + (maybe) clipped geometry from preview
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            // send all synonyms so any backend version accepts it
+            // send synonyms so any backend version accepts it
             cleanerId,
             businessId: cleanerId,
             areaId,
@@ -162,21 +164,17 @@ export default function AreaSponsorModal({
           throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
         }
 
-        // Coerce to numbers safely
-        const aRaw = (json as PreviewOk).area_km2;
-        const mRaw = (json as PreviewOk).monthly_price;
-        const aNum = Number(aRaw);
-        const mNum = Number(mRaw);
+        const aNum = Number((json as PreviewOk).area_km2);
+        const mNum = Number((json as PreviewOk).monthly_price);
         setAreaKm2(Number.isFinite(aNum) ? aNum : null);
         setMonthly(Number.isFinite(mNum) ? mNum : null);
 
-        // 2) Try to draw clipped geometry from preview
         const clipped = pickClippedGeom(json);
         if (clipped && onPreviewGeoJSON) {
           setWasClipped(true);
           onPreviewGeoJSON(clipped);
         } else {
-          // 3) Fallback to availability if preview lacked a clipped region
+          // fallback to availability for drawing only
           try {
             const { geom } = await fetchAvailability(areaId, slot, controller.signal);
             if (!cancelled && geom && onPreviewGeoJSON) {
@@ -184,7 +182,7 @@ export default function AreaSponsorModal({
               onPreviewGeoJSON(geom);
             }
           } catch {
-            // Best-effort; ignore drawing error
+            /* ignore best-effort drawing error */
           }
         }
       } catch (e: any) {
@@ -196,9 +194,7 @@ export default function AreaSponsorModal({
           setComputing(false);
         }
       }
-    }
-
-    run();
+    })();
 
     return () => {
       cancelled = true;
@@ -232,9 +228,8 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // HARD GATE: verify availability again just before checkout
+  // HARD GATE just before checkout
   async function handleCheckout() {
-    // quick preflight to avoid starting checkout when nothing is left
     try {
       const { km2 } = await fetchAvailability(areaId, slot);
       if (!Number.isFinite(km2) || km2 <= 0) {
@@ -255,7 +250,6 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          // send aliases to be safe
           cleanerId,
           businessId: cleanerId,
           areaId,
@@ -323,9 +317,7 @@ export default function AreaSponsorModal({
               </span>
             </div>
 
-            {computing && (
-              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
-            )}
+            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
 
             {!computing && areaKm2 === 0 && (
               <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
