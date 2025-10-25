@@ -11,14 +11,13 @@ const json = (body, status = 200) =>
 const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
 const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
+// ---- env helpers ----
 const readNum = (name, fallback) => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) ? v : fallback;
 };
-
 const RATE_DEFAULT = readNum("RATE_PER_KM2_PER_MONTH", 15);
 const MIN_DEFAULT  = readNum("MIN_PRICE_PER_MONTH", 1);
-
 const RATE = {
   1: readNum("RATE_GOLD_PER_KM2_PER_MONTH", RATE_DEFAULT),
   2: readNum("RATE_SILVER_PER_KM2_PER_MONTH", RATE_DEFAULT),
@@ -30,24 +29,47 @@ const MIN = {
   3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
 };
 
-async function hasExistingSponsorship(business_id, area_id, slot) {
-  try {
-    const { data } = await supabase
-      .from("sponsored_subscriptions")
-      .select("id,status,stripe_payment_intent_id")
-      .eq("business_id", business_id)
-      .eq("area_id", area_id)
-      .eq("slot", Number(slot))
-      .limit(1);
-    if (!data?.length) return false;
-    const row = data[0];
-    const activeish = new Set([
-      "active","trialing","past_due","unpaid","incomplete","incomplete_expired",
-    ]);
-    return activeish.has(row.status) || Boolean(row.stripe_payment_intent_id);
-  } catch {
+// ---- status helpers ----
+const ACTIVEISH = new Set([
+  "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
+]);
+
+// Same business: prevent repeat purchases for the same slot
+async function hasExistingSponsorshipForSameBusiness(business_id, area_id, slot) {
+  const { data, error } = await supabase
+    .from("sponsored_subscriptions")
+    .select("id,status,stripe_payment_intent_id")
+    .eq("business_id", business_id)
+    .eq("area_id", area_id)
+    .eq("slot", Number(slot))
+    .limit(1);
+  if (error) {
+    console.error("[checkout] hasExistingSponsorshipForSameBusiness error:", error);
     return false;
   }
+  if (!data?.length) return false;
+  const row = data[0];
+  return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+}
+
+// Different business: if *anyone else* already owns this slot in this area, block
+async function slotOwnedByAnotherBusiness(business_id, area_id, slot) {
+  const { data, error } = await supabase
+    .from("sponsored_subscriptions")
+    .select("business_id,status,stripe_payment_intent_id")
+    .eq("area_id", area_id)
+    .eq("slot", Number(slot))
+    .limit(10);
+  if (error) {
+    console.error("[checkout] slotOwnedByAnotherBusiness error:", error);
+    return false; // don’t lock out on read error; pricing guard will still run
+  }
+  if (!data?.length) return false;
+  for (const row of data) {
+    const isActive = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    if (isActive && row.business_id !== business_id) return true;
+  }
+  return false;
 }
 
 async function ensureStripeCustomerForBusiness(businessId) {
@@ -92,7 +114,7 @@ export default async (req) => {
 
   try {
     const body = await req.json().catch(() => ({}));
-    const businessId = body.businessId || body.cleanerId;
+    const businessId = body.businessId || body.cleanerId; // same UUID in your app
     const areaId = body.areaId || body.area_id;
     const slot = Number(body.slot);
 
@@ -100,18 +122,23 @@ export default async (req) => {
       return json({ error: "businessId/cleanerId, areaId, slot required" }, 400);
     }
 
-    if (await hasExistingSponsorship(businessId, areaId, slot)) {
+    // 1) Block duplicates for the same business
+    if (await hasExistingSponsorshipForSameBusiness(businessId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // IMPORTANT: match the preview call exactly (_exclude_cleaner: null)
+    // 2) Block if ANOTHER business already owns this slot for this area
+    if (await slotOwnedByAnotherBusiness(businessId, areaId, slot)) {
+      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
+    }
+
+    // 3) Compute available area & price (match preview signature)
     const { data, error } = await supabase.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: slot,
       _drawn_geojson: null,
       _exclude_cleaner: null,
     });
-
     if (error) {
       console.error("[sponsored-checkout] get_area_preview error:", error);
       return json({ error: "Failed to compute available area" }, 500);
