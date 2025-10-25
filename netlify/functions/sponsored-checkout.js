@@ -8,10 +8,6 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
-const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
-
-// ---- env helpers ----
 const readNum = (name, fallback) => {
   const v = Number(process.env[name]);
   return Number.isFinite(v) ? v : fallback;
@@ -28,13 +24,13 @@ const MIN = {
   2: readNum("MIN_SILVER_PRICE_PER_MONTH", MIN_DEFAULT),
   3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
 };
+const toPence = (gbp) => Math.round(Math.max(0, Number(gbp)) * 100);
+const siteBase = () => (process.env.PUBLIC_SITE_URL || "http://localhost:5173").replace(/\/+$/, "");
 
-// ---- status helpers ----
 const ACTIVEISH = new Set([
   "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired",
 ]);
 
-// Same business: prevent repeat purchases for the same slot
 async function hasExistingSponsorshipForSameBusiness(business_id, area_id, slot) {
   const { data, error } = await supabase
     .from("sponsored_subscriptions")
@@ -44,32 +40,12 @@ async function hasExistingSponsorshipForSameBusiness(business_id, area_id, slot)
     .eq("slot", Number(slot))
     .limit(1);
   if (error) {
-    console.error("[checkout] hasExistingSponsorshipForSameBusiness error:", error);
+    console.error("[checkout] duplicate guard error:", error);
     return false;
   }
   if (!data?.length) return false;
   const row = data[0];
   return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-}
-
-// Different business: if *anyone else* already owns this slot in this area, block
-async function slotOwnedByAnotherBusiness(business_id, area_id, slot) {
-  const { data, error } = await supabase
-    .from("sponsored_subscriptions")
-    .select("business_id,status,stripe_payment_intent_id")
-    .eq("area_id", area_id)
-    .eq("slot", Number(slot))
-    .limit(10);
-  if (error) {
-    console.error("[checkout] slotOwnedByAnotherBusiness error:", error);
-    return false; // don’t lock out on read error; pricing guard will still run
-  }
-  if (!data?.length) return false;
-  for (const row of data) {
-    const isActive = ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
-    if (isActive && row.business_id !== business_id) return true;
-  }
-  return false;
 }
 
 async function ensureStripeCustomerForBusiness(businessId) {
@@ -122,17 +98,12 @@ export default async (req) => {
       return json({ error: "businessId/cleanerId, areaId, slot required" }, 400);
     }
 
-    // 1) Block duplicates for the same business
+    // Prevent duplicates by the same business
     if (await hasExistingSponsorshipForSameBusiness(businessId, areaId, slot)) {
       return json({ error: "You already have an active/prepaid sponsorship for this slot." }, 409);
     }
 
-    // 2) Block if ANOTHER business already owns this slot for this area
-    if (await slotOwnedByAnotherBusiness(businessId, areaId, slot)) {
-      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
-    }
-
-    // 3) Compute available area & price (match preview signature)
+    // Compute the truly purchasable sub-region (authoritative)
     const { data, error } = await supabase.rpc("get_area_preview", {
       _area_id: areaId,
       _slot: slot,
@@ -151,7 +122,7 @@ export default async (req) => {
       return json({ error: "Failed to compute available area" }, 500);
     }
     if (area_km2 <= 0) {
-      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
+      return json({ error: `This slot has no purchasable area left.` }, 409);
     }
 
     const rate = RATE[slot] ?? RATE_DEFAULT;
@@ -183,7 +154,6 @@ export default async (req) => {
       subscription_data: {
         metadata: {
           business_id: String(businessId),
-          cleaner_id: String(businessId),
           area_id: String(areaId),
           slot: String(slot),
           available_area_km2: area_km2.toFixed(6),
@@ -193,7 +163,6 @@ export default async (req) => {
       },
       metadata: {
         business_id: String(businessId),
-        cleaner_id: String(businessId),
         area_id: String(areaId),
         slot: String(slot),
       },
