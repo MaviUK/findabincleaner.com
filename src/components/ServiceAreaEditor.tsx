@@ -712,7 +712,7 @@ export default function ServiceAreaEditor({
             setSponsorOpen(false);
             clearPreview();
           }}
-          cleanerId={myBusinessId}   // keep compatibility with existing modal props
+          businessId={myBusinessId}   // << changed: modal expects businessId, not cleanerId
           areaId={sponsorAreaId}
           slot={sponsorSlot}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
@@ -725,7 +725,7 @@ export default function ServiceAreaEditor({
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          cleanerId={myBusinessId}   // keep compatibility
+          cleanerId={myBusinessId}   // AreaManageModal still expects cleanerId
           areaId={manageAreaId}
           slot={manageSlot}
         />
