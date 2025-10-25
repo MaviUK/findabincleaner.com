@@ -10,7 +10,7 @@ import AreaManageModal from "./AreaManageModal";
 // ---- Types ----
 export interface ServiceAreaRow {
   id: string;
-  business_id: string; // was cleaner_id
+  business_id: string; // owner of the area (same UUID as cleaner_id in older code)
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
@@ -20,7 +20,7 @@ type SlotState = {
   slot: 1 | 2 | 3;
   taken: boolean;
   status: string | null;
-  owner_business_id: string | null; // who owns this slot, if any
+  owner_business_id: string | null;
 };
 type SponsorshipState = {
   area_id: string;
@@ -134,7 +134,6 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
     return (geo.coordinates as number[][][][]).map((poly) => ({
       paths: poly.map((ring) =>
         ring.map((pair) => {
-          // tolerate accidental [lat,lng]
           const [a, b] = pair;
           const lng = typeof a === "number" && typeof b === "number" ? a : (pair as any)[0];
           const lat = typeof a === "number" && typeof b === "number" ? b : (pair as any)[1];
@@ -159,7 +158,6 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
     ];
   }
 
-  // Some functions return a raw "multi" object or nested under { geometry } etc.
   if (geo.geometry) return geoToPaths(geo.geometry);
   if (geo.geojson) return geoToPaths(geo.geojson);
   if (geo.multi) return geoToPaths(geo.multi);
@@ -168,8 +166,9 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
 }
 
 type Props = {
-  /** business id (cleaners.id) */
-  businessId: string;
+  /** Accept either prop name to keep the rest of the app compiling */
+  businessId?: string;
+  cleanerId?: string;
   sponsorshipVersion?: number;
   /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
   onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
@@ -178,9 +177,13 @@ type Props = {
 // ---------------- Component ----------------
 export default function ServiceAreaEditor({
   businessId,
+  cleanerId,
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
+  // unified id used everywhere internally
+  const myBusinessId = (businessId ?? cleanerId)!;
+
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
   const { isLoaded, loadError } = useJsApiLoader({
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_KEY as string,
@@ -224,12 +227,12 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (RPC param name remains p_cleaner_id; value is businessId)
+  // Fetch areas (RPC still uses p_cleaner_id; we pass the business id value)
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: businessId });
+      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: myBusinessId });
       if (error) throw error;
       setServiceAreas(data || []);
     } catch (e: any) {
@@ -237,11 +240,12 @@ export default function ServiceAreaEditor({
     } finally {
       setLoading(false);
     }
-  }, [businessId]);
+  }, [myBusinessId]);
 
   useEffect(() => {
+    if (!myBusinessId) return;
     fetchAreas();
-  }, [fetchAreas]);
+  }, [fetchAreas, myBusinessId]);
 
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
@@ -347,7 +351,7 @@ export default function ServiceAreaEditor({
         if (error) throw error;
       } else {
         const { error } = await supabase.rpc("insert_service_area", {
-          p_cleaner_id: businessId, // RPC param name unchanged
+          p_cleaner_id: myBusinessId, // RPC param name unchanged
           p_gj: multi,
           p_name: draftName || "Untitled Area",
         });
@@ -361,7 +365,7 @@ export default function ServiceAreaEditor({
     } finally {
       setLoading(false);
     }
-  }, [activeAreaId, businessId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
+  }, [activeAreaId, myBusinessId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
 
   const deleteArea = useCallback(
     async (area: ServiceAreaRow) => {
@@ -489,9 +493,9 @@ export default function ServiceAreaEditor({
                 const s2 = slotInfo(a.id, 2);
                 const s3 = slotInfo(a.id, 3);
 
-                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === businessId;
-                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === businessId;
-                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === businessId;
+                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === myBusinessId;
+                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === myBusinessId;
+                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === myBusinessId;
 
                 // If the business owns any slot in this area, the other two become unavailable
                 const ownsAny = mine1 || mine2 || mine3;
@@ -683,7 +687,7 @@ export default function ServiceAreaEditor({
                   options={{
                     strokeWeight: 3,
                     strokeOpacity: 1,
-                    strokeColor: "#14b8a6", // teal
+                    strokeColor: "#14b8a6",
                     fillColor: "#14b8a6",
                     fillOpacity: 0.22,
                     clickable: false,
@@ -706,9 +710,9 @@ export default function ServiceAreaEditor({
           open={sponsorOpen}
           onClose={() => {
             setSponsorOpen(false);
-            clearPreview(); // remove overlay on close
+            clearPreview();
           }}
-          businessId={businessId}
+          cleanerId={myBusinessId}   // keep compatibility with existing modal props
           areaId={sponsorAreaId}
           slot={sponsorSlot}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
@@ -721,7 +725,7 @@ export default function ServiceAreaEditor({
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          businessId={businessId}
+          cleanerId={myBusinessId}   // keep compatibility
           areaId={manageAreaId}
           slot={manageSlot}
         />
