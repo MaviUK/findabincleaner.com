@@ -7,8 +7,9 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  final_geojson: any | null; // preferred clipped-geometry key
-  // tolerated alternates for back-compat:
+  // Primary clipped region key (preferred):
+  final_geojson: any | null;
+  // Back-compat alternates:
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -22,10 +23,14 @@ type PreviewResp = PreviewOk | PreviewErr;
 type Props = {
   open: boolean;
   onClose: () => void;
-  cleanerId: string;
+  /** Business id (public.cleaners.id) */
+  businessId: string;
   areaId: string;
   slot: Slot;
+
+  /** Draw the clipped region on the map (if provided) */
   onPreviewGeoJSON?: (multi: any) => void;
+  /** Clear any previously drawn preview overlay */
   onClearPreview?: () => void;
 };
 
@@ -46,32 +51,17 @@ function pickClippedGeom(json: any) {
   );
 }
 
-/** Visual-only fallback: works with either POST JSON or GET query. */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
-  const url = "/.netlify/functions/area-availability";
-
-  // Try POST first (snake_case)
-  let res = await fetch(url, {
+  const res = await fetch("/.netlify/functions/area-availability", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ area_id: areaId, slot: Number(slot) }),
+    body: JSON.stringify({ areaId, slot }),
     signal,
   });
-
-  // If server says params missing, try GET (older handlers)
-  if (
-    res.status === 400 &&
-    (await res.clone().text()).includes("area_id and slot are required")
-  ) {
-    const qs = new URLSearchParams({ area_id: areaId, slot: String(Number(slot)) });
-    res = await fetch(`${url}?${qs.toString()}`, { method: "GET", signal });
-  }
-
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
-
   const j = await res.json();
   const geom =
     j?.available_geojson ??
@@ -86,30 +76,10 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
   return { geom, km2: Number.isFinite(km2) ? km2 : 0 };
 }
 
-/** Authoritative recheck before checkout: ask sponsored-preview again */
-async function verifyFromPreview(cleanerId: string, areaId: string, slot: Slot) {
-  const res = await fetch("/.netlify/functions/sponsored-preview", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cleanerId, areaId, slot }),
-  });
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
-  }
-  const json: PreviewResp = await res.json();
-  if (!("ok" in json) || !json.ok) {
-    const msg = (json as PreviewErr)?.error || "Failed to compute preview";
-    throw new Error(msg);
-  }
-  const km2 = Number((json as PreviewOk).area_km2);
-  return Number.isFinite(km2) ? km2 : 0;
-}
-
 export default function AreaSponsorModal({
   open,
   onClose,
-  cleanerId,
+  businessId,
   areaId,
   slot,
   onPreviewGeoJSON,
@@ -122,7 +92,6 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [wasClipped, setWasClipped] = useState<boolean>(false);
 
-  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -136,7 +105,6 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Fetch preview + draw available sub-region
   useEffect(() => {
     if (!open) return;
 
@@ -153,11 +121,10 @@ export default function AreaSponsorModal({
       setWasClipped(false);
 
       try {
-        // 1) pricing (and maybe geometry) from preview
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ cleanerId, areaId, slot }),
+          body: JSON.stringify({ businessId, areaId, slot }),
           signal: controller.signal,
         });
 
@@ -179,8 +146,6 @@ export default function AreaSponsorModal({
         setMonthly(Number.isFinite(mNum) ? mNum : null);
 
         let clipped = pickClippedGeom(json);
-
-        // 2) If preview did not include a clipped region, ask availability directly (visual only)
         if (!clipped) {
           try {
             const { geom } = await fetchAvailability(areaId, slot, controller.signal);
@@ -189,7 +154,7 @@ export default function AreaSponsorModal({
               onPreviewGeoJSON(geom);
             }
           } catch {
-            // ignore draw error
+            /* visual best-effort */
           }
         } else if (onPreviewGeoJSON) {
           setWasClipped(true);
@@ -214,7 +179,7 @@ export default function AreaSponsorModal({
       onClearPreview?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, cleanerId, areaId, slot]);
+  }, [open, businessId, areaId, slot]);
 
   const nfGBP = useMemo(
     () =>
@@ -240,12 +205,15 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // Verify availability immediately before checkout using the authoritative preview
   async function handleCheckout() {
     try {
-      const km2 = await verifyFromPreview(cleanerId, areaId, slot);
+      const { km2 } = await fetchAvailability(areaId, slot);
       if (!Number.isFinite(km2) || km2 <= 0) {
-        setErr(`This slot has no purchasable area left. Another business already has Sponsor #${slot}.`);
+        setErr(
+          `This slot has no purchasable area left. Another business already has Sponsor #${String(
+            slot
+          )} here.`
+        );
         return;
       }
     } catch (e: any) {
@@ -260,7 +228,7 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          cleanerId,
+          businessId,
           areaId,
           slot,
           return_url: typeof window !== "undefined" ? window.location.origin : undefined,
