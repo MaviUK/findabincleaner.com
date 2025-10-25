@@ -30,14 +30,15 @@ const MIN_TIER = {
   3: readNum("MIN_BRONZE_PRICE_PER_MONTH", MIN_DEFAULT),
 };
 
-// ---------- ownership lock / states we treat as "taken" ----------
-const LIVE_OR_PENDING = new Set([
+// ---------- activity / locks ----------
+const ACTIVEISH = new Set([
   "active",
   "trialing",
   "past_due",
   "unpaid",
   "incomplete",
   "incomplete_expired",
+  "paused",
   "provisional",
   "pending",
 ]);
@@ -54,14 +55,13 @@ async function slotOwnedByAnotherBusiness(areaId, slot, businessId) {
 
     if (error) {
       console.error("[sponsored-checkout] owner check error:", error);
-      // Fail-safe: if we can't verify, treat it as locked to avoid over-selling.
+      // Fail-safe: unknown state -> block oversell.
       return true;
     }
     if (!data?.length) return false;
 
     const row = data[0];
-    // Any live/pending-ish state OR a captured/created PI counts as owned.
-    return LIVE_OR_PENDING.has(row.status) || Boolean(row.stripe_payment_intent_id);
+    return ACTIVEISH.has(row.status) || Boolean(row.stripe_payment_intent_id);
   } catch (e) {
     console.error("[sponsored-checkout] owner check fatal:", e);
     return true; // fail-safe
@@ -85,6 +85,28 @@ async function computeAvailableKm2(areaId, slot, excludeBusinessId) {
   };
 }
 
+async function fetchStripeCustomerId(businessId) {
+  // Adjust this to your schema. Common locations:
+  // - public.cleaners (stripe_customer_id)
+  // - public.profiles  (stripe_customer_id)
+  // We try cleaners first, then profiles.
+  const tryTables = ["cleaners", "profiles"];
+
+  for (const table of tryTables) {
+    const { data, error } = await sb
+      .from(table)
+      .select("stripe_customer_id")
+      .eq("id", businessId)
+      .limit(1)
+      .single();
+
+    if (!error && data?.stripe_customer_id) {
+      return data.stripe_customer_id;
+    }
+  }
+  return null;
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
@@ -102,12 +124,21 @@ export default async (req) => {
       return json({ error: "Missing params" }, 400);
     }
 
-    // 1) HARD LOCK: block if another business already owns this (area,slot)
-    if (await slotOwnedByAnotherBusiness(areaId, slot, businessId)) {
-      return json({ error: `Sponsor #${slot} is already owned by another business for this area.` }, 409);
+    // 0) Stripe customer id (avoid NOT NULL violation)
+    const stripeCustomerId = await fetchStripeCustomerId(businessId);
+    if (!stripeCustomerId) {
+      return json({ error: "No Stripe customer id for this business." }, 409);
     }
 
-    // 2) Compute the available (clipped) area now to ensure there’s something to sell
+    // 1) HARD LOCK: another business already holds this (area,slot)?
+    if (await slotOwnedByAnotherBusiness(areaId, slot, businessId)) {
+      return json(
+        { error: `Sponsor #${slot} is already owned by another business for this area.` },
+        409
+      );
+    }
+
+    // 2) Compute current available area (clipped)
     let availableKm2 = 0;
     try {
       const { km2 } = await computeAvailableKm2(areaId, slot, businessId);
@@ -126,7 +157,7 @@ export default async (req) => {
     const monthly = Math.max(min, Math.max(0, availableKm2) * rate);
     const unitAmountPence = Math.round(monthly * 100);
 
-    // 4) Insert a provisional subscription row (status=incomplete)
+    // 4) Insert a provisional subscription row (status=incomplete) with Stripe + price fields
     const { data: inserted, error: insErr } = await sb
       .from("sponsored_subscriptions")
       .insert({
@@ -134,33 +165,15 @@ export default async (req) => {
         area_id: areaId,
         slot,
         status: "incomplete",
+        stripe_customer_id: stripeCustomerId,
+        currency: "gbp",
+        price_monthly_pennies: unitAmountPence, // include price explicitly
       })
       .select("id")
       .limit(1)
       .single();
 
     if (insErr) {
-      // Decode common unique-constraint collisions so the UI shows the *real* reason
-      const code = insErr?.code || insErr?.details?.code;
-      const constraint = insErr?.constraint || insErr?.details?.constraint;
-
-      if (code === "23505") {
-        // Area-level lock (any slot in this area)
-        if (constraint === "ux_live_or_pending_area" || constraint === "ux_active_area_slot") {
-          return json({ error: "This area is already owned. No slots are available." }, 409);
-        }
-        // Exact slot in this area
-        if (constraint === "uniq_live_slot" || constraint === "uniq_live_or_pending_slot") {
-          return json({ error: `Sponsor #${slot} is already taken for this area.` }, 409);
-        }
-        // Platform-wide “same slot per business” rule (keep only if you intend it)
-        if (constraint === "uniq_active_slot_per_business") {
-          return json({
-            error: `Your business already has an active/pending subscription for Sponsor #${slot} in another area.`,
-          }, 409);
-        }
-      }
-
       console.error("[sponsored-checkout] insert provisional sub failed:", insErr);
       return json({ error: "Could not create a provisional subscription." }, 409);
     }
@@ -170,6 +183,7 @@ export default async (req) => {
     // 5) Create Stripe Checkout Session (subscription)
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
+      customer: stripeCustomerId, // use the customer you fetched
       success_url: `${returnUrl}/#/dashboard?ok=1`,
       cancel_url: `${returnUrl}/#/dashboard?canceled=1`,
       line_items: [
@@ -192,7 +206,6 @@ export default async (req) => {
         fb_business_id: businessId,
         fb_sub_id: subId || "",
       },
-      // If you persist/reuse Stripe customers, you can pass customer / customer_email here.
     });
 
     // 6) Save the session id on the provisional row
