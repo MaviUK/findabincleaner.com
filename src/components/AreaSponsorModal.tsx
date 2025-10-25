@@ -9,7 +9,7 @@ type PreviewOk = {
   monthly_price: number | string;
   // Primary clipped region key (preferred):
   final_geojson: any | null;
-  // Back-compat alternates:
+  // Tolerated alternates (back-compat):
   available?: any;
   available_gj?: any;
   available_geojson?: any;
@@ -23,7 +23,7 @@ type PreviewResp = PreviewOk | PreviewErr;
 type Props = {
   open: boolean;
   onClose: () => void;
-  /** Business id (public.cleaners.id) */
+  /** businessId == cleanerId in your DB (same UUID) */
   businessId: string;
   areaId: string;
   slot: Slot;
@@ -38,6 +38,7 @@ function labelForSlot(s: Slot) {
   return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
 }
 
+/** Be liberal in what we accept so backend key tweaks don’t break the UI */
 function pickClippedGeom(json: any) {
   return (
     json?.final_geojson ??
@@ -51,11 +52,13 @@ function pickClippedGeom(json: any) {
   );
 }
 
+/** Fallback: fetch the truly available sub-region for (areaId, slot) */
 async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSignal) {
   const res = await fetch("/.netlify/functions/area-availability", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ areaId, slot }),
+    // IMPORTANT: this function expects area_id, NOT areaId
+    body: JSON.stringify({ area_id: areaId, slot }),
     signal,
   });
   if (!res.ok) {
@@ -63,6 +66,7 @@ async function fetchAvailability(areaId: string, slot: Slot, signal?: AbortSigna
     throw new Error(`availability ${res.status}${txt ? ` – ${txt}` : ""}`);
   }
   const j = await res.json();
+
   const geom =
     j?.available_geojson ??
     j?.final_geojson ??
@@ -85,6 +89,8 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
+  const cleanerId = businessId; // same UUID in your system
+
   const [computing, setComputing] = useState(false);
   const [checkingOut, setCheckingOut] = useState(false);
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
@@ -92,6 +98,7 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [wasClipped, setWasClipped] = useState<boolean>(false);
 
+  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -105,12 +112,14 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Fetch preview once per open; cancel on close; clear overlay on cleanup
   useEffect(() => {
     if (!open) return;
 
     let cancelled = false;
     const controller = new AbortController();
 
+    // Clear any old overlay while we compute a new one
     onClearPreview?.();
 
     async function run() {
@@ -121,10 +130,11 @@ export default function AreaSponsorModal({
       setWasClipped(false);
 
       try {
+        // 1) Price + (maybe) clipped geometry from preview
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
+          body: JSON.stringify({ cleanerId, areaId, slot }),
           signal: controller.signal,
         });
 
@@ -140,13 +150,21 @@ export default function AreaSponsorModal({
           throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
         }
 
-        const aNum = Number((json as PreviewOk).area_km2);
-        const mNum = Number((json as PreviewOk).monthly_price);
+        // Coerce to numbers safely
+        const aRaw = (json as PreviewOk).area_km2;
+        const mRaw = (json as PreviewOk).monthly_price;
+        const aNum = Number(aRaw);
+        const mNum = Number(mRaw);
         setAreaKm2(Number.isFinite(aNum) ? aNum : null);
         setMonthly(Number.isFinite(mNum) ? mNum : null);
 
-        let clipped = pickClippedGeom(json);
-        if (!clipped) {
+        // 2) Try to draw clipped geometry from preview
+        const clipped = pickClippedGeom(json);
+        if (clipped && onPreviewGeoJSON) {
+          setWasClipped(true);
+          onPreviewGeoJSON(clipped);
+        } else {
+          // 3) Fallback to availability if preview lacked a clipped region
           try {
             const { geom } = await fetchAvailability(areaId, slot, controller.signal);
             if (!cancelled && geom && onPreviewGeoJSON) {
@@ -154,11 +172,8 @@ export default function AreaSponsorModal({
               onPreviewGeoJSON(geom);
             }
           } catch {
-            /* visual best-effort */
+            // Best-effort; ignore drawing error
           }
-        } else if (onPreviewGeoJSON) {
-          setWasClipped(true);
-          onPreviewGeoJSON(clipped);
         }
       } catch (e: any) {
         if (!cancelled && !controller.signal.aborted) {
@@ -179,7 +194,7 @@ export default function AreaSponsorModal({
       onClearPreview?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, businessId, areaId, slot]);
+  }, [open, cleanerId, areaId, slot]);
 
   const nfGBP = useMemo(
     () =>
@@ -205,14 +220,14 @@ export default function AreaSponsorModal({
     onClose();
   }
 
+  // HARD GATE: verify availability again just before checkout
   async function handleCheckout() {
+    // quick preflight to avoid starting checkout when nothing is left
     try {
       const { km2 } = await fetchAvailability(areaId, slot);
       if (!Number.isFinite(km2) || km2 <= 0) {
         setErr(
-          `This slot has no purchasable area left. Another business already has Sponsor #${String(
-            slot
-          )} here.`
+          `This slot has no purchasable area left. Another business already has Sponsor #${slot} here.`
         );
         return;
       }
@@ -228,7 +243,7 @@ export default function AreaSponsorModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          businessId,
+          cleanerId, // backend expects cleanerId (your business UUID)
           areaId,
           slot,
           return_url: typeof window !== "undefined" ? window.location.origin : undefined,
@@ -293,7 +308,9 @@ export default function AreaSponsorModal({
               </span>
             </div>
 
-            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
+            {computing && (
+              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
+            )}
 
             {!computing && areaKm2 === 0 && (
               <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
