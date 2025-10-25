@@ -10,7 +10,7 @@ import AreaManageModal from "./AreaManageModal";
 // ---- Types ----
 export interface ServiceAreaRow {
   id: string;
-  cleaner_id: string;
+  business_id: string; // was cleaner_id
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
@@ -20,7 +20,7 @@ type SlotState = {
   slot: 1 | 2 | 3;
   taken: boolean;
   status: string | null;
-  owner_business_id: string | null;
+  owner_business_id: string | null; // who owns this slot, if any
 };
 type SponsorshipState = {
   area_id: string;
@@ -168,7 +168,8 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
 }
 
 type Props = {
-  cleanerId: string;
+  /** business id (cleaners.id) */
+  businessId: string;
   sponsorshipVersion?: number;
   /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
   onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
@@ -176,7 +177,7 @@ type Props = {
 
 // ---------------- Component ----------------
 export default function ServiceAreaEditor({
-  cleanerId,
+  businessId,
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
@@ -223,12 +224,12 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas
+  // Fetch areas (RPC param name remains p_cleaner_id; value is businessId)
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: cleanerId });
+      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: businessId });
       if (error) throw error;
       setServiceAreas(data || []);
     } catch (e: any) {
@@ -236,7 +237,7 @@ export default function ServiceAreaEditor({
     } finally {
       setLoading(false);
     }
-  }, [cleanerId]);
+  }, [businessId]);
 
   useEffect(() => {
     fetchAreas();
@@ -346,7 +347,7 @@ export default function ServiceAreaEditor({
         if (error) throw error;
       } else {
         const { error } = await supabase.rpc("insert_service_area", {
-          p_cleaner_id: cleanerId,
+          p_cleaner_id: businessId, // RPC param name unchanged
           p_gj: multi,
           p_name: draftName || "Untitled Area",
         });
@@ -360,7 +361,7 @@ export default function ServiceAreaEditor({
     } finally {
       setLoading(false);
     }
-  }, [activeAreaId, cleanerId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
+  }, [activeAreaId, businessId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
 
   const deleteArea = useCallback(
     async (area: ServiceAreaRow) => {
@@ -488,11 +489,11 @@ export default function ServiceAreaEditor({
                 const s2 = slotInfo(a.id, 2);
                 const s3 = slotInfo(a.id, 3);
 
-                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === cleanerId;
-                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === cleanerId;
-                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === cleanerId;
+                const mine1 = !!s1?.owner_business_id && s1.owner_business_id === businessId;
+                const mine2 = !!s2?.owner_business_id && s2.owner_business_id === businessId;
+                const mine3 = !!s3?.owner_business_id && s3.owner_business_id === businessId;
 
-                // If the cleaner owns any slot in this area, the other two become unavailable
+                // If the business owns any slot in this area, the other two become unavailable
                 const ownsAny = mine1 || mine2 || mine3;
 
                 // taken-by-someone-else flags
@@ -649,35 +650,30 @@ export default function ServiceAreaEditor({
 
               {/* non-editable painted overlays */}
               {activeAreaId === null &&
-  serviceAreas.map((a) => {
-    const gj = a.gj;
-    if (!gj || gj.type !== "MultiPolygon") return null;
+                serviceAreas.map((a) => {
+                  const gj = a.gj;
+                  if (!gj || gj.type !== "MultiPolygon") return null;
 
-    const previewIsForThisArea =
-      previewActiveForArea && sponsorAreaId === a.id;
+                  const previewIsForThisArea = previewActiveForArea && sponsorAreaId === a.id;
+                  if (previewIsForThisArea) return null;
 
-    // If we’re previewing this area, skip rendering its base paint entirely
-    if (previewIsForThisArea) return null;
+                  const paint = areaPaint(a.id);
+                  const style: google.maps.PolygonOptions = {
+                    ...polyStyle,
+                    editable: false,
+                    draggable: false,
+                    fillOpacity: 0.35,
+                    strokeOpacity: 0.9,
+                    fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
+                    strokeColor: paint?.stroke ?? "#555",
+                  };
 
-    const paint = areaPaint(a.id);
-    const style: google.maps.PolygonOptions = {
-      ...polyStyle,
-      editable: false,
-      draggable: false,
-      fillOpacity: 0.35,
-      strokeOpacity: 0.9,
-      fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
-      strokeColor: paint?.stroke ?? "#555",
-    };
-
-    return (gj.coordinates as number[][][][]).map((poly, i) => {
-      const rings = poly;
-      const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
-      return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
-    });
-  })}
-
-
+                  return (gj.coordinates as number[][][][]).map((poly, i) => {
+                    const rings = poly;
+                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
+                  });
+                })}
 
               {/* Preview overlay – drawn on top */}
               {previewPolys.map((p, i) => (
@@ -712,10 +708,9 @@ export default function ServiceAreaEditor({
             setSponsorOpen(false);
             clearPreview(); // remove overlay on close
           }}
-          cleanerId={cleanerId}
+          businessId={businessId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
-          // allow modal to show/hide the clipped area it computed
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
           onClearPreview={() => clearPreview()}
         />
@@ -726,7 +721,7 @@ export default function ServiceAreaEditor({
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          cleanerId={cleanerId}
+          businessId={businessId}
           areaId={manageAreaId}
           slot={manageSlot}
         />
