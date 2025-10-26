@@ -3,99 +3,38 @@ import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-
-const json = (b, s = 200) =>
-  new Response(JSON.stringify(b), {
-    status: s,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
-function ensureMultiPolygon(gj) {
-  if (!gj) return null;
-  if (gj.type === "Feature") return ensureMultiPolygon(gj.geometry);
-  if (gj.type === "FeatureCollection") return ensureMultiPolygon(gj.features?.[0]?.geometry);
-  if (gj.type === "MultiPolygon") return gj;
-  if (gj.type === "Polygon") return { type: "MultiPolygon", coordinates: [gj.coordinates] };
-  return null;
-}
-const F = (g) => ({ type: "Feature", properties: {}, geometry: g });
-
-const num = (v, fb) => (v != null && v !== "" ? Number(v) : fb);
-function priceFor(slot, km2) {
-  const base = num(process.env.RATE_PER_KM2_PER_MONTH, 1);
-  const minBase = num(process.env.MIN_PRICE_PER_MONTH, 1);
+function rateForSlot(slot) {
+  const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
   const perSlot = {
-    1: num(process.env.RATE_GOLD_PER_KM2_PER_MONTH, base),
-    2: num(process.env.RATE_SILVER_PER_KM2_PER_MONTH, base),
-    3: num(process.env.RATE_BRONZE_PER_KM2_PER_MONTH, base),
+    1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH || base),
+    2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH || base),
+    3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH || base),
   };
-  const minPerSlot = {
-    1: num(process.env.MIN_GOLD_PRICE_PER_MONTH, minBase),
-    2: num(process.env.MIN_SILVER_PRICE_PER_MONTH, minBase),
-    3: num(process.env.MIN_BRONZE_PRICE_PER_MONTH, minBase),
+  return perSlot[slot] || base;
+}
+function minForSlot(slot) {
+  const base = Number(process.env.MIN_PRICE_PER_MONTH || 1);
+  const perSlot = {
+    1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH || base),
+    2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH || base),
+    3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH || base),
   };
-  const variable = km2 * perSlot[slot];
-  return Math.max(variable, minPerSlot[slot]);
+  return perSlot[slot] || base;
 }
 
-async function computePreview({ businessId, areaId, slot }) {
-  // load area
-  const { data: areaRow, error: areaErr } = await sb
-    .from("service_areas")
-    .select("id, gj")
-    .eq("id", areaId)
-    .single();
-  if (areaErr) throw areaErr;
-
-  const areaMP = ensureMultiPolygon(areaRow?.gj);
-  if (!areaMP) return { km2: 0, amount: 0, geom: null };
-
-  let available = F(areaMP);
-
-  // blocking winners
-  const { data: subs, error: subErr } = await sb
-    .from("sponsored_subscriptions")
-    .select("business_id, status, final_geojson")
-    .eq("area_id", areaId)
-    .eq("slot", slot);
-  if (subErr) throw subErr;
-
-  let blocker = null;
-  for (const s of subs || []) {
-    if (s.business_id === businessId) continue;
-    if (!BLOCKING.has(s.status)) continue;
-    const mp = ensureMultiPolygon(s.final_geojson) || areaMP;
-    blocker = blocker ? turf.union(blocker, F(mp)) : F(mp);
-  }
-  if (blocker) {
-    try {
-      const diff = turf.difference(available, blocker);
-      available = diff && diff.geometry && (diff.geometry.coordinates?.length ?? 0) > 0 ? diff : null;
-    } catch {
-      available = null;
-    }
-  }
-
-  let km2 = 0;
-  if (available) {
-    try {
-      km2 = turf.area(available) / 1_000_000;
-    } catch {
-      km2 = 0;
-    }
-  }
-  const monthly = km2 > 0 ? priceFor(slot, km2) : 0;
-
-  return {
-    km2: Number(km2.toFixed(4)),
-    amount: monthly ? Number(monthly.toFixed(2)) : 0,
-    geom: available?.geometry ?? null,
-  };
-}
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -107,51 +46,93 @@ export default async (req) => {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const businessId = body?.businessId || body?.cleanerId;
-  const areaId = body?.areaId || body?.area_id;
-  const slot = [1, 2, 3].includes(Number(body?.slot)) ? Number(body.slot) : null;
-
-  if (!businessId || !areaId || !slot) {
-    return json({ error: "businessId/cleanerId, areaId, slot required" }, 400);
+  const areaId = body?.areaId;
+  const slot = Number(body?.slot);
+  const businessId = body?.businessId; // from session on client
+  if (!areaId || !Number.isInteger(slot) || !businessId) {
+    return json({ error: "Missing areaId, slot, or businessId" }, 400);
   }
 
   try {
-    // Re-check availability + compute price
-    const preview = await computePreview({ businessId, areaId, slot });
-    if (!preview || preview.km2 <= 0 || preview.amount <= 0) {
-      return json({ error: "Slot already taken or no purchasable area." }, 409);
+    // --- Re-run SERVER-SIDE preview ---
+    const { data: areaRow, error: areaErr } = await sb
+      .from("service_areas")
+      .select("id, gj")
+      .eq("id", areaId)
+      .maybeSingle();
+    if (areaErr) throw areaErr;
+    if (!areaRow?.gj) return json({ error: "Area not found" }, 404);
+
+    let base;
+    const gj = areaRow.gj;
+    if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
+    else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
+    else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
+
+    const { data: subs, error: subsErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("status, final_geojson")
+      .eq("area_id", areaId)
+      .eq("slot", slot);
+
+    if (subsErr) throw subsErr;
+    const blockers = subs?.filter((s) => BLOCKING.has(s.status)) || [];
+    const wholeBlocked = blockers.some((b) => !b.final_geojson);
+    if (wholeBlocked) return json({ error: "Slot fully blocked" }, 400);
+
+    let available = base;
+    for (const b of blockers) {
+      if (!b.final_geojson) continue;
+      const g = b.final_geojson;
+      let blockGeom;
+      if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
+      else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
+      else continue;
+      available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
     }
 
-    const amountInMinor = Math.round(preview.amount * 100); // GBP -> pence
+    const km2 = turf.area(available) / 1e6;
+    if (!(km2 > 0)) return json({ error: "No purchasable area available" }, 400);
+
+    const rate = rateForSlot(slot);
+    const min = minForSlot(slot);
+    const monthly = Math.max(km2 * rate, min);
+
+    // Stripe amount in the smallest currency unit (GBP -> pence)
+    const unitAmount = Math.round(monthly * 100);
+
+    const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
+    const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
+      success_url: successUrl,
+      cancel_url: cancelUrl,
       line_items: [
         {
           price_data: {
             currency: "gbp",
             product_data: {
-              name: `Sponsor Slot #${slot} — Area ${areaId}`,
-              metadata: { area_id: areaId, slot: String(slot) },
+              name: `Sponsored Area — Slot ${slot}`,
+              description: "Monthly sponsorship of your chosen sub-region.",
             },
             recurring: { interval: "month" },
-            unit_amount: amountInMinor,
+            unit_amount: unitAmount,
           },
           quantity: 1,
         },
       ],
       metadata: {
-        business_id: businessId,
         area_id: areaId,
         slot: String(slot),
+        business_id: businessId,
+        km2: km2.toFixed(6),
       },
-      success_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`,
     });
 
     return json({ url: session.url });
-  } catch (e) {
-    console.error("[sponsored-checkout] error:", e);
-    return json({ error: "Checkout failed" }, 502);
+  } catch (err) {
+    console.error("sponsored-checkout error:", err);
+    return json({ error: "Checkout error" }, 500);
   }
 };
