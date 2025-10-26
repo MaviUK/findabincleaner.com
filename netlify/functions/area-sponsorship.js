@@ -6,7 +6,7 @@ const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_R
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
 export default async (req) => {
@@ -23,7 +23,6 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // pull latest subscriptions for the areas
     const { data, error } = await sb
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id")
@@ -31,7 +30,8 @@ export default async (req) => {
 
     if (error) throw error;
 
-    // build a per-area 3-slot status + paint
+    const ACTIVE = new Set(["active", "trialing", "past_due", "unpaid"]);
+
     const byArea = new Map(
       areaIds.map((id) => [
         id,
@@ -47,26 +47,20 @@ export default async (req) => {
       ])
     );
 
-    // Only truly live subs count as taken (exclude pending/failed checkout)
-    const ACTIVE = new Set(["active", "trialing", "past_due", "unpaid"]);
-    // (Everything else like 'canceled', 'incomplete', 'incomplete_expired' => not taken)
-
     for (const row of data || []) {
       const entry = byArea.get(row.area_id);
       if (!entry) continue;
-      const slotIdx = Number(row.slot) - 1;
-      if (slotIdx < 0 || slotIdx > 2) continue;
-
-      const isTaken = ACTIVE.has(row.status);
-      entry.slots[slotIdx] = {
+      const idx = Number(row.slot) - 1;
+      if (idx < 0 || idx > 2) continue;
+      const taken = ACTIVE.has(row.status);
+      entry.slots[idx] = {
         slot: Number(row.slot),
-        taken: isTaken,
-        status: row.status || null,
-        owner_business_id: row.business_id || null,
+        taken,
+        status: row.status ?? null,
+        owner_business_id: row.business_id ?? null,
       };
     }
 
-    // choose a paint tier for the area (highest taken slot)
     for (const entry of byArea.values()) {
       let tier = 0;
       if (entry.slots[0].taken) tier = Math.max(tier, 1);
