@@ -10,28 +10,30 @@ import AreaManageModal from "./AreaManageModal";
 // ---- Types ----
 export interface ServiceAreaRow {
   id: string;
-  business_id: string; // owner of the area (same UUID as cleaner_id in older code)
+  business_id: string; // owner of the area
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 }
 
+type Slot = 1 | 2 | 3;
+
 type SlotState = {
-  slot: 1 | 2 | 3;
+  slot: Slot;
   taken: boolean;
   status: string | null;
+  /** normalized: will always contain the owner business id when taken */
   owner_business_id: string | null;
 };
 
-// We’ll normalize server responses so `slots` is always an array in state
 type SponsorshipState = {
   area_id: string;
-  slots: SlotState[];
-  paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string } | undefined;
+  slots: SlotState[]; // ALWAYS an array in local state
+  paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
-type Libraries = ("drawing" | "geometry" | "places")[];
+type Libraries = ("drawing" | "geometry")[];
 
 const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
@@ -121,17 +123,14 @@ function fmtArea(m2: number) {
 function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (!geo) return [];
 
-  // FeatureCollection
   if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
     return geo.features.flatMap((f: any) => geoToPaths(f));
   }
 
-  // Feature
   if (geo.type === "Feature" && geo.geometry) {
     return geoToPaths(geo.geometry);
   }
 
-  // Geometry
   if (geo.type === "MultiPolygon" && Array.isArray(geo.coordinates)) {
     return (geo.coordinates as number[][][][]).map((poly) => ({
       paths: poly.map((ring) =>
@@ -168,12 +167,12 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
 }
 
 type Props = {
-  /** Accept either prop name to keep the rest of the app compiling */
+  /** Accept either prop name; they’re the same UUID in your DB */
   businessId?: string;
   cleanerId?: string;
   sponsorshipVersion?: number;
   /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
-  onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
+  onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
 // ---------------- Component ----------------
@@ -183,7 +182,6 @@ export default function ServiceAreaEditor({
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
-  // unified id used everywhere internally
   const myBusinessId = (businessId ?? cleanerId)!;
 
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
@@ -207,12 +205,12 @@ export default function ServiceAreaEditor({
   // sponsor modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
-  const [sponsorSlot, setSponsorSlot] = useState<1 | 2 | 3>(1);
+  const [sponsorSlot, setSponsorSlot] = useState<Slot>(1);
 
   // manage modal state (used when onSlotAction isn't provided)
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
-  const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
+  const [manageSlot, setManageSlot] = useState<Slot>(1);
 
   // ---- PREVIEW OVERLAY (clipped purchasable sub-region) ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
@@ -249,7 +247,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- SLOTS NORMALIZATION (robust to different server shapes) -------
+  // ------- SLOTS NORMALIZATION (ensures slots is always an array) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -266,49 +264,15 @@ export default function ServiceAreaEditor({
       for (const a of raw.areas || []) {
         const rawSlots = a.slots;
 
-        let slotsArray: SlotState[] = [];
-
-        if (Array.isArray(rawSlots)) {
-          // already an array of slots
-          slotsArray = rawSlots.map((s: any) => ({
-            slot: s.slot as 1 | 2 | 3,
-            taken: Boolean(s.taken),
-            status: s.status ?? null,
-            // accept both field names from various backends
-            owner_business_id: s.owner_business_id ?? s.by_business_id ?? null,
-          }));
-        } else if (rawSlots && typeof rawSlots === "object") {
-          // object keyed by "1"/"2"/"3"
-          slotsArray = Object.values(rawSlots).map((s: any) => ({
-            slot: (s.slot ?? Number(s?.slot ?? s?.id ?? s?.key)) as 1 | 2 | 3,
-            taken: Boolean(s.taken),
-            status: s.status ?? null,
-            owner_business_id: s.owner_business_id ?? s.by_business_id ?? null,
-          }));
-        } else {
-          // nothing from server -> provide empty placeholders (all available)
-          slotsArray = [1, 2, 3].map((n) => ({
-            slot: n as 1 | 2 | 3,
-            taken: false,
-            status: null,
-            owner_business_id: null,
-          }));
-        }
-
-        // Ensure we have entries for 1,2,3 (in case server omitted some)
-        const bySlot = new Map<number, SlotState>();
-        for (const s of slotsArray) bySlot.set(s.slot, s);
-        slotsArray = [1, 2, 3].map((n) => {
-          const s = bySlot.get(n);
-          return (
-            s ?? {
-              slot: n as 1 | 2 | 3,
-              taken: false,
-              status: null,
-              owner_business_id: null,
-            }
-          );
-        });
+        const slotsArray: SlotState[] = Array.isArray(rawSlots)
+          ? rawSlots
+          : Object.values(rawSlots || {}).map((s: any) => ({
+              slot: s.slot as Slot,
+              taken: Boolean(s.taken),
+              status: s.status ?? null,
+              owner_business_id:
+                s.owner_business_id ?? s.by_business_id ?? s.business_id ?? null,
+            }));
 
         map[a.area_id] = {
           area_id: a.area_id,
@@ -316,14 +280,13 @@ export default function ServiceAreaEditor({
           paint: a.paint,
         };
       }
-
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
   }, []);
-  // -----------------------------------------------------------------------
+  // -------------------------------------------------------------------
 
   useEffect(() => {
     fetchSponsorship(serviceAreas.map((a) => a.id));
@@ -346,7 +309,7 @@ export default function ServiceAreaEditor({
 
   const startNewArea = useCallback(() => {
     resetDraft();
-    clearPreview(); // ensure preview is not visible while drawing
+    clearPreview();
     setCreating(true);
     setDraftName("New Service Area");
     setTimeout(
@@ -358,7 +321,7 @@ export default function ServiceAreaEditor({
   const editArea = useCallback(
     (area: ServiceAreaRow) => {
       resetDraft();
-      clearPreview(); // ensure preview isn’t lingering while editing
+      clearPreview();
       setActiveAreaId(area.id);
       setDraftName(area.name);
       const gj = area.gj;
@@ -385,4 +348,406 @@ export default function ServiceAreaEditor({
 
     const newKey = normalizeMultiPolygon(multi);
     const dup = serviceAreas.find(
-      (a) => normalizeMultiPolygon(a.gj)
+      (a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId
+    );
+    if (dup) {
+      setError(`This area matches an existing one: “${dup.name}”.`);
+      return;
+    }
+
+    const areaM2 = totalAreaMeters(draftPolys);
+    if (areaM2 < 50) {
+      setError("Area is too small to be valid.");
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    try {
+      if (activeAreaId) {
+        const { error } = await supabase.rpc("update_service_area", {
+          p_area_id: activeAreaId,
+          p_gj: multi,
+          p_name: draftName || "Untitled Area",
+        });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.rpc("insert_service_area", {
+          p_cleaner_id: myBusinessId,
+          p_gj: multi,
+          p_name: draftName || "Untitled Area",
+        });
+        if (error) throw error;
+      }
+      await fetchAreas();
+      resetDraft();
+      setCreating(false);
+    } catch (e: any) {
+      setError(e.message || "Failed to save area");
+    } finally {
+      setLoading(false);
+    }
+  }, [activeAreaId, myBusinessId, draftName, draftPolys, fetchAreas, resetDraft, serviceAreas]);
+
+  const deleteArea = useCallback(
+    async (area: ServiceAreaRow) => {
+      if (!confirm(`Delete “${area.name}”?`)) return;
+      setLoading(true);
+      setError(null);
+      try {
+        const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
+        if (error) throw error;
+        if (activeAreaId === area.id) resetDraft();
+        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
+        await fetchAreas();
+      } catch (e: any) {
+        setError(e.message || "Failed to delete area");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [activeAreaId, fetchAreas, resetDraft]
+  );
+
+  const cancelDraft = useCallback(() => {
+    resetDraft();
+    setCreating(false);
+  }, [resetDraft]);
+
+  useEffect(() => {
+    if (!isLoaded || !mapRef.current || !serviceAreas.length) return;
+    const first = serviceAreas[0];
+    const gj = first.gj;
+    if (!gj || gj.type !== "MultiPolygon") return;
+    const bounds = new google.maps.LatLngBounds();
+    (gj.coordinates as number[][][][]).forEach((poly) => {
+      const rings = poly;
+      rings.forEach((ring) =>
+        ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng)))
+      );
+    });
+    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
+  }, [isLoaded, serviceAreas]);
+
+  const totalDraftArea = useMemo(
+    () => (isLoaded ? totalAreaMeters(draftPolys) : 0),
+    [isLoaded, draftPolys]
+  );
+
+  // Helper over normalized state
+  function slotInfo(areaId: string, slot: Slot): SlotState | undefined {
+    const s = sponsorship[areaId];
+    if (!s) return undefined;
+    return (s.slots as SlotState[]).find((x) => x.slot === slot);
+  }
+  function areaPaint(areaId: string) {
+    return sponsorship[areaId]?.paint;
+  }
+
+  if (loadError)
+    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
+
+  return (
+    <>
+      <div className="grid md:grid-cols-12 gap-6">
+        {/* Left panel */}
+        <div className="md:col-span-4 space-y-4">
+          <div className="card card-pad">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold text-lg">Service Areas</h3>
+              <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
+                + New Area
+              </button>
+            </div>
+
+            {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
+            {error && (
+              <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
+                {error}
+              </div>
+            )}
+
+            {(creating || activeAreaId !== null || draftPolys.length > 0) && (
+              <div className="border rounded-lg p-3 mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    className="input w-full"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    placeholder="Area name"
+                  />
+                </div>
+
+                {creating && draftPolys.length === 0 && (
+                  <div className="text-xs text-gray-600 mb-2">
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                  </div>
+                )}
+
+                <div className="text-sm text-gray-600 mb-2">
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
+                </div>
+
+                <div className="flex gap-2">
+                  <button className="btn" onClick={saveDraft} disabled={loading}>
+                    {activeAreaId ? "Save Changes" : "Save Area"}
+                  </button>
+                  <button className="btn" onClick={cancelDraft} disabled={loading}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      draftPolys.forEach((p) => p.setMap(null));
+                      setDraftPolys([]);
+                    }}
+                    disabled={loading || draftPolys.length === 0}
+                  >
+                    Clear Polygons
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* List */}
+            <ul className="space-y-2">
+              {serviceAreas.map((a) => {
+                const s1 = slotInfo(a.id, 1);
+                const s2 = slotInfo(a.id, 2);
+                const s3 = slotInfo(a.id, 3);
+
+                const mine1 = !!s1?.taken && s1.owner_business_id === myBusinessId;
+                const mine2 = !!s2?.taken && s2.owner_business_id === myBusinessId;
+                const mine3 = !!s3?.taken && s3.owner_business_id === myBusinessId;
+
+                const ownsAny = mine1 || mine2 || mine3;
+
+                const taken1ByOther = !!s1?.taken && s1.owner_business_id !== myBusinessId;
+                const taken2ByOther = !!s2?.taken && s2.owner_business_id !== myBusinessId;
+                const taken3ByOther = !!s3?.taken && s3.owner_business_id !== myBusinessId;
+
+                const dis1 = taken1ByOther || (!mine1 && ownsAny);
+                const dis2 = taken2ByOther || (!mine2 && ownsAny);
+                const dis3 = taken3ByOther || (!mine3 && ownsAny);
+
+                const clickSlot = async (slot: Slot, isMine: boolean, isDisabled: boolean) => {
+                  if (isDisabled) return;
+                  if (isMine) {
+                    if (onSlotAction) {
+                      await onSlotAction({ id: a.id, name: a.name }, slot);
+                    } else {
+                      setManageAreaId(a.id);
+                      setManageSlot(slot);
+                      setManageOpen(true);
+                    }
+                    return;
+                  }
+                  setSponsorAreaId(a.id);
+                  setSponsorSlot(slot);
+                  setSponsorOpen(true);
+                };
+
+                const titleFor = (mine: boolean, slotState?: SlotState) =>
+                  mine
+                    ? "You sponsor this slot"
+                    : ownsAny
+                    ? "You already sponsor a slot in this area"
+                    : slotState?.taken
+                    ? `Status: ${slotState?.status || "taken"}`
+                    : "Available";
+
+                const label = (mine: boolean, takenByOther: boolean, n: Slot) =>
+                  mine ? `Manage #${n}` : takenByOther ? `Taken #${n}` : `Sponsor #${n}`;
+
+                return (
+                  <li key={a.id} className="border rounded-lg p-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-medium">{a.name}</div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(a.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button className="btn" onClick={() => editArea(a)} disabled={loading}>
+                          Edit
+                        </button>
+                        <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => clickSlot(1, mine1, dis1)}
+                        disabled={dis1}
+                        title={titleFor(mine1, s1)}
+                      >
+                        {label(mine1, taken1ByOther, 1)}
+                      </button>
+
+                      <button
+                        className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => clickSlot(2, mine2, dis2)}
+                        disabled={dis2}
+                        title={titleFor(mine2, s2)}
+                      >
+                        {label(mine2, taken2ByOther, 2)}
+                      </button>
+
+                      <button
+                        className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={() => clickSlot(3, mine3, dis3)}
+                        disabled={dis3}
+                        title={titleFor(mine3, s3)}
+                      >
+                        {label(mine3, taken3ByOther, 3)}
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+              {!serviceAreas.length && !loading && (
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
+              )}
+            </ul>
+          </div>
+
+          <div className="card card-pad text-sm text-gray-600">
+            <div className="font-semibold mb-1">Legend</div>
+            <div className="flex items-center gap-4 mb-3">
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }}
+                />
+                Gold (Slot #1)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }}
+                />
+                Silver (Slot #2)
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }}
+                />
+                Bronze (Slot #3)
+              </span>
+            </div>
+            <div className="font-semibold mb-1">Tips</div>
+            <ul className="list-disc pl-5 space-y-1">
+              <li>Click “New Area”, then click around the map to draw a polygon. Double-click to finish.</li>
+              <li>Drag the white handles to adjust vertices. Use “Clear Polygons” to redraw before saving.</li>
+              <li>Each saved Service Area may include multiple polygons.</li>
+            </ul>
+          </div>
+        </div>
+
+        {/* Map */}
+        <div className="md:col-span-8">
+          {isLoaded ? (
+            <GoogleMap
+              mapContainerStyle={MAP_CONTAINER}
+              center={DEFAULT_CENTER}
+              zoom={DEFAULT_ZOOM}
+              options={{ mapTypeControl: false, streetViewControl: false }}
+              onLoad={onMapLoad}
+            >
+              <DrawingManager
+                onLoad={onDrawingLoad}
+                onPolygonComplete={onPolygonComplete}
+                options={{
+                  drawingMode: null,
+                  drawingControl: true,
+                  drawingControlOptions: { drawingModes: [google.maps.drawing.OverlayType.POLYGON] },
+                  polygonOptions: polyStyle,
+                }}
+              />
+
+              {/* non-editable painted overlays */}
+              {activeAreaId === null &&
+                serviceAreas.map((a) => {
+                  const gj = a.gj;
+                  if (!gj || gj.type !== "MultiPolygon") return null;
+
+                  const previewIsForThisArea = previewActiveForArea && sponsorAreaId === a.id;
+                  if (previewIsForThisArea) return null;
+
+                  const paint = areaPaint(a.id);
+                  const style: google.maps.PolygonOptions = {
+                    ...polyStyle,
+                    editable: false,
+                    draggable: false,
+                    fillOpacity: 0.35,
+                    strokeOpacity: 0.9,
+                    fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
+                    strokeColor: paint?.stroke ?? "#555",
+                  };
+
+                  return (gj.coordinates as number[][][][]).map((poly, i) => {
+                    const rings = poly;
+                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
+                  });
+                })}
+
+              {/* Preview overlay – drawn on top */}
+              {previewPolys.map((p, i) => (
+                <Polygon
+                  key={`preview-${i}`}
+                  paths={p.paths}
+                  options={{
+                    strokeWeight: 3,
+                    strokeOpacity: 1,
+                    strokeColor: "#14b8a6",
+                    fillColor: "#14b8a6",
+                    fillOpacity: 0.22,
+                    clickable: false,
+                    editable: false,
+                    draggable: false,
+                    zIndex: 9999,
+                  }}
+                />
+              ))}
+            </GoogleMap>
+          ) : (
+            <div className="card card-pad">Loading map…</div>
+          )}
+        </div>
+      </div>
+
+      {/* Sponsor modal */}
+      {sponsorOpen && sponsorAreaId && (
+        <AreaSponsorModal
+          open={sponsorOpen}
+          onClose={() => {
+            setSponsorOpen(false);
+            clearPreview();
+          }}
+          businessId={myBusinessId}
+          areaId={sponsorAreaId}
+          slot={sponsorSlot}
+          onPreviewGeoJSON={(multi) => drawPreview(multi)}
+          onClearPreview={() => clearPreview()}
+        />
+      )}
+
+      {/* Manage modal (used when parent doesn't intercept) */}
+      {manageOpen && manageAreaId && (
+        <AreaManageModal
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          cleanerId={myBusinessId}
+          areaId={manageAreaId}
+          slot={manageSlot}
+        />
+      )}
+    </>
+  );
+}
