@@ -1,26 +1,15 @@
+// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-// Hard-blocking statuses per spec
-const HARD_BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
-// minutes to treat `incomplete` as a temporary hold
-const HOLD_MINUTES = Number(process.env.INCOMPLETE_HOLD_MINUTES || 35);
-const EPS_KM2 = 1e-5;
-
-function isBlockingRow(row) {
-  const s = String(row?.status || "").toLowerCase();
-  if (HARD_BLOCKING.has(s)) return true;
-  if (s === "incomplete") {
-    const ts = row?.created_at ? new Date(row.created_at).getTime() : 0;
-    const ageMin = (Date.now() - ts) / 60000;
-    return ageMin <= HOLD_MINUTES;
-  }
-  return false;
-}
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -41,100 +30,98 @@ function minForSlot(slot) {
   return perSlot[slot] || base;
 }
 
+// geometry helpers (same as preview)
+function toMulti(g) {
+  if (!g) return null;
+  if (g.type === "Polygon") return turf.multiPolygon([g.coordinates]);
+  if (g.type === "MultiPolygon") return turf.multiPolygon(g.coordinates);
+  return null;
+}
+function sanitize(mp) {
+  try { mp = turf.cleanCoords(mp); } catch {}
+  try { mp = turf.rewind(mp, { reverse: false }); } catch {}
+  return mp;
+}
+function safeDiff(a, b) {
+  try {
+    const d = turf.difference(a, b);
+    return d ? d : turf.multiPolygon([]);
+  } catch {
+    return turf.multiPolygon([]); // conservative
+  }
+}
+function areaKm2(geom) {
+  try {
+    return turf.area(geom) / 1e6;
+  } catch {
+    return 0;
+  }
+}
+
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
-  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
 
   const areaId = body?.areaId || body?.area_id;
   const slot = Number(body?.slot);
-  const businessId = body?.businessId || body?.cleanerId || null;
-
+  const businessId = body?.businessId || body?.cleanerId;
   if (!areaId || !Number.isInteger(slot) || !businessId) {
     return json({ error: "Missing areaId, slot, or businessId" }, 400);
   }
 
   try {
-    // --- 1) Base area
+    // Re-run the safe preview logic server-side
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
-      .select("gj")
+      .select("id, gj")
       .eq("id", areaId)
       .maybeSingle();
     if (areaErr) throw areaErr;
     if (!areaRow?.gj) return json({ error: "Area not found" }, 404);
 
-    let base;
-    const gj = areaRow.gj;
-    if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
-    else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
-    else return json({ error: "Area geometry must be Polygon/MultiPolygon" }, 400);
+    let base = toMulti(areaRow.gj);
+    if (!base) return json({ error: "Invalid area geometry" }, 400);
+    base = sanitize(base);
 
-    // --- 2) All subs for this slot (global) with created_at
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
-      .select("status, final_geojson, area_id, business_id, created_at")
+      .select("status, final_geojson")
+      .eq("area_id", areaId)
       .eq("slot", slot);
     if (subsErr) throw subsErr;
 
-    const blockers = (subs || []).filter(isBlockingRow);
-
-    // --- 3) Load whole-area geometries for rows with NULL final_geojson
-    const needWholeAreaIds = Array.from(
-      new Set(
-        blockers
-          .filter((b) => !b.final_geojson)
-          .map((b) => b.area_id)
-          .filter(Boolean)
-      )
-    );
-
-    let areaMap = {};
-    if (needWholeAreaIds.length) {
-      const { data: areas2, error: aErr } = await sb
-        .from("service_areas")
-        .select("id, gj")
-        .in("id", needWholeAreaIds);
-      if (aErr) throw aErr;
-      areaMap = Object.fromEntries((areas2 || []).map((r) => [r.id, r.gj]));
+    const blockers = (subs || []).filter((s) => BLOCKING.has(s.status));
+    if (blockers.some((b) => !b.final_geojson)) {
+      return json({ error: "No purchasable area left for this slot." }, 400);
     }
 
-    // --- 4) Subtract overlapping blockers from base
     let available = base;
     for (const b of blockers) {
-      let g = b.final_geojson;
-      if (!g) g = areaMap[b.area_id] || null;
-      if (!g) continue;
-
-      let blockGeom;
-      if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
-      else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
-      else continue;
-
-      try {
-        const overlaps = turf.intersect(blockGeom, available);
-        if (!overlaps) continue;
-        available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
-      } catch (e) {
-        console.error("Geometry difference failed:", e);
-        return json({ error: "Geometry operation failed" }, 400);
-      }
+      const bg = sanitize(toMulti(b.final_geojson));
+      if (!bg) continue;
+      available = safeDiff(available, bg);
     }
 
-    const km2 = turf.area(available) / 1e6;
-    if (km2 <= EPS_KM2) {
-      return json({ error: "No purchasable area left for this slot." }, 409);
-    }
+    const km2 = areaKm2(available);
+    if (!(km2 > 0)) return json({ error: "No purchasable area left for this slot." }, 400);
 
-    // --- 5) Price
-    const monthly = Math.max(km2 * rateForSlot(slot), minForSlot(slot));
+    const rate = rateForSlot(slot);
+    const min = minForSlot(slot);
+    const monthly = Math.max(km2 * rate, min);
     const unitAmount = Math.round(monthly * 100);
 
-    // --- 6) Stripe checkout
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
@@ -166,7 +153,8 @@ export default async (req) => {
 
     return json({ url: session.url });
   } catch (err) {
-    console.error("checkout UNEXPECTED:", err);
-    return json({ error: "Checkout error" }, 500);
+    console.error("sponsored-checkout error:", err);
+    // Don’t allow ambiguous purchases
+    return json({ error: "No purchasable area left for this slot." }, 400);
   }
 };
