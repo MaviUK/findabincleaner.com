@@ -2,19 +2,13 @@ import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
 // Hard-blocking statuses per spec
 const HARD_BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 // minutes to treat `incomplete` as a temporary hold
 const HOLD_MINUTES = Number(process.env.INCOMPLETE_HOLD_MINUTES || 35);
-// small epsilon to avoid rounding noise
 const EPS_KM2 = 1e-5;
 
 function isBlockingRow(row) {
@@ -48,34 +42,24 @@ function minForSlot(slot) {
 }
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
-  try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
 
   const areaId = body?.areaId || body?.area_id;
   const slot = Number(body?.slot);
-  const businessId = body?.businessId || body?.cleanerId;
-  const previewId = body?.previewId || null;
+  const businessId = body?.businessId || body?.cleanerId || null;
 
   if (!areaId || !Number.isInteger(slot) || !businessId) {
     return json({ error: "Missing areaId, slot, or businessId" }, 400);
   }
 
   try {
-    // Re-run server-side preview with the same logic
-
-    // 1) Area geometry
+    // --- 1) Base area
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("gj")
@@ -88,38 +72,56 @@ export default async (req) => {
     const gj = areaRow.gj;
     if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
-    else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
+    else return json({ error: "Area geometry must be Polygon/MultiPolygon" }, 400);
 
-    // 2) Current subs (need created_at for time-boxed `incomplete`)
+    // --- 2) All subs for this slot (global) with created_at
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
-      .select("status, final_geojson, business_id, created_at")
-      .eq("area_id", areaId)
+      .select("status, final_geojson, area_id, business_id, created_at")
       .eq("slot", slot);
     if (subsErr) throw subsErr;
 
     const blockers = (subs || []).filter(isBlockingRow);
 
-    // Whole-slot block if any blocking row lacks final geometry
-    if (blockers.some((b) => !b.final_geojson)) {
-      return json({ error: "No purchasable area left for this slot." }, 409);
+    // --- 3) Load whole-area geometries for rows with NULL final_geojson
+    const needWholeAreaIds = Array.from(
+      new Set(
+        blockers
+          .filter((b) => !b.final_geojson)
+          .map((b) => b.area_id)
+          .filter(Boolean)
+      )
+    );
+
+    let areaMap = {};
+    if (needWholeAreaIds.length) {
+      const { data: areas2, error: aErr } = await sb
+        .from("service_areas")
+        .select("id, gj")
+        .in("id", needWholeAreaIds);
+      if (aErr) throw aErr;
+      areaMap = Object.fromEntries((areas2 || []).map((r) => [r.id, r.gj]));
     }
 
-    // Subtract blocking final geometries (union not necessary, iterative diff is fine)
+    // --- 4) Subtract overlapping blockers from base
     let available = base;
     for (const b of blockers) {
-      const g = b.final_geojson;
+      let g = b.final_geojson;
+      if (!g) g = areaMap[b.area_id] || null;
       if (!g) continue;
+
       let blockGeom;
       if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
       else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
       else continue;
 
       try {
+        const overlaps = turf.intersect(blockGeom, available);
+        if (!overlaps) continue;
         available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
       } catch (e) {
         console.error("Geometry difference failed:", e);
-        return json({ error: "Geometry difference failed" }, 400);
+        return json({ error: "Geometry operation failed" }, 400);
       }
     }
 
@@ -128,11 +130,11 @@ export default async (req) => {
       return json({ error: "No purchasable area left for this slot." }, 409);
     }
 
-    // 3) Price
+    // --- 5) Price
     const monthly = Math.max(km2 * rateForSlot(slot), minForSlot(slot));
-    const unitAmount = Math.round(monthly * 100); // pence
+    const unitAmount = Math.round(monthly * 100);
 
-    // 4) Stripe Checkout
+    // --- 6) Stripe checkout
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
@@ -158,14 +160,13 @@ export default async (req) => {
         area_id: areaId,
         slot: String(slot),
         business_id: businessId,
-        preview_id: previewId || "",
         km2: km2.toFixed(6),
       },
     });
 
     return json({ url: session.url });
   } catch (err) {
-    console.error("sponsored-checkout error:", err);
+    console.error("checkout UNEXPECTED:", err);
     return json({ error: "Checkout error" }, 500);
   }
 };
