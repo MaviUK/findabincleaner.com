@@ -1,3 +1,4 @@
+// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
@@ -10,9 +11,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-// Treat anything not canceled/incomplete_expired as blocking.
-const NON_BLOCKING = new Set(["canceled", "incomplete_expired"]);
-const isBlocking = (s) => !NON_BLOCKING.has(String(s || "").toLowerCase());
+// ✅ Align with preview: ONLY these block
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+const isBlocking = (s) => BLOCKING.has(String(s || "").toLowerCase());
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -59,12 +60,10 @@ export default async (req) => {
   }
 
   try {
-    // ---------- STEP 0: Clear stale locks (lightweight best-effort) ----------
-    try {
-      await sb.rpc("cleanup_stale_sponsored_locks");
-    } catch (_) {}
+    // Best-effort cleanup for stale locks (>35m), if you created the RPC
+    try { await sb.rpc("cleanup_stale_sponsored_locks"); } catch (_) {}
 
-    // ---------- STEP 1: Hard block if any live sponsor exists ----------
+    // STEP 1: Hard block if any *blocking* sponsor exists for this (area,slot)
     const { data: existing, error: exErr } = await sb
       .from("sponsored_subscriptions")
       .select("id, status, business_id")
@@ -80,9 +79,7 @@ export default async (req) => {
       );
     }
 
-    // ---------- STEP 2: Acquire a concurrency lock ----------
-    // Only one lock row (area,slot) may exist due to the UNIQUE(area_id,slot).
-    // If another checkout is in flight, this insert will fail.
+    // STEP 2: Acquire a concurrency lock – unique per (area_id, slot)
     let lockId = null;
     {
       const { data, error } = await sb
@@ -90,9 +87,7 @@ export default async (req) => {
         .insert([{ area_id: areaId, slot, business_id: businessId }])
         .select("id")
         .single();
-
       if (error) {
-        // 23505 => unique_violation (already locked)
         if (String(error.code) === "23505") {
           return json(
             { error: `Another checkout is already holding slot #${slot} for this area.` },
@@ -104,7 +99,7 @@ export default async (req) => {
       lockId = data.id;
     }
 
-    // ---------- STEP 3: Compute available geometry (subtract blockers) ----------
+    // STEP 3: Re-run geometry preview server-side with the same BLOCKING set
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("gj")
@@ -126,14 +121,16 @@ export default async (req) => {
       .eq("slot", slot);
     if (subsErr) throw subsErr;
 
+    // A blocking winner with NULL final_geojson blocks the entire slot
+    const blockers = (subs || []).filter((s) => isBlocking(s.status));
+    if (blockers.some((b) => !b.final_geojson)) {
+      return json({ error: "No purchasable area left for this slot." }, 400);
+    }
+
     let available = base;
-    for (const s of subs || []) {
-      if (!isBlocking(s.status)) continue;
-      if (!s.final_geojson) {
-        // A live winner without final_geojson blocks the entire slot
-        return json({ error: "No purchasable area left for this slot." }, 400);
-      }
-      const g = s.final_geojson;
+    for (const b of blockers) {
+      const g = b.final_geojson;
+      if (!g) continue;
       let blockGeom;
       if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
       else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
@@ -151,13 +148,13 @@ export default async (req) => {
       return json({ error: "No purchasable area left for this slot." }, 400);
     }
 
-    // ---------- STEP 4: Price ----------
+    // STEP 4: Price
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = Math.max(km2 * rate, min);
     const unitAmount = Math.round(monthly * 100); // pence
 
-    // ---------- STEP 5: Stripe Checkout ----------
+    // STEP 5: Stripe session
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
@@ -189,7 +186,7 @@ export default async (req) => {
       },
     });
 
-    // Save the session id on our lock row (best-effort)
+    // best-effort: store the session id on the lock
     try {
       await sb
         .from("sponsored_locks")
