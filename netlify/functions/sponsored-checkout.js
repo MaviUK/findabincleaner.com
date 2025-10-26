@@ -11,7 +11,15 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+const ACTIVE_STATUSES = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "incomplete_expired",
+  "requires_payment_method",
+]);
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -22,6 +30,7 @@ function rateForSlot(slot) {
   };
   return perSlot[slot] || base;
 }
+
 function minForSlot(slot) {
   const base = Number(process.env.MIN_PRICE_PER_MONTH || 1);
   const perSlot = {
@@ -58,36 +67,35 @@ export default async (req) => {
   }
 
   try {
-    // 🧩 1. Check if this slot is already fully sponsored
-    const { data: existingSubs, error: subErr } = await sb
+    // ✅ STEP 1: Check for any *existing* non-canceled sponsor for same area+slot
+    const { data: existing, error: checkErr } = await sb
       .from("sponsored_subscriptions")
       .select("id, status, business_id")
       .eq("area_id", areaId)
-      .eq("slot", slot)
-      .in("status", ["active", "trialing", "past_due", "unpaid"]);
+      .eq("slot", slot);
 
-    if (subErr) throw subErr;
+    if (checkErr) throw checkErr;
 
-    if (existingSubs?.length) {
-      // Someone already holds this slot
-      const ownedByMe = existingSubs.some(
-        (s) => s.business_id === businessId
+    const active = (existing || []).find((row) =>
+      ACTIVE_STATUSES.has((row.status || "").toLowerCase())
+    );
+
+    if (active && active.business_id !== businessId) {
+      console.warn(
+        `BLOCKED: Business ${businessId} tried to buy slot ${slot} for area ${areaId}, but owned by ${active.business_id}`
       );
-      if (!ownedByMe) {
-        return json(
-          { error: `Slot #${slot} is already sponsored by another business.` },
-          409
-        );
-      }
+      return json(
+        { error: `Slot #${slot} is already sponsored by another business.` },
+        409
+      );
     }
 
-    // 🧩 2. Pull the original area geometry
+    // ✅ STEP 2: Fetch geometry
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
-      .select("id, gj")
+      .select("gj")
       .eq("id", areaId)
       .maybeSingle();
-
     if (areaErr) throw areaErr;
     if (!areaRow?.gj) return json({ error: "Area not found" }, 404);
 
@@ -95,9 +103,9 @@ export default async (req) => {
     const gj = areaRow.gj;
     if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
-    else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
+    else return json({ error: "Invalid area geometry" }, 400);
 
-    // 🧩 3. Apply geometry difference for any overlapping subscriptions
+    // ✅ STEP 3: Remove overlapping regions from existing active sponsors
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
       .select("status, final_geojson")
@@ -105,39 +113,39 @@ export default async (req) => {
       .eq("slot", slot);
 
     if (subsErr) throw subsErr;
-    const blockers = subs?.filter((s) => BLOCKING.has(s.status)) || [];
 
     let available = base;
-    for (const b of blockers) {
-      if (!b.final_geojson) continue;
-      const g = b.final_geojson;
+    for (const s of subs || []) {
+      if (!ACTIVE_STATUSES.has((s.status || "").toLowerCase())) continue;
+      if (!s.final_geojson) continue;
       let blockGeom;
+      const g = s.final_geojson;
       if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
       else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
       else continue;
-      available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
+
+      try {
+        available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
+      } catch (e) {
+        console.error("Geometry difference failed:", e);
+      }
     }
 
     const km2 = turf.area(available) / 1e6;
-
-    // 🧩 4. Ensure at least a meaningful region remains (no rounding)
     if (km2 < 0.00001) {
-      return json(
-        { error: `No purchasable area left for slot #${slot}.` },
-        400
-      );
+      return json({ error: "No purchasable area left for this slot." }, 400);
     }
 
-    // 🧩 5. Price calculation
+    // ✅ STEP 4: Price calculation
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = Math.max(km2 * rate, min);
-    const unitAmount = Math.round(monthly * 100); // pence
+    const unitAmount = Math.round(monthly * 100);
 
+    // ✅ STEP 5: Stripe session
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
-    // 🧩 6. Stripe Checkout
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       success_url: successUrl,
