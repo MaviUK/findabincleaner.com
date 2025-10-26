@@ -11,7 +11,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-// ✅ Align with preview: ONLY these block
+// BLOCKING set aligned with preview
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 const isBlocking = (s) => BLOCKING.has(String(s || "").toLowerCase());
 
@@ -60,13 +60,13 @@ export default async (req) => {
   }
 
   try {
-    // Best-effort cleanup for stale locks (>35m), if you created the RPC
-    try { await sb.rpc("cleanup_stale_sponsored_locks"); } catch (_) {}
+    // Best-effort cleanup for stale locks (>35m) if you created that RPC
+    try { await sb.rpc("cleanup_stale_sponsored_locks"); } catch {}
 
-    // STEP 1: Hard block if any *blocking* sponsor exists for this (area,slot)
+    // STEP 1: If another business already holds a BLOCKING sponsor, hard block
     const { data: existing, error: exErr } = await sb
       .from("sponsored_subscriptions")
-      .select("id, status, business_id")
+      .select("id, status, business_id, final_geojson")
       .eq("area_id", areaId)
       .eq("slot", slot);
     if (exErr) throw exErr;
@@ -79,27 +79,46 @@ export default async (req) => {
       );
     }
 
-    // STEP 2: Acquire a concurrency lock – unique per (area_id, slot)
+    // STEP 2: Acquire/refresh the concurrency lock via UPSERT
+    // - If the same business already has the lock, refresh it (no 409).
+    // - If the lock is stale (>35m), take it over.
+    // - Otherwise, return 409.
     let lockId = null;
     {
-      const { data, error } = await sb
+      // Try to upsert first; ON CONFLICT requires specifying the conflict target
+      // Supabase upsert will do INSERT ... ON CONFLICT (area_id,slot) DO UPDATE ...
+      const { data: up, error: upErr } = await sb
         .from("sponsored_locks")
-        .insert([{ area_id: areaId, slot, business_id: businessId }])
-        .select("id")
+        .upsert(
+          {
+            area_id: areaId,
+            slot,
+            business_id: businessId,
+            created_at: new Date().toISOString(),
+          },
+          { onConflict: "area_id,slot", ignoreDuplicates: false, returning: "representation" }
+        )
+        .select("id, area_id, slot, business_id, created_at")
         .single();
-      if (error) {
-        if (String(error.code) === "23505") {
-          return json(
-            { error: `Another checkout is already holding slot #${slot} for this area.` },
-            409
-          );
-        }
-        throw error;
+
+      if (upErr) throw upErr;
+
+      // If the row belongs to another business and isn't stale, reject
+      const createdAt = up.created_at ? new Date(up.created_at) : new Date();
+      const ageMin = (Date.now() - createdAt.getTime()) / 60000;
+
+      if (up.business_id !== businessId && ageMin <= 35) {
+        return json(
+          { error: `Another checkout is already holding slot #${slot} for this area.` },
+          409
+        );
       }
-      lockId = data.id;
+
+      // If it belonged to another business but was stale, we’ve just refreshed it to us.
+      lockId = up.id;
     }
 
-    // STEP 3: Re-run geometry preview server-side with the same BLOCKING set
+    // STEP 3: Re-run geometry with same BLOCKING set
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("gj")
@@ -121,7 +140,6 @@ export default async (req) => {
       .eq("slot", slot);
     if (subsErr) throw subsErr;
 
-    // A blocking winner with NULL final_geojson blocks the entire slot
     const blockers = (subs || []).filter((s) => isBlocking(s.status));
     if (blockers.some((b) => !b.final_geojson)) {
       return json({ error: "No purchasable area left for this slot." }, 400);
@@ -152,7 +170,7 @@ export default async (req) => {
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = Math.max(km2 * rate, min);
-    const unitAmount = Math.round(monthly * 100); // pence
+    const unitAmount = Math.round(monthly * 100);
 
     // STEP 5: Stripe session
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
@@ -192,7 +210,7 @@ export default async (req) => {
         .from("sponsored_locks")
         .update({ stripe_session_id: session.id })
         .eq("id", lockId);
-    } catch (_) {}
+    } catch {}
 
     return json({ url: session.url });
   } catch (err) {
