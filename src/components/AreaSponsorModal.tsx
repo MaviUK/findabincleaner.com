@@ -1,4 +1,3 @@
-// src/components/AreaSponsorModal.tsx
 import React, { useEffect, useMemo, useState } from "react";
 
 type Slot = 1 | 2 | 3;
@@ -7,8 +6,15 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
+
+  // possible geom keys
   final_geojson?: any | null;
-  previewId?: string | null;
+  available?: any;
+  available_gj?: any;
+  available_geojson?: any;
+  geometry?: any;
+  geojson?: any;
+  multi?: any;
 };
 
 type PreviewErr = { ok?: false; error?: string };
@@ -17,10 +23,13 @@ type PreviewResp = PreviewOk | PreviewErr;
 type Props = {
   open: boolean;
   onClose: () => void;
+
   cleanerId?: string;
   businessId?: string;
+
   areaId: string;
   slot: Slot;
+
   onPreviewGeoJSON?: (multi: any) => void;
   onClearPreview?: () => void;
 };
@@ -42,7 +51,6 @@ function pickClippedGeom(json: any) {
   );
 }
 
-// ---- Unified preview API call ----
 async function callPreview({
   cleanerId,
   areaId,
@@ -78,6 +86,7 @@ async function callPreview({
   }
 
   const ok = json as PreviewOk;
+
   const aNum = Number(ok.area_km2);
   const mNum = Number(ok.monthly_price);
 
@@ -85,7 +94,6 @@ async function callPreview({
     km2: Number.isFinite(aNum) ? aNum : 0,
     monthly: Number.isFinite(mNum) ? mNum : null,
     geom: pickClippedGeom(ok),
-    previewId: ok.previewId ?? null,
   };
 }
 
@@ -108,6 +116,7 @@ export default function AreaSponsorModal({
   const [err, setErr] = useState<string | null>(null);
   const [wasClipped, setWasClipped] = useState(false);
 
+  // Close on Escape
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -121,8 +130,10 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  // Compute preview & draw overlay
   useEffect(() => {
     if (!open || !ownerId) return;
+
     let cancelled = false;
     const controller = new AbortController();
 
@@ -142,6 +153,7 @@ export default function AreaSponsorModal({
           signal: controller.signal,
         });
         if (cancelled) return;
+
         setAreaKm2(km2);
         setMonthly(monthly);
         if (geom && onPreviewGeoJSON) {
@@ -160,6 +172,7 @@ export default function AreaSponsorModal({
       controller.abort();
       onClearPreview?.();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, ownerId, areaId, slot]);
 
   const nfGBP = useMemo(
@@ -186,23 +199,9 @@ export default function AreaSponsorModal({
     onClose();
   }
 
+  // Start checkout (server re-validates availability; no previewId needed)
   async function handleCheckout() {
     try {
-      const { km2, previewId } = await callPreview({
-        cleanerId: ownerId,
-        areaId,
-        slot,
-      });
-
-      if (!Number.isFinite(km2) || km2 <= 0) {
-        setErr(`This slot has no purchasable area left.`);
-        return;
-      }
-      if (!previewId) {
-        setErr("Preview ID missing – could not create a fresh preview.");
-        return;
-      }
-
       setCheckingOut(true);
       setErr(null);
 
@@ -215,7 +214,8 @@ export default function AreaSponsorModal({
           areaId,
           area_id: areaId,
           slot: Number(slot),
-          previewId, // ✅ send this instead of previewUrl
+          return_url:
+            typeof window !== "undefined" ? window.location.origin : undefined,
         }),
       });
 
@@ -246,6 +246,7 @@ export default function AreaSponsorModal({
             className="text-gray-600 hover:text-black disabled:opacity-50"
             onClick={handleClose}
             disabled={computing || checkingOut}
+            aria-label="Close"
           >
             Close
           </button>
@@ -265,18 +266,20 @@ export default function AreaSponsorModal({
           <div className="border rounded p-3 text-sm text-gray-800">
             <div className="flex items-center justify-between">
               <span>Available area:</span>
-              <span>{areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`}</span>
+              <span className="tabular-nums">
+                {areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`}
+              </span>
             </div>
             <div className="mt-1 flex items-center justify-between">
               <span>
                 Monthly price (<span className="font-medium">{labelForSlot(slot)}</span>):
               </span>
-              <span>{monthly == null ? "—" : `${nfGBP.format(monthly)}/month`}</span>
+              <span className="tabular-nums">
+                {monthly == null ? "—" : `${nfGBP.format(monthly)}/month`}
+              </span>
             </div>
 
-            {computing && (
-              <div className="mt-2 text-xs text-gray-500">Computing preview…</div>
-            )}
+            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
 
             {!computing && areaKm2 === 0 && (
               <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
@@ -297,6 +300,7 @@ export default function AreaSponsorModal({
               className="mt-2 w-full rounded border border-gray-200 px-3 py-2 text-sm"
               readOnly
               value={priceLine}
+              aria-label="Price summary"
             />
           )}
         </div>
