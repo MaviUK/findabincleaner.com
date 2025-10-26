@@ -5,40 +5,26 @@ import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
 import AreaManageModal from "./AreaManageModal";
 
-// ---- Types ----
 export interface ServiceAreaRow {
   id: string;
   business_id: string;
   name: string;
-  gj: any; // GeoJSON MultiPolygon
+  gj: any;
   created_at: string;
 }
 
-type SlotServer = {
-  slot: number;
-  status?: string | null;
-  taken?: boolean;
-  purchasable?: boolean;
-  leftover_km2?: number | null;
-  monthly_price?: number | null;
-  // the owner field name varies across function versions:
-  owner_business_id?: string | null;
-  by_business_id?: string | null;
-  business_id?: string | null;
-};
-
-type SlotNorm = {
+type SlotState = {
   slot: 1 | 2 | 3;
+  taken: boolean;
   status: string | null;
   owner_business_id: string | null;
 };
 
 type SponsorshipState = {
   area_id: string;
-  slots: SlotNorm[];
+  slots: SlotState[]; // ALWAYS an array
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
-
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry" | "places")[];
@@ -56,8 +42,6 @@ const polyStyle: google.maps.PolygonOptions = {
   draggable: false,
 };
 
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]); // UI derivation only
-
 const round = (n: number, p = 5) => Number(n.toFixed(p));
 
 function pathToGeoJSONRing(
@@ -73,10 +57,7 @@ function pathToGeoJSONRing(
       : (path as google.maps.LatLng[])[i];
     ring.push([round(pt.lng()), round(pt.lat())]);
   }
-  if (
-    ring.length &&
-    (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])
-  ) {
+  if (ring.length && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
     ring.push([ring[0][0], ring[0][1]]);
   }
   return ring;
@@ -131,12 +112,12 @@ function fmtArea(m2: number) {
 
 function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (!geo) return [];
+
   if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
     return geo.features.flatMap((f: any) => geoToPaths(f));
   }
-  if (geo.type === "Feature" && geo.geometry) {
-    return geoToPaths(geo.geometry);
-  }
+  if (geo.type === "Feature" && geo.geometry) return geoToPaths(geo.geometry);
+
   if (geo.type === "MultiPolygon" && Array.isArray(geo.coordinates)) {
     return (geo.coordinates as number[][][][]).map((poly) => ({
       paths: poly.map((ring) =>
@@ -149,6 +130,7 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
       ),
     }));
   }
+
   if (geo.type === "Polygon" && Array.isArray(geo.coordinates)) {
     return [
       {
@@ -163,9 +145,11 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
       },
     ];
   }
+
   if (geo.geometry) return geoToPaths(geo.geometry);
   if (geo.geojson) return geoToPaths(geo.geojson);
   if (geo.multi) return geoToPaths(geo.multi);
+
   return [];
 }
 
@@ -224,7 +208,6 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // ---- Areas ----
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -244,15 +227,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ---- Sponsorship / availability (derive taken/manage strictly from status + owner) ----
-  const normalizeSlot = (s: SlotServer): SlotNorm => {
-    const slot = Number(s?.slot ?? 0) as 1 | 2 | 3;
-    const owner =
-      s?.owner_business_id ?? s?.by_business_id ?? s?.business_id ?? null;
-    const status = (s?.status ?? null) as (string | null);
-    return { slot, status, owner_business_id: owner };
-  };
-
+  // Fetch slot ownership; now the server returns slots as an ARRAY already
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -262,26 +237,9 @@ export default function ServiceAreaEditor({
         body: JSON.stringify({ areaIds }),
       });
       if (!res.ok) throw new Error(`sponsorship ${res.status}`);
-
-      const raw: { areas: Array<{ area_id: string; slots: any; paint?: any }> } = await res.json();
+      const { areas } = (await res.json()) as { areas: SponsorshipState[] };
       const map: SponsorshipMap = {};
-
-      for (const a of raw.areas || []) {
-        const rawSlots: SlotServer[] = Array.isArray(a.slots) ? a.slots : Object.values(a.slots || {});
-        const norm = rawSlots
-          .map(normalizeSlot)
-          .filter((x) => x.slot === 1 || x.slot === 2 || x.slot === 3);
-
-        // Ensure 1..3 exist
-        const have = new Set(norm.map((x) => x.slot));
-        ([1, 2, 3] as const).forEach((slot) => {
-          if (!have.has(slot)) norm.push({ slot, status: null, owner_business_id: null });
-        });
-
-        norm.sort((p, q) => p.slot - q.slot);
-
-        map[a.area_id] = { area_id: a.area_id, slots: norm, paint: a.paint };
-      }
+      for (const s of areas) map[s.area_id] = s;
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
@@ -293,9 +251,12 @@ export default function ServiceAreaEditor({
     fetchSponsorship(serviceAreas.map((a) => a.id));
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
-  // ---- Map handlers ----
-  const onMapLoad = useCallback((map: google.maps.Map) => (mapRef.current = map), []);
-  const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => (drawingMgrRef.current = dm), []);
+  const onMapLoad = useCallback((map: google.maps.Map) => {
+    mapRef.current = map;
+  }, []);
+  const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
+    drawingMgrRef.current = dm;
+  }, []);
   const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
     poly.setOptions(polyStyle);
     poly.setEditable(true);
@@ -321,7 +282,8 @@ export default function ServiceAreaEditor({
       if (!gj || gj.type !== "MultiPolygon") return;
       const newPolys: google.maps.Polygon[] = [];
       (gj.coordinates as number[][][][]).forEach((poly) => {
-        const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+        const rings = poly;
+        const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
         const gpoly = new google.maps.Polygon({ paths, ...polyStyle, editable: true });
         gpoly.setMap(mapRef.current);
         newPolys.push(gpoly);
@@ -339,9 +301,7 @@ export default function ServiceAreaEditor({
     const multi = makeMultiPolygon(draftPolys);
 
     const newKey = normalizeMultiPolygon(multi);
-    const dup = serviceAreas.find(
-      (a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId
-    );
+    const dup = serviceAreas.find((a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId);
     if (dup) {
       setError(`This area matches an existing one: “${dup.name}”.`);
       return;
@@ -390,7 +350,7 @@ export default function ServiceAreaEditor({
         const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
         if (error) throw error;
         if (activeAreaId === area.id) resetDraft();
-        setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
+        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
         await fetchAreas();
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
@@ -413,32 +373,23 @@ export default function ServiceAreaEditor({
     if (!gj || gj.type !== "MultiPolygon") return;
     const bounds = new google.maps.LatLngBounds();
     (gj.coordinates as number[][][][]).forEach((poly) => {
-      poly.forEach((ring) => ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng))));
+      const rings = poly;
+      rings.forEach((ring) => ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng))));
     });
     if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
   }, [isLoaded, serviceAreas]);
 
-  // Helpers for UI state
-  const slotFor = (areaId: string, slot: 1 | 2 | 3): SlotNorm | undefined =>
-    sponsorship[areaId]?.slots.find((x) => x.slot === slot);
+  const totalDraftArea = useMemo(() => (isLoaded ? totalAreaMeters(draftPolys) : 0), [isLoaded, draftPolys]);
 
-  const isMine = (owner: string | null) =>
-    !!owner &&
-    !!myBusinessId &&
-    String(owner).toLowerCase() === String(myBusinessId).toLowerCase();
-
-  const takenByOther = (s?: SlotNorm) => {
-    if (!s) return false;
-    const status = (s.status || "").toLowerCase();
-    const blocking = BLOCKING.has(status);
-    return blocking && !isMine(s.owner_business_id);
-  };
-
-  const areaPaint = (areaId: string) => sponsorship[areaId]?.paint;
-
-  if (loadError) {
-    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
+  function slotInfo(areaId: string, slot: 1 | 2 | 3): SlotState | undefined {
+    const s = sponsorship[areaId];
+    return s?.slots.find((x) => x.slot === slot);
   }
+  function areaPaint(areaId: string) {
+    return sponsorship[areaId]?.paint;
+  }
+
+  if (loadError) return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
 
   return (
     <>
@@ -455,9 +406,7 @@ export default function ServiceAreaEditor({
 
             {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
             {error && (
-              <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
-                {error}
-              </div>
+              <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">{error}</div>
             )}
 
             {(creating || activeAreaId !== null || draftPolys.length > 0) && (
@@ -477,9 +426,7 @@ export default function ServiceAreaEditor({
                   </div>
                 )}
 
-                <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalAreaMeters(draftPolys))}
-                </div>
+                <div className="text-sm text-gray-600 mb-2">Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}</div>
 
                 <div className="flex gap-2">
                   <button className="btn" onClick={saveDraft} disabled={loading}>
@@ -505,32 +452,27 @@ export default function ServiceAreaEditor({
             {/* List */}
             <ul className="space-y-2">
               {serviceAreas.map((a) => {
-                const s1 = slotFor(a.id, 1);
-                const s2 = slotFor(a.id, 2);
-                const s3 = slotFor(a.id, 3);
+                const s1 = slotInfo(a.id, 1);
+                const s2 = slotInfo(a.id, 2);
+                const s3 = slotInfo(a.id, 3);
 
-                const mine1 = isMine(s1?.owner_business_id || null);
-                const mine2 = isMine(s2?.owner_business_id || null);
-                const mine3 = isMine(s3?.owner_business_id || null);
+                const mine1 = !!s1?.taken && s1.owner_business_id === myBusinessId;
+                const mine2 = !!s2?.taken && s2.owner_business_id === myBusinessId;
+                const mine3 = !!s3?.taken && s3.owner_business_id === myBusinessId;
 
                 const ownsAny = mine1 || mine2 || mine3;
 
-                const dis1 = !mine1 && (ownsAny || takenByOther(s1));
-                const dis2 = !mine2 && (ownsAny || takenByOther(s2));
-                const dis3 = !mine3 && (ownsAny || takenByOther(s3));
+                const taken1ByOther = !!s1?.taken && !mine1;
+                const taken2ByOther = !!s2?.taken && !mine2;
+                const taken3ByOther = !!s3?.taken && !mine3;
 
-                const labelFor = (mine: boolean, s?: SlotNorm) =>
-                  mine ? "Manage" : takenByOther(s) ? "Taken" : "Sponsor";
+                const dis1 = taken1ByOther || (!mine1 && ownsAny);
+                const dis2 = taken2ByOther || (!mine2 && ownsAny);
+                const dis3 = taken3ByOther || (!mine3 && ownsAny);
 
-                const titleFor = (mine: boolean, s?: SlotNorm) => {
-                  if (mine) return "You sponsor this slot";
-                  if (takenByOther(s)) return `Taken (${s?.status || "active"})`;
-                  return "Available";
-                };
-
-                const clickSlot = async (slot: 1 | 2 | 3, isMineSlot: boolean, disabled: boolean) => {
-                  if (disabled) return;
-                  if (isMineSlot) {
+                const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
+                  if (isDisabled) return;
+                  if (isMine) {
                     if (onSlotAction) {
                       await onSlotAction({ id: a.id, name: a.name }, slot);
                     } else {
@@ -545,14 +487,21 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
+                const titleFor = (mine: boolean, slotState?: SlotState) =>
+                  mine
+                    ? "You sponsor this slot"
+                    : ownsAny
+                    ? "You already sponsor a slot in this area"
+                    : slotState?.taken
+                    ? `Status: ${slotState?.status || "taken"}`
+                    : "Available";
+
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{a.name}</div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(a.created_at).toLocaleString()}
-                        </div>
+                        <div className="text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</div>
                       </div>
                       <div className="flex gap-2">
                         <button className="btn" onClick={() => editArea(a)} disabled={loading}>
@@ -571,7 +520,7 @@ export default function ServiceAreaEditor({
                         disabled={dis1}
                         title={titleFor(mine1, s1)}
                       >
-                        {labelFor(mine1, s1)} #1
+                        {s1?.taken ? (mine1 ? "Manage #1" : "Taken #1") : "Sponsor #1"}
                       </button>
 
                       <button
@@ -580,7 +529,7 @@ export default function ServiceAreaEditor({
                         disabled={dis2}
                         title={titleFor(mine2, s2)}
                       >
-                        {labelFor(mine2, s2)} #2
+                        {s2?.taken ? (mine2 ? "Manage #2" : "Taken #2") : "Sponsor #2"}
                       </button>
 
                       <button
@@ -589,7 +538,7 @@ export default function ServiceAreaEditor({
                         disabled={dis3}
                         title={titleFor(mine3, s3)}
                       >
-                        {labelFor(mine3, s3)} #3
+                        {s3?.taken ? (mine3 ? "Manage #3" : "Taken #3") : "Sponsor #3"}
                       </button>
                     </div>
                   </li>
@@ -667,7 +616,8 @@ export default function ServiceAreaEditor({
                   };
 
                   return (gj.coordinates as number[][][][]).map((poly, i) => {
-                    const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    const rings = poly;
+                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
                     return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
                   });
                 })}
@@ -696,7 +646,6 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-      {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
@@ -712,7 +661,6 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* Manage modal */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
