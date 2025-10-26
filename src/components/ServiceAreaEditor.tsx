@@ -5,8 +5,7 @@ import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
 import AreaManageModal from "./AreaManageModal";
 
-/** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs */
-
+// ---- Types ----
 export interface ServiceAreaRow {
   id: string;
   business_id: string;
@@ -15,22 +14,31 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-// ---- Slot / availability shapes (normalized) ----
+type SlotServer = {
+  slot: number;
+  status?: string | null;
+  taken?: boolean;
+  purchasable?: boolean;
+  leftover_km2?: number | null;
+  monthly_price?: number | null;
+  // the owner field name varies across function versions:
+  owner_business_id?: string | null;
+  by_business_id?: string | null;
+  business_id?: string | null;
+};
+
 type SlotNorm = {
   slot: 1 | 2 | 3;
-  purchasable: boolean;          // true only if you can buy some sub-region
-  leftover_km2: number;          // purchasable area size
-  monthly_price: number;         // computed monthly price for that leftover
-  taken: boolean;                // true if the slot is blocked by someone else
-  reason?: string | null;        // optional text reason from server
-  owner_business_id: string | null; // who owns it (if known); if == me -> show Manage
+  status: string | null;
+  owner_business_id: string | null;
 };
 
 type SponsorshipState = {
   area_id: string;
   slots: SlotNorm[];
-  paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string } | undefined;
+  paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
+
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry" | "places")[];
@@ -47,6 +55,8 @@ const polyStyle: google.maps.PolygonOptions = {
   editable: true,
   draggable: false,
 };
+
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]); // UI derivation only
 
 const round = (n: number, p = 5) => Number(n.toFixed(p));
 
@@ -214,7 +224,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Areas
+  // ---- Areas ----
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -234,40 +244,13 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ---- Availability fetch + normalization ----
-  const normalizeSlot = (s: any): SlotNorm => {
-    // server might return any of: owner_business_id / by_business_id / business_id
+  // ---- Sponsorship / availability (derive taken/manage strictly from status + owner) ----
+  const normalizeSlot = (s: SlotServer): SlotNorm => {
+    const slot = Number(s?.slot ?? 0) as 1 | 2 | 3;
     const owner =
       s?.owner_business_id ?? s?.by_business_id ?? s?.business_id ?? null;
-
-    // If server provides purchasable boolean, trust it; else derive from taken/leftover_km2
-    const leftover = Number(s?.leftover_km2 ?? s?.km2 ?? 0) || 0;
-    const explicitPurch = typeof s?.purchasable === "boolean" ? s.purchasable : null;
-    const explicitTaken = typeof s?.taken === "boolean" ? s.taken : null;
-
-    let purchasable: boolean;
-    if (explicitPurch !== null) {
-      purchasable = explicitPurch;
-    } else {
-      // if we know it's taken -> not purchasable
-      // else consider purchasable when there's leftover area
-      purchasable = explicitTaken === true ? false : leftover > 0;
-    }
-
-    const taken =
-      explicitTaken !== null
-        ? explicitTaken
-        : (!purchasable && leftover <= 0) || false;
-
-    return {
-      slot: Number(s?.slot ?? 0) as 1 | 2 | 3,
-      purchasable,
-      leftover_km2: leftover,
-      monthly_price: Number(s?.monthly_price ?? 0) || 0,
-      taken,
-      reason: s?.reason ?? null,
-      owner_business_id: owner,
-    };
+    const status = (s?.status ?? null) as (string | null);
+    return { slot, status, owner_business_id: owner };
   };
 
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
@@ -280,39 +263,24 @@ export default function ServiceAreaEditor({
       });
       if (!res.ok) throw new Error(`sponsorship ${res.status}`);
 
-      const raw: { areas: Array<any> } = await res.json();
+      const raw: { areas: Array<{ area_id: string; slots: any; paint?: any }> } = await res.json();
       const map: SponsorshipMap = {};
 
       for (const a of raw.areas || []) {
-        const rawSlots = Array.isArray(a.slots) ? a.slots : Object.values(a.slots || {});
-        const norm: SlotNorm[] = rawSlots
+        const rawSlots: SlotServer[] = Array.isArray(a.slots) ? a.slots : Object.values(a.slots || {});
+        const norm = rawSlots
           .map(normalizeSlot)
-          .filter((x) => x.slot === 1 || x.slot === 2 || x.slot === 3)
-          // Ensure we always have three entries in a predictable order
-          .sort((p, q) => p.slot - q.slot);
+          .filter((x) => x.slot === 1 || x.slot === 2 || x.slot === 3);
 
-        // Fill missing slots with default "purchasable" false
+        // Ensure 1..3 exist
         const have = new Set(norm.map((x) => x.slot));
         ([1, 2, 3] as const).forEach((slot) => {
-          if (!have.has(slot)) {
-            norm.push({
-              slot,
-              purchasable: false,
-              leftover_km2: 0,
-              monthly_price: 0,
-              taken: false,
-              reason: null,
-              owner_business_id: null,
-            });
-          }
+          if (!have.has(slot)) norm.push({ slot, status: null, owner_business_id: null });
         });
+
         norm.sort((p, q) => p.slot - q.slot);
 
-        map[a.area_id] = {
-          area_id: a.area_id,
-          slots: norm,
-          paint: a.paint,
-        };
+        map[a.area_id] = { area_id: a.area_id, slots: norm, paint: a.paint };
       }
       setSponsorship(map);
     } catch (e) {
@@ -325,13 +293,9 @@ export default function ServiceAreaEditor({
     fetchSponsorship(serviceAreas.map((a) => a.id));
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
-  // Map handlers
-  const onMapLoad = useCallback((map: google.maps.Map) => {
-    mapRef.current = map;
-  }, []);
-  const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
-    drawingMgrRef.current = dm;
-  }, []);
+  // ---- Map handlers ----
+  const onMapLoad = useCallback((map: google.maps.Map) => (mapRef.current = map), []);
+  const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => (drawingMgrRef.current = dm), []);
   const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
     poly.setOptions(polyStyle);
     poly.setEditable(true);
@@ -344,10 +308,7 @@ export default function ServiceAreaEditor({
     clearPreview();
     setCreating(true);
     setDraftName("New Service Area");
-    setTimeout(
-      () => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON),
-      0
-    );
+    setTimeout(() => drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON), 0);
   }, [resetDraft, clearPreview]);
 
   const editArea = useCallback(
@@ -360,8 +321,7 @@ export default function ServiceAreaEditor({
       if (!gj || gj.type !== "MultiPolygon") return;
       const newPolys: google.maps.Polygon[] = [];
       (gj.coordinates as number[][][][]).forEach((poly) => {
-        const rings = poly;
-        const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+        const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
         const gpoly = new google.maps.Polygon({ paths, ...polyStyle, editable: true });
         gpoly.setMap(mapRef.current);
         newPolys.push(gpoly);
@@ -430,7 +390,7 @@ export default function ServiceAreaEditor({
         const { error } = await supabase.rpc("delete_service_area", { p_area_id: area.id });
         if (error) throw error;
         if (activeAreaId === area.id) resetDraft();
-        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
+        setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
         await fetchAreas();
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
@@ -453,21 +413,26 @@ export default function ServiceAreaEditor({
     if (!gj || gj.type !== "MultiPolygon") return;
     const bounds = new google.maps.LatLngBounds();
     (gj.coordinates as number[][][][]).forEach((poly) => {
-      const rings = poly;
-      rings.forEach((ring) =>
-        ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng)))
-      );
+      poly.forEach((ring) => ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng))));
     });
     if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
   }, [isLoaded, serviceAreas]);
 
-  const totalDraftArea = useMemo(
-    () => (isLoaded ? totalAreaMeters(draftPolys) : 0),
-    [isLoaded, draftPolys]
-  );
-
+  // Helpers for UI state
   const slotFor = (areaId: string, slot: 1 | 2 | 3): SlotNorm | undefined =>
     sponsorship[areaId]?.slots.find((x) => x.slot === slot);
+
+  const isMine = (owner: string | null) =>
+    !!owner &&
+    !!myBusinessId &&
+    String(owner).toLowerCase() === String(myBusinessId).toLowerCase();
+
+  const takenByOther = (s?: SlotNorm) => {
+    if (!s) return false;
+    const status = (s.status || "").toLowerCase();
+    const blocking = BLOCKING.has(status);
+    return blocking && !isMine(s.owner_business_id);
+  };
 
   const areaPaint = (areaId: string) => sponsorship[areaId]?.paint;
 
@@ -508,13 +473,12 @@ export default function ServiceAreaEditor({
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices, double-click to finish
-                    the polygon.
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
                   </div>
                 )}
 
                 <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalAreaMeters(draftPolys))}
                 </div>
 
                 <div className="flex gap-2">
@@ -545,38 +509,28 @@ export default function ServiceAreaEditor({
                 const s2 = slotFor(a.id, 2);
                 const s3 = slotFor(a.id, 3);
 
-                // Ownership (show Manage if we own)
-                const mine1 = s1?.owner_business_id === myBusinessId;
-                const mine2 = s2?.owner_business_id === myBusinessId;
-                const mine3 = s3?.owner_business_id === myBusinessId;
-                const ownsAny = !!(mine1 || mine2 || mine3);
+                const mine1 = isMine(s1?.owner_business_id || null);
+                const mine2 = isMine(s2?.owner_business_id || null);
+                const mine3 = isMine(s3?.owner_business_id || null);
 
-                // Disable rule:
-                // - If I own any slot in this area, disable the other two
-                // - Else enable only if purchasable === true
-                const dis1 = !mine1 && (ownsAny || !(s1?.purchasable === true));
-                const dis2 = !mine2 && (ownsAny || !(s2?.purchasable === true));
-                const dis3 = !mine3 && (ownsAny || !(s3?.purchasable === true));
+                const ownsAny = mine1 || mine2 || mine3;
+
+                const dis1 = !mine1 && (ownsAny || takenByOther(s1));
+                const dis2 = !mine2 && (ownsAny || takenByOther(s2));
+                const dis3 = !mine3 && (ownsAny || takenByOther(s3));
 
                 const labelFor = (mine: boolean, s?: SlotNorm) =>
-                  mine ? "Manage" : s?.purchasable ? "Sponsor" : s?.taken ? "Taken" : "Unavailable";
+                  mine ? "Manage" : takenByOther(s) ? "Taken" : "Sponsor";
 
                 const titleFor = (mine: boolean, s?: SlotNorm) => {
                   if (mine) return "You sponsor this slot";
-                  if (!s) return "Unavailable";
-                  if (s.purchasable) {
-                    const price =
-                      typeof s.monthly_price === "number" && s.monthly_price > 0
-                        ? ` (~£${s.monthly_price.toFixed(2)}/mo)`
-                        : "";
-                    return `Available${price}`;
-                  }
-                  return s.reason || (s.taken ? "Taken" : "Not available");
+                  if (takenByOther(s)) return `Taken (${s?.status || "active"})`;
+                  return "Available";
                 };
 
-                const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, disabled: boolean) => {
+                const clickSlot = async (slot: 1 | 2 | 3, isMineSlot: boolean, disabled: boolean) => {
                   if (disabled) return;
-                  if (isMine) {
+                  if (isMineSlot) {
                     if (onSlotAction) {
                       await onSlotAction({ id: a.id, name: a.name }, slot);
                     } else {
@@ -613,29 +567,29 @@ export default function ServiceAreaEditor({
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(1, !!mine1, dis1)}
+                        onClick={() => clickSlot(1, mine1, dis1)}
                         disabled={dis1}
-                        title={titleFor(!!mine1, s1)}
+                        title={titleFor(mine1, s1)}
                       >
-                        {labelFor(!!mine1, s1)} #1
+                        {labelFor(mine1, s1)} #1
                       </button>
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(2, !!mine2, dis2)}
+                        onClick={() => clickSlot(2, mine2, dis2)}
                         disabled={dis2}
-                        title={titleFor(!!mine2, s2)}
+                        title={titleFor(mine2, s2)}
                       >
-                        {labelFor(!!mine2, s2)} #2
+                        {labelFor(mine2, s2)} #2
                       </button>
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(3, !!mine3, dis3)}
+                        onClick={() => clickSlot(3, mine3, dis3)}
                         disabled={dis3}
-                        title={titleFor(!!mine3, s3)}
+                        title={titleFor(mine3, s3)}
                       >
-                        {labelFor(!!mine3, s3)} #3
+                        {labelFor(mine3, s3)} #3
                       </button>
                     </div>
                   </li>
@@ -651,24 +605,15 @@ export default function ServiceAreaEditor({
             <div className="font-semibold mb-1">Legend</div>
             <div className="flex items-center gap-4 mb-3">
               <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }}
-                />
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }} />
                 Gold (Slot #1)
               </span>
               <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }}
-                />
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }} />
                 Silver (Slot #2)
               </span>
               <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }}
-                />
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }} />
                 Bronze (Slot #3)
               </span>
             </div>
@@ -702,7 +647,6 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* base painted overlays */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
@@ -723,13 +667,11 @@ export default function ServiceAreaEditor({
                   };
 
                   return (gj.coordinates as number[][][][]).map((poly, i) => {
-                    const rings = poly;
-                    const paths = rings.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
+                    const paths = poly.map((ring) => ring.map(([lng, lat]) => ({ lat, lng })));
                     return <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />;
                   });
                 })}
 
-              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
