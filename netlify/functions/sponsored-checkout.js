@@ -5,88 +5,66 @@ import Stripe from "stripe";
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-/** small helpers */
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-
-const GBP = (n) => Math.max(0, Math.round(n * 100)); // to pence, >= 0
-
-/** Only allow preview URLs we generated (your domain + our function path). */
-function isSafePreviewUrl(url) {
-  try {
-    const u = new URL(url);
-    const hostOk =
-      (process.env.PUBLIC_SITE_URL && u.origin === new URL(process.env.PUBLIC_SITE_URL).origin) ||
-      u.hostname.endsWith("netlify.app"); // belt & braces for preview deploys
-    const pathOk =
-      u.pathname.includes("/.netlify/functions/sponsored-preview") ||
-      u.pathname.includes("/api/sponsored/preview");
-    return hostOk && pathOk;
-  } catch {
-    return false;
-  }
-}
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  // ---- read and validate input
   let body;
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+
+  const businessId = body.businessId || body.cleanerId;
+  const areaId = body.areaId || body.area_id;
+  const slot = Number(body.slot);
+  const previewUrl = body.previewUrl || body.preview_url;
+
+  if (!businessId || !areaId || !slot) return json({ error: "Missing params" }, 400);
+  if (!previewUrl) return json({ error: "Valid previewUrl required" }, 400);
+
+  // extract previewId from previewUrl
+  let previewId = null;
   try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
+    const u = new URL(previewUrl);
+    previewId = u.searchParams.get("previewId");
+  } catch { /* ignore */ }
+  if (!previewId) return json({ error: "Valid previewUrl required" }, 400);
+
+  // 1) Load cached preview + validate
+  const { data: prev, error: prevErr } = await sb
+    .from("sponsored_preview_cache")
+    .select("*")
+    .eq("id", previewId)
+    .single();
+
+  if (prevErr || !prev) return json({ error: "Preview not found/expired" }, 400);
+  if (prev.business_id !== businessId || prev.area_id !== areaId || Number(prev.slot) !== slot) {
+    return json({ error: "Preview does not match request" }, 400);
+  }
+  if (new Date(prev.expires_at).getTime() < Date.now()) {
+    return json({ error: "Preview expired. Please try again." }, 400);
+  }
+  if (!Number.isFinite(prev.area_km2) || prev.area_km2 <= 0) {
+    return json({ error: "No purchasable area left." }, 409);
   }
 
-  const { businessId, areaId, slot, previewUrl } = body || {};
-  if (!businessId || !areaId || !slot) return json({ error: "businessId, areaId, slot required" }, 400);
-  if (!previewUrl || !isSafePreviewUrl(previewUrl)) {
-    return json({ error: "Valid previewUrl required" }, 400);
-  }
-
-  // ---- 1) block if another business already owns this slot in THIS area
-  // (quick check to short-circuit obvious conflicts)
+  // 2) Hard block if someone else holds the slot (active-ish)
   const BLOCKING = ["active", "trialing", "past_due", "unpaid"];
   const { data: conflicts, error: conflictErr } = await sb
     .from("sponsored_subscriptions")
     .select("id,business_id,status")
     .eq("area_id", areaId)
     .eq("slot", slot)
-    .neq("business_id", businessId)
     .in("status", BLOCKING)
+    .neq("business_id", businessId)
     .limit(1);
 
   if (conflictErr) return json({ error: "DB error (conflict)" }, 500);
-  if (conflicts?.length) return json({ error: "Slot already taken in this area" }, 409);
+  if (conflicts?.length) return json({ error: "Slot already taken" }, 409);
 
-  // ---- 2) fetch the authoritative preview server-side
-  // This contains the geo clip across ALL areas and returns:
-  //   { ok, area_km2, monthly_price, final_geojson }
-  let preview;
-  try {
-    const res = await fetch(previewUrl, { method: "GET" });
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      return json({ error: `Preview ${res.status}${txt ? ` – ${txt}` : ""}` }, 502);
-    }
-    preview = await res.json();
-  } catch (e) {
-    return json({ error: `Failed to parse URL from .netlify/functions/sponsored-preview` }, 502);
-  }
-
-  if (!preview?.ok) return json({ error: "Preview failed" }, 502);
-
-  const areaKm2 = Number(preview.area_km2 || 0);
-  const monthlyPrice = Number(preview.monthly_price || 0);
-
-  // **Hard guard** — if preview says zero purchasable area, we refuse checkout.
-  if (!(areaKm2 > 0) || !(monthlyPrice >= 0)) {
-    return json({ error: "No purchasable area available for this slot" }, 409);
-  }
-
-  // ---- 3) reuse or create provisional row for this (business, area, slot)
+  // 3) Reuse or create provisional db row
   const PROVISIONAL = ["incomplete", "incomplete_expired"];
-  const { data: existing, error: existErr } = await sb
+  const { data: existing } = await sb
     .from("sponsored_subscriptions")
     .select("id,status")
     .eq("business_id", businessId)
@@ -95,8 +73,6 @@ export default async (req) => {
     .in("status", PROVISIONAL)
     .order("created_at", { ascending: false })
     .limit(1);
-
-  if (existErr) return json({ error: "DB error (lookup provisional)" }, 500);
 
   let subRowId;
   if (existing?.[0]) {
@@ -109,9 +85,6 @@ export default async (req) => {
         area_id: areaId,
         slot,
         status: "incomplete",
-        // Optional: persist the preview numbers we priced from for reconciliation
-        preview_area_km2: areaKm2,
-        preview_monthly_price: monthlyPrice,
       })
       .select("id")
       .single();
@@ -119,9 +92,9 @@ export default async (req) => {
     subRowId = inserted.id;
   }
 
-  // ---- 4) Create the Stripe session using the previewed monthly price (in pence)
-  const unitAmount = GBP(monthlyPrice);
-  if (unitAmount <= 0) return json({ error: "Invalid price" }, 400);
+  // 4) Stripe Checkout (subscription). We use the cached monthly_price_cents
+  const unitAmount = Math.max(0, Number(prev.monthly_price_cents) || 0);
+  if (!unitAmount) return json({ error: "Invalid price" }, 400);
 
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
@@ -130,22 +103,22 @@ export default async (req) => {
         price_data: {
           currency: "gbp",
           product_data: {
-            name: `Sponsor Slot #${slot} — Area ${areaId.slice(0, 8)}…`,
-            description: `Geo-clipped subscription based on your current preview.`
+            name: `Sponsor Slot #${slot} — Area ${areaId}`,
+            description: "Cleanly Marketplace Sponsored Area",
           },
-          recurring: { interval: "month" },
           unit_amount: unitAmount,
+          recurring: { interval: "month" },
         },
         quantity: 1,
       },
     ],
+    // carry identifiers to webhook
     metadata: {
       sub_row_id: subRowId,
       business_id: businessId,
       area_id: areaId,
       slot: String(slot),
-      preview_area_km2: String(areaKm2),
-      preview_price_gbp: String(monthlyPrice),
+      preview_id: previewId,
     },
     success_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`,
     cancel_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`,
