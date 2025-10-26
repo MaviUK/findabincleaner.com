@@ -6,18 +6,11 @@
   publish   = "dist"
   functions = "netlify/functions"
 
+# Single global functions table (no duplicates!)
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["stripe", "@supabase/supabase-js"]
+  external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf"]
   included_files = ["netlify/functions/**"]
-
-[functions]
-node_bundler = "esbuild"
-external_node_modules = [
-  "stripe",
-  "@supabase/supabase-js",
-  "@turf/turf"
-]
 
 # Only the Stripe webhook needs raw body for signature verification
 [functions."stripe-webhook"]
@@ -56,7 +49,13 @@ external_node_modules = [
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship checkout/preview (legacy)
+# Sponsorship: availability/painting helper
+[[redirects]]
+  from = "/api/area/sponsorship"
+  to   = "/.netlify/functions/area-sponsorship"
+  status = 200
+
+# Sponsorship checkout/preview
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -125,10 +124,4 @@ external_node_modules = [
 [[redirects]]
   from = "/*"
   to   = "/index.html"
-  status = 200
-
-# ...
-[[redirects]]
-  from = "/api/area/sponsorship"
-  to = "/.netlify/functions/area-sponsorship"
   status = 200
