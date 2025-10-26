@@ -22,10 +22,12 @@ type SlotState = {
   status: string | null;
   owner_business_id: string | null;
 };
+
+// We’ll normalize server responses so `slots` is always an array in state
 type SponsorshipState = {
   area_id: string;
   slots: SlotState[];
-  paint: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
+  paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string } | undefined;
 };
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
@@ -247,6 +249,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
+  // ------- SLOTS NORMALIZATION (fixes .find is not a function) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -256,15 +259,38 @@ export default function ServiceAreaEditor({
         body: JSON.stringify({ areaIds }),
       });
       if (!res.ok) throw new Error(`sponsorship ${res.status}`);
-      const json: { areas: SponsorshipState[] } = await res.json();
+
+      // raw server shape (slots may be an object with keys 1/2/3)
+      const raw: { areas: Array<any> } = await res.json();
+
       const map: SponsorshipMap = {};
-      for (const s of json.areas) map[s.area_id] = s;
+      for (const a of raw.areas || []) {
+        const rawSlots = a.slots;
+
+        // Normalize to SlotState[]
+        const slotsArray: SlotState[] = Array.isArray(rawSlots)
+          ? rawSlots
+          : Object.values(rawSlots || {}).map((s: any) => ({
+              slot: s.slot as 1 | 2 | 3,
+              taken: Boolean(s.taken),
+              status: s.status ?? null,
+              // support both owner_business_id and by_business_id from server
+              owner_business_id: s.owner_business_id ?? s.by_business_id ?? null,
+            }));
+
+        map[a.area_id] = {
+          area_id: a.area_id,
+          slots: slotsArray,
+          paint: a.paint,
+        };
+      }
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
   }, []);
+  // -------------------------------------------------------------------
 
   useEffect(() => {
     fetchSponsorship(serviceAreas.map((a) => a.id));
@@ -412,9 +438,12 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
+  // robust helper: works with slots as array (our normalized state)
   function slotInfo(areaId: string, slot: 1 | 2 | 3): SlotState | undefined {
     const s = sponsorship[areaId];
-    return s?.slots.find((x) => x.slot === slot);
+    if (!s) return undefined;
+    const slots = Array.isArray(s.slots) ? s.slots : Object.values(s.slots as any);
+    return (slots as SlotState[]).find((x) => x.slot === slot);
   }
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
