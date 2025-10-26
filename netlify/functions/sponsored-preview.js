@@ -3,86 +3,63 @@ import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-const RATE_GOLD = num(process.env.RATE_GOLD_PER_KM2_PER_MONTH, 1.0);
-const RATE_SILV = num(process.env.RATE_SILVER_PER_KM2_PER_MONTH, 0.75);
-const RATE_BRON = num(process.env.RATE_BRONZE_PER_KM2_PER_MONTH, 0.5);
-
-const MIN_GOLD = num(process.env.MIN_GOLD_PRICE_PER_MONTH, 1.0);
-const MIN_SILV = num(process.env.MIN_SILVER_PRICE_PER_MONTH, 0.75);
-const MIN_BRON = num(process.env.MIN_BRONZE_PRICE_PER_MONTH, 0.5);
-
-const CORS = {
-  "content-type": "application/json",
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST,OPTIONS",
-  "access-control-allow-headers": "Content-Type, Authorization",
-};
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 export default async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
-  if (req.method !== "POST") return send({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+  let body;
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
+
+  const businessId = body.businessId || body.cleanerId;
+  const areaId = body.areaId || body.area_id;
+  const slot = Number(body.slot);
+
+  if (!businessId || !areaId || !slot) return json({ ok: false, error: "cleanerId/areaId/slot required" }, 400);
 
   try {
-    const { cleanerId, areaId, slot } = await req.json();
-    if (!cleanerId || !areaId || !slot) {
-      return send({ error: "cleanerId, areaId, slot required" }, 400);
-    }
+    // --- YOUR EXISTING PREVIEW / CLIP LOGIC HERE ---
+    // For illustration we assume you computed:
+    //   areaKm2: number
+    //   monthlyPrice: number (GBP)
+    //   clipped: GeoJSON (MultiPolygon, Polygon, or Feature/FC)
 
-    // IMPORTANT: this RPC must clip the requested area's geometry
-    // to the portion that is free for `slot`, excluding the caller’s own subscriptions.
-    //
-    // Expected return shape (single row):
-    //   { area_km2: number, final_geojson: GeoJSON | null }
-    //
-    // Implemented in SQL something like:
-    //   final_geojson = ST_AsGeoJSON(
-    //     ST_Multi(
-    //       ST_Intersection(area.geom, available_for_slot(slot, exclude_cleaner := cleanerId))
-    //     )
-    //   )::jsonb
-    //
-    const { data, error } = await sb.rpc("get_area_preview", {
-      _area_id: areaId,
-      _slot: Number(slot),
-      _drawn_geojson: null,       // or a drawn override if you support it
-      _exclude_cleaner: cleanerId // ensures caller’s own live slots don’t block themselves
-    });
+    // REPLACE these three lines with your real computed values:
+    const areaKm2 = body.__debug_area_km2 ?? 0;             // <— your computed area
+    const monthlyPrice = body.__debug_monthly ?? 0;         // <— your computed monthly price (GBP)
+    const clipped = body.__debug_multi ?? null;             // <— your computed clipped GeoJSON
 
-    if (error) {
-      console.error("[sponsored-preview] RPC error:", error);
-      return send({ error: "Failed to compute available geometry" }, 500);
-    }
+    // Build cache row (15 minute validity)
+    const monthlyCents = Math.max(0, Math.round(Number(monthlyPrice) * 100));
+    const { data: ins, error: insErr } = await sb
+      .from("sponsored_preview_cache")
+      .insert({
+        business_id: businessId,
+        area_id: areaId,
+        slot,
+        area_km2: Number(areaKm2) || 0,
+        monthly_price_cents: monthlyCents,
+        clipped_geojson: clipped ?? null,
+        expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      })
+      .select("id")
+      .single();
 
-    const row = Array.isArray(data) ? data[0] : data;
-    const area_km2 = Number(row?.area_km2 ?? 0);
-    const final_geojson = row?.final_geojson ?? null;
+    if (insErr || !ins) return json({ ok: false, error: "Failed to persist preview" }, 500);
 
-    // price by slot
-    const { rate, min } =
-      Number(slot) === 1 ? { rate: RATE_GOLD, min: MIN_GOLD } :
-      Number(slot) === 2 ? { rate: RATE_SILV, min: MIN_SILV } :
-                           { rate: RATE_BRON, min: MIN_BRON };
+    // Create a lightweight URL that your checkout can re-load/validate
+    const previewUrl = `${process.env.PUBLIC_SITE_URL}/.netlify/functions/sponsored-preview?previewId=${ins.id}`;
 
-    const monthly_price = round2(Math.max(min, Math.max(0, area_km2) * rate));
-
-    return send({
+    return json({
       ok: true,
-      area_km2: round5(area_km2),
-      monthly_price,
-      final_geojson, // 👈 UI will draw exactly this (only the purchasable piece)
+      area_km2: areaKm2,
+      monthly_price: monthlyPrice,
+      final_geojson: clipped,       // your UI uses this for the green overlay
+      preview_url: previewUrl,      // <— IMPORTANT
     });
   } catch (e) {
     console.error("[sponsored-preview] error:", e);
-    return send({ error: e?.message || "preview failed" }, 500);
+    return json({ ok: false, error: "Preview failed" }, 500);
   }
 };
-
-function send(body, status = 200) {
-  return new Response(JSON.stringify(body), { status, headers: CORS });
-}
-function num(v, d) {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
-function round2(n) { return Math.round(n * 100) / 100; }
-function round5(n) { return Math.round(n * 1e5) / 1e5; }
