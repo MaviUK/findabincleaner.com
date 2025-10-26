@@ -1,4 +1,3 @@
-// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
@@ -11,15 +10,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-const ACTIVE_STATUSES = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "requires_payment_method",
-]);
+// Treat anything not canceled/incomplete_expired as blocking.
+const NON_BLOCKING = new Set(["canceled", "incomplete_expired"]);
+const isBlocking = (s) => !NON_BLOCKING.has(String(s || "").toLowerCase());
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -30,7 +23,6 @@ function rateForSlot(slot) {
   };
   return perSlot[slot] || base;
 }
-
 function minForSlot(slot) {
   const base = Number(process.env.MIN_PRICE_PER_MONTH || 1);
   const perSlot = {
@@ -67,30 +59,52 @@ export default async (req) => {
   }
 
   try {
-    // ✅ STEP 1: Check for any *existing* non-canceled sponsor for same area+slot
-    const { data: existing, error: checkErr } = await sb
+    // ---------- STEP 0: Clear stale locks (lightweight best-effort) ----------
+    try {
+      await sb.rpc("cleanup_stale_sponsored_locks");
+    } catch (_) {}
+
+    // ---------- STEP 1: Hard block if any live sponsor exists ----------
+    const { data: existing, error: exErr } = await sb
       .from("sponsored_subscriptions")
       .select("id, status, business_id")
       .eq("area_id", areaId)
       .eq("slot", slot);
+    if (exErr) throw exErr;
 
-    if (checkErr) throw checkErr;
-
-    const active = (existing || []).find((row) =>
-      ACTIVE_STATUSES.has((row.status || "").toLowerCase())
-    );
-
-    if (active && active.business_id !== businessId) {
-      console.warn(
-        `BLOCKED: Business ${businessId} tried to buy slot ${slot} for area ${areaId}, but owned by ${active.business_id}`
-      );
+    const live = (existing || []).find((r) => isBlocking(r.status));
+    if (live && live.business_id !== businessId) {
       return json(
         { error: `Slot #${slot} is already sponsored by another business.` },
         409
       );
     }
 
-    // ✅ STEP 2: Fetch geometry
+    // ---------- STEP 2: Acquire a concurrency lock ----------
+    // Only one lock row (area,slot) may exist due to the UNIQUE(area_id,slot).
+    // If another checkout is in flight, this insert will fail.
+    let lockId = null;
+    {
+      const { data, error } = await sb
+        .from("sponsored_locks")
+        .insert([{ area_id: areaId, slot, business_id: businessId }])
+        .select("id")
+        .single();
+
+      if (error) {
+        // 23505 => unique_violation (already locked)
+        if (String(error.code) === "23505") {
+          return json(
+            { error: `Another checkout is already holding slot #${slot} for this area.` },
+            409
+          );
+        }
+        throw error;
+      }
+      lockId = data.id;
+    }
+
+    // ---------- STEP 3: Compute available geometry (subtract blockers) ----------
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("gj")
@@ -103,23 +117,24 @@ export default async (req) => {
     const gj = areaRow.gj;
     if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
-    else return json({ error: "Invalid area geometry" }, 400);
+    else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
 
-    // ✅ STEP 3: Remove overlapping regions from existing active sponsors
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
       .select("status, final_geojson")
       .eq("area_id", areaId)
       .eq("slot", slot);
-
     if (subsErr) throw subsErr;
 
     let available = base;
     for (const s of subs || []) {
-      if (!ACTIVE_STATUSES.has((s.status || "").toLowerCase())) continue;
-      if (!s.final_geojson) continue;
-      let blockGeom;
+      if (!isBlocking(s.status)) continue;
+      if (!s.final_geojson) {
+        // A live winner without final_geojson blocks the entire slot
+        return json({ error: "No purchasable area left for this slot." }, 400);
+      }
       const g = s.final_geojson;
+      let blockGeom;
       if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
       else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
       else continue;
@@ -136,13 +151,13 @@ export default async (req) => {
       return json({ error: "No purchasable area left for this slot." }, 400);
     }
 
-    // ✅ STEP 4: Price calculation
+    // ---------- STEP 4: Price ----------
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = Math.max(km2 * rate, min);
-    const unitAmount = Math.round(monthly * 100);
+    const unitAmount = Math.round(monthly * 100); // pence
 
-    // ✅ STEP 5: Stripe session
+    // ---------- STEP 5: Stripe Checkout ----------
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
@@ -169,9 +184,18 @@ export default async (req) => {
         slot: String(slot),
         business_id: businessId,
         preview_id: previewId || "",
+        lock_id: lockId,
         km2: km2.toFixed(6),
       },
     });
+
+    // Save the session id on our lock row (best-effort)
+    try {
+      await sb
+        .from("sponsored_locks")
+        .update({ stripe_session_id: session.id })
+        .eq("id", lockId);
+    } catch (_) {}
 
     return json({ url: session.url });
   } catch (err) {
