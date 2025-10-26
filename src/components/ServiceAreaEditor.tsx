@@ -7,29 +7,28 @@ import AreaManageModal from "./AreaManageModal";
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs */
 
-// ---- Types ----
 export interface ServiceAreaRow {
   id: string;
-  business_id: string; // owner of the area (same UUID as cleaner_id in older code)
+  business_id: string;
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 }
 
-type SlotAvailability = {
+// ---- Slot / availability shapes (normalized) ----
+type SlotNorm = {
   slot: 1 | 2 | 3;
-  purchasable: boolean;
-  leftover_km2: number;
-  monthly_price: number;
-  reason?: string | null;
-
-  // optionally provided by backend; if present we can show "Manage"
-  owner_business_id?: string | null;
+  purchasable: boolean;          // true only if you can buy some sub-region
+  leftover_km2: number;          // purchasable area size
+  monthly_price: number;         // computed monthly price for that leftover
+  taken: boolean;                // true if the slot is blocked by someone else
+  reason?: string | null;        // optional text reason from server
+  owner_business_id: string | null; // who owns it (if known); if == me -> show Manage
 };
 
 type SponsorshipState = {
   area_id: string;
-  slots: SlotAvailability[];
+  slots: SlotNorm[];
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string } | undefined;
 };
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
@@ -120,21 +119,14 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
-/** Accept Polygon/MultiPolygon/Feature/FeatureCollection and return array of rings-paths for <Polygon /> */
 function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (!geo) return [];
-
-  // FeatureCollection
   if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
     return geo.features.flatMap((f: any) => geoToPaths(f));
   }
-
-  // Feature
   if (geo.type === "Feature" && geo.geometry) {
     return geoToPaths(geo.geometry);
   }
-
-  // Geometry
   if (geo.type === "MultiPolygon" && Array.isArray(geo.coordinates)) {
     return (geo.coordinates as number[][][][]).map((poly) => ({
       paths: poly.map((ring) =>
@@ -147,7 +139,6 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
       ),
     }));
   }
-
   if (geo.type === "Polygon" && Array.isArray(geo.coordinates)) {
     return [
       {
@@ -162,31 +153,25 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
       },
     ];
   }
-
   if (geo.geometry) return geoToPaths(geo.geometry);
   if (geo.geojson) return geoToPaths(geo.geojson);
   if (geo.multi) return geoToPaths(geo.multi);
-
   return [];
 }
 
 type Props = {
-  /** Accept either prop name to keep the rest of the app compiling */
   businessId?: string;
   cleanerId?: string;
   sponsorshipVersion?: number;
-  /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
   onSlotAction?: (area: { id: string; name?: string }, slot: 1 | 2 | 3) => void | Promise<void>;
 };
 
-// ---------------- Component ----------------
 export default function ServiceAreaEditor({
   businessId,
   cleanerId,
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
-  // unified id used everywhere internally
   const myBusinessId = (businessId ?? cleanerId)!;
 
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
@@ -207,17 +192,14 @@ export default function ServiceAreaEditor({
   const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
   const [creating, setCreating] = useState<boolean>(false);
 
-  // sponsor modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
   const [sponsorSlot, setSponsorSlot] = useState<1 | 2 | 3>(1);
 
-  // manage modal state (used when onSlotAction isn't provided)
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<1 | 2 | 3>(1);
 
-  // ---- PREVIEW OVERLAY (clipped purchasable sub-region) ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
   const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
@@ -232,7 +214,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (RPC still uses p_cleaner_id; we pass the business id value)
+  // Areas
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -252,7 +234,42 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- Availability (overlap-aware) -------
+  // ---- Availability fetch + normalization ----
+  const normalizeSlot = (s: any): SlotNorm => {
+    // server might return any of: owner_business_id / by_business_id / business_id
+    const owner =
+      s?.owner_business_id ?? s?.by_business_id ?? s?.business_id ?? null;
+
+    // If server provides purchasable boolean, trust it; else derive from taken/leftover_km2
+    const leftover = Number(s?.leftover_km2 ?? s?.km2 ?? 0) || 0;
+    const explicitPurch = typeof s?.purchasable === "boolean" ? s.purchasable : null;
+    const explicitTaken = typeof s?.taken === "boolean" ? s.taken : null;
+
+    let purchasable: boolean;
+    if (explicitPurch !== null) {
+      purchasable = explicitPurch;
+    } else {
+      // if we know it's taken -> not purchasable
+      // else consider purchasable when there's leftover area
+      purchasable = explicitTaken === true ? false : leftover > 0;
+    }
+
+    const taken =
+      explicitTaken !== null
+        ? explicitTaken
+        : (!purchasable && leftover <= 0) || false;
+
+    return {
+      slot: Number(s?.slot ?? 0) as 1 | 2 | 3,
+      purchasable,
+      leftover_km2: leftover,
+      monthly_price: Number(s?.monthly_price ?? 0) || 0,
+      taken,
+      reason: s?.reason ?? null,
+      owner_business_id: owner,
+    };
+  };
+
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -262,16 +279,38 @@ export default function ServiceAreaEditor({
         body: JSON.stringify({ areaIds }),
       });
       if (!res.ok) throw new Error(`sponsorship ${res.status}`);
-      const raw: { areas: Array<any> } = await res.json();
 
+      const raw: { areas: Array<any> } = await res.json();
       const map: SponsorshipMap = {};
+
       for (const a of raw.areas || []) {
-        const slotsArray: SlotAvailability[] = Array.isArray(a.slots)
-          ? a.slots
-          : Object.values(a.slots || []);
+        const rawSlots = Array.isArray(a.slots) ? a.slots : Object.values(a.slots || {});
+        const norm: SlotNorm[] = rawSlots
+          .map(normalizeSlot)
+          .filter((x) => x.slot === 1 || x.slot === 2 || x.slot === 3)
+          // Ensure we always have three entries in a predictable order
+          .sort((p, q) => p.slot - q.slot);
+
+        // Fill missing slots with default "purchasable" false
+        const have = new Set(norm.map((x) => x.slot));
+        ([1, 2, 3] as const).forEach((slot) => {
+          if (!have.has(slot)) {
+            norm.push({
+              slot,
+              purchasable: false,
+              leftover_km2: 0,
+              monthly_price: 0,
+              taken: false,
+              reason: null,
+              owner_business_id: null,
+            });
+          }
+        });
+        norm.sort((p, q) => p.slot - q.slot);
+
         map[a.area_id] = {
           area_id: a.area_id,
-          slots: slotsArray as SlotAvailability[],
+          slots: norm,
           paint: a.paint,
         };
       }
@@ -285,16 +324,14 @@ export default function ServiceAreaEditor({
   useEffect(() => {
     fetchSponsorship(serviceAreas.map((a) => a.id));
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
-  // -------------------------------------------
 
+  // Map handlers
   const onMapLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map;
   }, []);
-
   const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
     drawingMgrRef.current = dm;
   }, []);
-
   const onPolygonComplete = useCallback((poly: google.maps.Polygon) => {
     poly.setOptions(polyStyle);
     poly.setEditable(true);
@@ -304,7 +341,7 @@ export default function ServiceAreaEditor({
 
   const startNewArea = useCallback(() => {
     resetDraft();
-    clearPreview(); // ensure preview is not visible while drawing
+    clearPreview();
     setCreating(true);
     setDraftName("New Service Area");
     setTimeout(
@@ -316,7 +353,7 @@ export default function ServiceAreaEditor({
   const editArea = useCallback(
     (area: ServiceAreaRow) => {
       resetDraft();
-      clearPreview(); // ensure preview isn’t lingering while editing
+      clearPreview();
       setActiveAreaId(area.id);
       setDraftName(area.name);
       const gj = area.gj;
@@ -368,7 +405,7 @@ export default function ServiceAreaEditor({
         if (error) throw error;
       } else {
         const { error } = await supabase.rpc("insert_service_area", {
-          p_cleaner_id: myBusinessId, // RPC param name unchanged
+          p_cleaner_id: myBusinessId,
           p_gj: multi,
           p_name: draftName || "Untitled Area",
         });
@@ -429,17 +466,14 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
-  // Helpers
-  function slotAvail(areaId: string, slot: 1 | 2 | 3): SlotAvailability | undefined {
-    const s = sponsorship[areaId];
-    return s?.slots.find((x) => x.slot === slot);
-  }
-  function areaPaint(areaId: string) {
-    return sponsorship[areaId]?.paint;
-  }
+  const slotFor = (areaId: string, slot: 1 | 2 | 3): SlotNorm | undefined =>
+    sponsorship[areaId]?.slots.find((x) => x.slot === slot);
 
-  if (loadError)
+  const areaPaint = (areaId: string) => sponsorship[areaId]?.paint;
+
+  if (loadError) {
     return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
+  }
 
   return (
     <>
@@ -507,42 +541,41 @@ export default function ServiceAreaEditor({
             {/* List */}
             <ul className="space-y-2">
               {serviceAreas.map((a) => {
-                const s1 = slotAvail(a.id, 1);
-                const s2 = slotAvail(a.id, 2);
-                const s3 = slotAvail(a.id, 3);
+                const s1 = slotFor(a.id, 1);
+                const s2 = slotFor(a.id, 2);
+                const s3 = slotFor(a.id, 3);
 
-                // Ownership (optional – only works if backend provides owner_business_id)
+                // Ownership (show Manage if we own)
                 const mine1 = s1?.owner_business_id === myBusinessId;
                 const mine2 = s2?.owner_business_id === myBusinessId;
                 const mine3 = s3?.owner_business_id === myBusinessId;
                 const ownsAny = !!(mine1 || mine2 || mine3);
 
                 // Disable rule:
-                // - if I own any slot in this area, disable other slots (single-slot-per-area rule)
-                // - otherwise, enable only if purchasable
-                const dis1 = !mine1 && (ownsAny || !s1?.purchasable);
-                const dis2 = !mine2 && (ownsAny || !s2?.purchasable);
-                const dis3 = !mine3 && (ownsAny || !s3?.purchasable);
+                // - If I own any slot in this area, disable the other two
+                // - Else enable only if purchasable === true
+                const dis1 = !mine1 && (ownsAny || !(s1?.purchasable === true));
+                const dis2 = !mine2 && (ownsAny || !(s2?.purchasable === true));
+                const dis3 = !mine3 && (ownsAny || !(s3?.purchasable === true));
 
-                // label + title
-                const labelFor = (mine: boolean, s?: SlotAvailability) =>
-                  mine ? "Manage" : s?.purchasable ? "Sponsor" : "Taken";
+                const labelFor = (mine: boolean, s?: SlotNorm) =>
+                  mine ? "Manage" : s?.purchasable ? "Sponsor" : s?.taken ? "Taken" : "Unavailable";
 
-                const titleFor = (mine: boolean, s?: SlotAvailability) => {
+                const titleFor = (mine: boolean, s?: SlotNorm) => {
                   if (mine) return "You sponsor this slot";
                   if (!s) return "Unavailable";
                   if (s.purchasable) {
                     const price =
-                      typeof s.monthly_price === "number"
+                      typeof s.monthly_price === "number" && s.monthly_price > 0
                         ? ` (~£${s.monthly_price.toFixed(2)}/mo)`
                         : "";
                     return `Available${price}`;
                   }
-                  return s.reason || "Not available";
+                  return s.reason || (s.taken ? "Taken" : "Not available");
                 };
 
-                const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
-                  if (isDisabled) return;
+                const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, disabled: boolean) => {
+                  if (disabled) return;
                   if (isMine) {
                     if (onSlotAction) {
                       await onSlotAction({ id: a.id, name: a.name }, slot);
@@ -553,7 +586,6 @@ export default function ServiceAreaEditor({
                     }
                     return;
                   }
-                  // default: open sponsor flow
                   setSponsorAreaId(a.id);
                   setSponsorSlot(slot);
                   setSponsorOpen(true);
@@ -578,7 +610,6 @@ export default function ServiceAreaEditor({
                       </div>
                     </div>
 
-                    {/* Sponsor / Manage buttons */}
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
@@ -611,9 +642,7 @@ export default function ServiceAreaEditor({
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">
-                  No service areas yet. Click “New Area” to draw one.
-                </li>
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
               )}
             </ul>
           </div>
@@ -673,7 +702,7 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* non-editable painted overlays */}
+              {/* base painted overlays */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
@@ -700,7 +729,7 @@ export default function ServiceAreaEditor({
                   });
                 })}
 
-              {/* Preview overlay – drawn on top */}
+              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -733,7 +762,7 @@ export default function ServiceAreaEditor({
             setSponsorOpen(false);
             clearPreview();
           }}
-          businessId={myBusinessId}   // modal expects businessId
+          businessId={myBusinessId}
           areaId={sponsorAreaId}
           slot={sponsorSlot}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
@@ -741,12 +770,12 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* Manage modal (used when parent doesn't intercept) */}
+      {/* Manage modal */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          cleanerId={myBusinessId}   // AreaManageModal still expects cleanerId
+          cleanerId={myBusinessId}
           areaId={manageAreaId}
           slot={manageSlot}
         />
