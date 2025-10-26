@@ -8,7 +8,6 @@ const sb = createClient(
 );
 
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
-const PROVISIONAL = new Set(["incomplete", "incomplete_expired"]); // ignored
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -42,7 +41,7 @@ export default async (req) => {
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON" }, 400);
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
   const areaId = body?.areaId;
@@ -51,75 +50,103 @@ export default async (req) => {
     return json({ ok: false, error: "Missing areaId or slot" }, 400);
   }
 
-  try {
-    // 1) Load the base service area polygon
-    const { data: areaRow, error: areaErr } = await sb
-      .from("service_areas")
-      .select("id, gj")
-      .eq("id", areaId)
-      .maybeSingle();
+  // Quick sanity on env (don’t log secrets)
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE) {
+    return json({ ok: false, error: "Server misconfigured: missing Supabase env" }, 500);
+  }
 
-    if (areaErr) throw areaErr;
+  try {
+    // ---- DB reads
+    let areaRow, areaErr;
+    try {
+      const { data, error } = await sb
+        .from("service_areas")
+        .select("id, gj")
+        .eq("id", areaId)
+        .limit(1)
+        .single();
+      areaRow = data;
+      areaErr = error;
+    } catch (e) {
+      areaErr = e;
+    }
+    if (areaErr) {
+      console.error("DB(area) error:", areaErr);
+      return json({ ok: false, error: "DB(area) error" }, 500);
+    }
     if (!areaRow?.gj) return json({ ok: false, error: "Area not found" }, 404);
 
-    // Normalize to MultiPolygon
-    let base = turf.multiPolygon([]);
+    let base;
     const gj = areaRow.gj;
     if (gj.type === "Polygon") base = turf.multiPolygon([gj.coordinates]);
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
-    else return json({ ok: false, error: "Area geometry must be Polygon or MultiPolygon" }, 400);
+    else return json({ ok: false, error: "Area geometry must be Polygon/MultiPolygon" }, 400);
 
-    // 2) Load *blocking* subscriptions for same area+slot
-    const { data: subs, error: subsErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("status, final_geojson")
-      .eq("area_id", areaId)
-      .eq("slot", slot);
-
-    if (subsErr) throw subsErr;
-
-    const blockers = subs?.filter((s) => BLOCKING.has(s.status)) || [];
-
-    // If any blocker lacks final_geojson => whole area is blocked
-    const wholeBlocked = blockers.some((b) => !b.final_geojson);
-    if (wholeBlocked) {
-      return json({
-        ok: true,
-        area_km2: 0,
-        monthly_price: 0,
-        final_geojson: null,
-      });
+    // Detect invalid/self-intersecting geometry early
+    try {
+      const k = turf.kinks(base);
+      if (k && k.features && k.features.length > 0) {
+        return json({ ok: false, error: "Area geometry is self-intersecting" }, 400);
+      }
+    } catch (_) {
+      // ignore kinks errors
     }
 
-    // 3) Subtract blocking geometries
+    let subs, subsErr;
+    try {
+      const { data, error } = await sb
+        .from("sponsored_subscriptions")
+        .select("status, final_geojson")
+        .eq("area_id", areaId)
+        .eq("slot", slot);
+      subs = data || [];
+      subsErr = error;
+    } catch (e) {
+      subsErr = e;
+    }
+    if (subsErr) {
+      console.error("DB(subs) error:", subsErr);
+      return json({ ok: false, error: "DB(subscriptions) error" }, 500);
+    }
+
+    const blockers = subs.filter((s) => BLOCKING.has(s.status));
+    if (blockers.some((b) => !b.final_geojson)) {
+      return json({ ok: true, area_km2: 0, monthly_price: 0, final_geojson: null });
+    }
+
+    // ---- Geometry ops
     let available = base;
     for (const b of blockers) {
-      if (!b.final_geojson) continue;
       const g = b.final_geojson;
+      if (!g) continue;
       let blockGeom;
       if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
       else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
-      else continue; // ignore bad shapes
+      else continue;
 
-      available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
+      // difference can throw on bad rings — guard it
+      try {
+        available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
+      } catch (e) {
+        console.error("GEOM(difference) error:", e);
+        return json({ ok: false, error: "Geometry difference failed" }, 400);
+      }
     }
 
-    // 4) Compute area + price
-    const m2 = turf.area(available); // returns square meters
+    const m2 = turf.area(available);
     const km2 = m2 / 1e6;
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = km2 > 0 ? Math.max(km2 * rate, min) : 0;
 
-    // If zero area, respond with ok:true but zero so UI can disable checkout with a friendly message
     return json({
       ok: true,
       area_km2: Number(km2.toFixed(6)),
-      monthly_price: Math.round(monthly * 100) / 100, // 2dp
+      monthly_price: Math.round(monthly * 100) / 100,
       final_geojson: km2 > 0 ? available : null,
     });
-  } catch (err) {
-    console.error("sponsored-preview error:", err);
-    return json({ ok: false, error: "DB error" }, 500);
+  } catch (e) {
+    console.error("UNEXPECTED:", e);
+    return json({ ok: false, error: "Unexpected server error" }, 500);
   }
 };
