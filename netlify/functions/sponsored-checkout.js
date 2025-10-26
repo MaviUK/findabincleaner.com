@@ -7,7 +7,9 @@ const sb = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
 
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
@@ -48,18 +50,44 @@ export default async (req) => {
 
   const areaId = body?.areaId;
   const slot = Number(body?.slot);
-  const businessId = body?.businessId; // from session on client
+  const businessId = body?.businessId;
+  const previewId = body?.previewId || null;
+
   if (!areaId || !Number.isInteger(slot) || !businessId) {
     return json({ error: "Missing areaId, slot, or businessId" }, 400);
   }
 
   try {
-    // --- Re-run SERVER-SIDE preview ---
+    // 🧩 1. Check if this slot is already fully sponsored
+    const { data: existingSubs, error: subErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("id, status, business_id")
+      .eq("area_id", areaId)
+      .eq("slot", slot)
+      .in("status", ["active", "trialing", "past_due", "unpaid"]);
+
+    if (subErr) throw subErr;
+
+    if (existingSubs?.length) {
+      // Someone already holds this slot
+      const ownedByMe = existingSubs.some(
+        (s) => s.business_id === businessId
+      );
+      if (!ownedByMe) {
+        return json(
+          { error: `Slot #${slot} is already sponsored by another business.` },
+          409
+        );
+      }
+    }
+
+    // 🧩 2. Pull the original area geometry
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("id, gj")
       .eq("id", areaId)
       .maybeSingle();
+
     if (areaErr) throw areaErr;
     if (!areaRow?.gj) return json({ error: "Area not found" }, 404);
 
@@ -69,6 +97,7 @@ export default async (req) => {
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
     else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
 
+    // 🧩 3. Apply geometry difference for any overlapping subscriptions
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
       .select("status, final_geojson")
@@ -77,8 +106,6 @@ export default async (req) => {
 
     if (subsErr) throw subsErr;
     const blockers = subs?.filter((s) => BLOCKING.has(s.status)) || [];
-    const wholeBlocked = blockers.some((b) => !b.final_geojson);
-    if (wholeBlocked) return json({ error: "Slot fully blocked" }, 400);
 
     let available = base;
     for (const b of blockers) {
@@ -92,18 +119,25 @@ export default async (req) => {
     }
 
     const km2 = turf.area(available) / 1e6;
-    if (!(km2 > 0)) return json({ error: "No purchasable area available" }, 400);
 
+    // 🧩 4. Ensure at least a meaningful region remains (no rounding)
+    if (km2 < 0.00001) {
+      return json(
+        { error: `No purchasable area left for slot #${slot}.` },
+        400
+      );
+    }
+
+    // 🧩 5. Price calculation
     const rate = rateForSlot(slot);
     const min = minForSlot(slot);
     const monthly = Math.max(km2 * rate, min);
-
-    // Stripe amount in the smallest currency unit (GBP -> pence)
-    const unitAmount = Math.round(monthly * 100);
+    const unitAmount = Math.round(monthly * 100); // pence
 
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
+    // 🧩 6. Stripe Checkout
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       success_url: successUrl,
@@ -126,6 +160,7 @@ export default async (req) => {
         area_id: areaId,
         slot: String(slot),
         business_id: businessId,
+        preview_id: previewId || "",
         km2: km2.toFixed(6),
       },
     });
