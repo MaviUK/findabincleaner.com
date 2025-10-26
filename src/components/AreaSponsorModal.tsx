@@ -7,14 +7,21 @@ type PreviewOk = {
   ok: true;
   area_km2: number | string;
   monthly_price: number | string;
-  final_geojson: any | null;
+
+  // geometry (any of these may appear depending on the function version)
+  final_geojson?: any | null;
   available?: any;
   available_gj?: any;
   available_geojson?: any;
   geometry?: any;
   geojson?: any;
   multi?: any;
+
+  // preview link expected by sponsored-checkout
+  preview_url?: string;
+  previewUrl?: string;
 };
+
 type PreviewErr = { ok?: false; error?: string };
 type PreviewResp = PreviewOk | PreviewErr;
 
@@ -65,7 +72,7 @@ async function callPreview({
   const res = await fetch("/.netlify/functions/sponsored-preview", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    // Send synonyms to be future-proof
+    // Send synonyms to be future-proof with backend param names
     body: JSON.stringify({
       cleanerId,
       businessId: cleanerId,
@@ -86,13 +93,17 @@ async function callPreview({
     throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
   }
 
-  const aNum = Number((json as PreviewOk).area_km2);
-  const mNum = Number((json as PreviewOk).monthly_price);
+  const ok = json as PreviewOk;
+
+  const aNum = Number(ok.area_km2);
+  const mNum = Number(ok.monthly_price);
+  const previewUrl = ok.preview_url ?? ok.previewUrl ?? null;
 
   return {
     km2: Number.isFinite(aNum) ? aNum : 0,
     monthly: Number.isFinite(mNum) ? mNum : null,
-    geom: pickClippedGeom(json),
+    geom: pickClippedGeom(ok),
+    previewUrl,
   };
 }
 
@@ -129,7 +140,7 @@ export default function AreaSponsorModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  // Compute preview & draw
+  // Compute preview & draw overlay
   useEffect(() => {
     if (!open || !ownerId) return;
 
@@ -198,24 +209,29 @@ export default function AreaSponsorModal({
     onClose();
   }
 
-  // Gate again using preview before checkout
+  // Gate with a fresh preview and pass previewUrl to checkout
   async function handleCheckout() {
     try {
-      const { km2 } = await callPreview({ cleanerId: ownerId, areaId, slot });
+      const { km2, previewUrl } = await callPreview({
+        cleanerId: ownerId,
+        areaId,
+        slot,
+      });
+
       if (!Number.isFinite(km2) || km2 <= 0) {
         setErr(
           `This slot has no purchasable area left. Another business already has Sponsor #${slot} here.`
         );
         return;
       }
-    } catch (e: any) {
-      setErr(e?.message || "Could not verify availability.");
-      return;
-    }
+      if (!previewUrl) {
+        setErr("Valid previewUrl required (could not create a fresh preview).");
+        return;
+      }
 
-    setCheckingOut(true);
-    setErr(null);
-    try {
+      setCheckingOut(true);
+      setErr(null);
+
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -225,13 +241,16 @@ export default function AreaSponsorModal({
           areaId,
           area_id: areaId,
           slot: Number(slot),
+          previewUrl, // REQUIRED by backend
           return_url: typeof window !== "undefined" ? window.location.origin : undefined,
         }),
       });
+
       if (!res.ok) {
         const txt = await res.text().catch(() => "");
         throw new Error(`Checkout ${res.status}${txt ? ` – ${txt}` : ""}`);
       }
+
       const json = await res.json();
       if (!json?.url) throw new Error("No checkout URL returned");
       window.location.href = json.url;
