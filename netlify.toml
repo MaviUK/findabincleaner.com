@@ -11,6 +11,14 @@
   external_node_modules = ["stripe", "@supabase/supabase-js"]
   included_files = ["netlify/functions/**"]
 
+[functions]
+node_bundler = "esbuild"
+external_node_modules = [
+  "stripe",
+  "@supabase/supabase-js",
+  "@turf/turf"
+]
+
 # Only the Stripe webhook needs raw body for signature verification
 [functions."stripe-webhook"]
   body = "raw"
