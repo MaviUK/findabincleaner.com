@@ -16,17 +16,20 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-type SlotState = {
+type SlotAvailability = {
   slot: 1 | 2 | 3;
-  taken: boolean;
-  status: string | null;
-  owner_business_id: string | null;
+  purchasable: boolean;
+  leftover_km2: number;
+  monthly_price: number;
+  reason?: string | null;
+
+  // optionally provided by backend; if present we can show "Manage"
+  owner_business_id?: string | null;
 };
 
-// We’ll normalize server responses so `slots` is always an array in state
 type SponsorshipState = {
   area_id: string;
-  slots: SlotState[];
+  slots: SlotAvailability[];
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string } | undefined;
 };
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
@@ -249,7 +252,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- SLOTS NORMALIZATION (fixes .find is not a function) -------
+  // ------- Availability (overlap-aware) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -259,28 +262,16 @@ export default function ServiceAreaEditor({
         body: JSON.stringify({ areaIds }),
       });
       if (!res.ok) throw new Error(`sponsorship ${res.status}`);
-
-      // raw server shape (slots may be an object with keys 1/2/3)
       const raw: { areas: Array<any> } = await res.json();
 
       const map: SponsorshipMap = {};
       for (const a of raw.areas || []) {
-        const rawSlots = a.slots;
-
-        // Normalize to SlotState[]
-        const slotsArray: SlotState[] = Array.isArray(rawSlots)
-          ? rawSlots
-          : Object.values(rawSlots || {}).map((s: any) => ({
-              slot: s.slot as 1 | 2 | 3,
-              taken: Boolean(s.taken),
-              status: s.status ?? null,
-              // support both owner_business_id and by_business_id from server
-              owner_business_id: s.owner_business_id ?? s.by_business_id ?? null,
-            }));
-
+        const slotsArray: SlotAvailability[] = Array.isArray(a.slots)
+          ? a.slots
+          : Object.values(a.slots || []);
         map[a.area_id] = {
           area_id: a.area_id,
-          slots: slotsArray,
+          slots: slotsArray as SlotAvailability[],
           paint: a.paint,
         };
       }
@@ -290,11 +281,11 @@ export default function ServiceAreaEditor({
       setSponsorship({});
     }
   }, []);
-  // -------------------------------------------------------------------
 
   useEffect(() => {
     fetchSponsorship(serviceAreas.map((a) => a.id));
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
+  // -------------------------------------------
 
   const onMapLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map;
@@ -438,12 +429,10 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
-  // robust helper: works with slots as array (our normalized state)
-  function slotInfo(areaId: string, slot: 1 | 2 | 3): SlotState | undefined {
+  // Helpers
+  function slotAvail(areaId: string, slot: 1 | 2 | 3): SlotAvailability | undefined {
     const s = sponsorship[areaId];
-    if (!s) return undefined;
-    const slots = Array.isArray(s.slots) ? s.slots : Object.values(s.slots as any);
-    return (slots as SlotState[]).find((x) => x.slot === slot);
+    return s?.slots.find((x) => x.slot === slot);
   }
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
@@ -518,29 +507,40 @@ export default function ServiceAreaEditor({
             {/* List */}
             <ul className="space-y-2">
               {serviceAreas.map((a) => {
-                const s1 = slotInfo(a.id, 1);
-                const s2 = slotInfo(a.id, 2);
-                const s3 = slotInfo(a.id, 3);
+                const s1 = slotAvail(a.id, 1);
+                const s2 = slotAvail(a.id, 2);
+                const s3 = slotAvail(a.id, 3);
 
-                // A slot is "mine" ONLY if it's actually taken and the owner is me
-                const mine1 = !!s1?.taken && s1.owner_business_id === myBusinessId;
-                const mine2 = !!s2?.taken && s2.owner_business_id === myBusinessId;
-                const mine3 = !!s3?.taken && s3.owner_business_id === myBusinessId;
+                // Ownership (optional – only works if backend provides owner_business_id)
+                const mine1 = s1?.owner_business_id === myBusinessId;
+                const mine2 = s2?.owner_business_id === myBusinessId;
+                const mine3 = s3?.owner_business_id === myBusinessId;
+                const ownsAny = !!(mine1 || mine2 || mine3);
 
-                // If I own any active slot in this area, the other two become unavailable
-                const ownsAny = mine1 || mine2 || mine3;
+                // Disable rule:
+                // - if I own any slot in this area, disable other slots (single-slot-per-area rule)
+                // - otherwise, enable only if purchasable
+                const dis1 = !mine1 && (ownsAny || !s1?.purchasable);
+                const dis2 = !mine2 && (ownsAny || !s2?.purchasable);
+                const dis3 = !mine3 && (ownsAny || !s3?.purchasable);
 
-                // taken-by-someone-else flags
-                const taken1ByOther = !!s1?.taken && !mine1;
-                const taken2ByOther = !!s2?.taken && !mine2;
-                const taken3ByOther = !!s3?.taken && !mine3;
+                // label + title
+                const labelFor = (mine: boolean, s?: SlotAvailability) =>
+                  mine ? "Manage" : s?.purchasable ? "Sponsor" : "Taken";
 
-                // Final disabled flags: either taken by someone else OR I already own a different slot
-                const dis1 = taken1ByOther || (!mine1 && ownsAny);
-                const dis2 = taken2ByOther || (!mine2 && ownsAny);
-                const dis3 = taken3ByOther || (!mine3 && ownsAny);
+                const titleFor = (mine: boolean, s?: SlotAvailability) => {
+                  if (mine) return "You sponsor this slot";
+                  if (!s) return "Unavailable";
+                  if (s.purchasable) {
+                    const price =
+                      typeof s.monthly_price === "number"
+                        ? ` (~£${s.monthly_price.toFixed(2)}/mo)`
+                        : "";
+                    return `Available${price}`;
+                  }
+                  return s.reason || "Not available";
+                };
 
-                // route click either to manage (owned) or sponsor (new)
                 const clickSlot = async (slot: 1 | 2 | 3, isMine: boolean, isDisabled: boolean) => {
                   if (isDisabled) return;
                   if (isMine) {
@@ -558,15 +558,6 @@ export default function ServiceAreaEditor({
                   setSponsorSlot(slot);
                   setSponsorOpen(true);
                 };
-
-                const titleFor = (mine: boolean, slotState?: SlotState) =>
-                  mine
-                    ? "You sponsor this slot"
-                    : ownsAny
-                    ? "You already sponsor a slot in this area"
-                    : slotState?.taken
-                    ? `Status: ${slotState?.status || "taken"}`
-                    : "Available";
 
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
@@ -591,29 +582,29 @@ export default function ServiceAreaEditor({
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(1, mine1, dis1)}
+                        onClick={() => clickSlot(1, !!mine1, dis1)}
                         disabled={dis1}
-                        title={titleFor(mine1, s1)}
+                        title={titleFor(!!mine1, s1)}
                       >
-                        {s1?.taken ? (mine1 ? "Manage #1" : "Taken #1") : "Sponsor #1"}
+                        {labelFor(!!mine1, s1)} #1
                       </button>
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(2, mine2, dis2)}
+                        onClick={() => clickSlot(2, !!mine2, dis2)}
                         disabled={dis2}
-                        title={titleFor(mine2, s2)}
+                        title={titleFor(!!mine2, s2)}
                       >
-                        {s2?.taken ? (mine2 ? "Manage #2" : "Taken #2") : "Sponsor #2"}
+                        {labelFor(!!mine2, s2)} #2
                       </button>
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(3, mine3, dis3)}
+                        onClick={() => clickSlot(3, !!mine3, dis3)}
                         disabled={dis3}
-                        title={titleFor(mine3, s3)}
+                        title={titleFor(!!mine3, s3)}
                       >
-                        {s3?.taken ? (mine3 ? "Manage #3" : "Taken #3") : "Sponsor #3"}
+                        {labelFor(!!mine3, s3)} #3
                       </button>
                     </div>
                   </li>
