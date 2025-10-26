@@ -1,12 +1,23 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+
+const SLOT_COLORS = {
+  1: "#f59e0b", // gold
+  2: "#9ca3af", // silver
+  3: "#cd7f32", // bronze
+};
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { "content-type": "application/json" },
   });
 
 export default async (req) => {
@@ -25,60 +36,40 @@ export default async (req) => {
   try {
     const { data, error } = await sb
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id")
+      .select("area_id, slot, status, business_id, final_geojson")
       .in("area_id", areaIds);
 
     if (error) throw error;
 
-    const ACTIVE = new Set(["active", "trialing", "past_due", "unpaid"]);
-
-    const byArea = new Map(
-      areaIds.map((id) => [
-        id,
-        {
-          area_id: id,
-          slots: [
-            { slot: 1, taken: false, status: null, owner_business_id: null },
-            { slot: 2, taken: false, status: null, owner_business_id: null },
-            { slot: 3, taken: false, status: null, owner_business_id: null },
-          ],
-          paint: { tier: 0, fill: "rgba(0,0,0,0.0)", stroke: "#555" },
+    // shape results
+    const byArea = {};
+    for (const area_id of areaIds) {
+      byArea[area_id] = {
+        area_id,
+        slots: {
+          1: { slot: 1, taken: false, status: null, by_business_id: null, paint: SLOT_COLORS[1] },
+          2: { slot: 2, taken: false, status: null, by_business_id: null, paint: SLOT_COLORS[2] },
+          3: { slot: 3, taken: false, status: null, by_business_id: null, paint: SLOT_COLORS[3] },
         },
-      ])
-    );
-
-    for (const row of data || []) {
-      const entry = byArea.get(row.area_id);
-      if (!entry) continue;
-      const idx = Number(row.slot) - 1;
-      if (idx < 0 || idx > 2) continue;
-      const taken = ACTIVE.has(row.status);
-      entry.slots[idx] = {
-        slot: Number(row.slot),
-        taken,
-        status: row.status ?? null,
-        owner_business_id: row.business_id ?? null,
       };
     }
 
-    for (const entry of byArea.values()) {
-      let tier = 0;
-      if (entry.slots[0].taken) tier = Math.max(tier, 1);
-      if (entry.slots[1].taken) tier = Math.max(tier, 2);
-      if (entry.slots[2].taken) tier = Math.max(tier, 3);
-
-      if (tier === 1)
-        entry.paint = { tier, fill: "rgba(255,215,0,0.35)", stroke: "#B8860B" }; // Gold
-      else if (tier === 2)
-        entry.paint = { tier, fill: "rgba(192,192,192,0.35)", stroke: "#708090" }; // Silver
-      else if (tier === 3)
-        entry.paint = { tier, fill: "rgba(205,127,50,0.35)", stroke: "#8B5A2B" }; // Bronze
-      else entry.paint = { tier: 0, fill: "rgba(0,0,0,0.0)", stroke: "#555" };
+    for (const row of data) {
+      if (!byArea[row.area_id]) continue;
+      if (BLOCKING.has(row.status)) {
+        byArea[row.area_id].slots[row.slot] = {
+          slot: row.slot,
+          taken: true,
+          status: row.status,
+          by_business_id: row.business_id,
+          paint: SLOT_COLORS[row.slot] || "#666",
+        };
+      }
     }
 
-    return json({ areas: Array.from(byArea.values()) });
-  } catch (e) {
-    console.error("[area-sponsorship] error:", e);
+    return json({ areas: Object.values(byArea) });
+  } catch (err) {
+    console.error("area-sponsorship error:", err);
     return json({ error: "DB error" }, 500);
   }
 };
