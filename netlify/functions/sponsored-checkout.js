@@ -5,19 +5,13 @@ import Stripe from "stripe";
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
-/** JSON helper */
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-/** Normalize base URL for server-side fetches */
 function getBaseUrl(req) {
   const envUrl =
-    process.env.PUBLIC_SITE_URL ||
-    process.env.URL ||              // Netlify production URL
-    process.env.DEPLOY_PRIME_URL;   // Preview/branch URL
-
+    process.env.PUBLIC_SITE_URL || process.env.URL || process.env.DEPLOY_PRIME_URL;
   if (envUrl) return envUrl.replace(/\/$/, "");
-  // Fallback: derive from the incoming request
   const host = req?.headers?.get?.("host");
   return (host ? `https://${host}` : "").replace(/\/$/, "");
 }
@@ -25,18 +19,13 @@ function getBaseUrl(req) {
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  // ---- Parse body ----
   let body;
-  try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
   const { businessId, areaId, slot } = body || {};
   if (!businessId || !areaId || !slot) return json({ error: "Missing params" }, 400);
 
   try {
-    // ---- 1) Block if another business owns this slot (active-ish) ----
+    // 1) Same-area hard conflict (active-ish)
     const BLOCKING = ["active", "trialing", "past_due", "unpaid"];
     const { data: conflicts, error: conflictErr } = await sb
       .from("sponsored_subscriptions")
@@ -49,7 +38,7 @@ export default async (req) => {
     if (conflictErr) return json({ error: "DB error (conflict)" }, 500);
     if (conflicts?.length) return json({ error: "Slot already taken" }, 409);
 
-    // ---- 2) Reuse or create a provisional subscription row ----
+    // 2) Reuse/create provisional row
     const PROVISIONAL = ["incomplete", "incomplete_expired"];
     const { data: existing, error: existErr } = await sb
       .from("sponsored_subscriptions")
@@ -71,12 +60,11 @@ export default async (req) => {
         .insert({ business_id: businessId, area_id: areaId, slot, status: "incomplete" })
         .select("id")
         .single();
-      if (insErr || !inserted)
-        return json({ error: "Could not create a provisional subscription" }, 409);
+      if (insErr || !inserted) return json({ error: "Could not create a provisional subscription" }, 409);
       subRowId = inserted.id;
     }
 
-    // ---- 3) Call preview (absolute URL!) to get monthly price ----
+    // 3) Preview (absolute URL) — this accounts for overlaps across OTHER areas
     const base = getBaseUrl(req);
     if (!base) return json({ error: "Cannot resolve site base URL for preview" }, 500);
 
@@ -84,7 +72,6 @@ export default async (req) => {
     const pres = await fetch(previewURL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      // preview expects cleanerId
       body: JSON.stringify({ cleanerId: businessId, areaId, slot }),
     });
 
@@ -93,24 +80,29 @@ export default async (req) => {
       return json({ error: `Preview ${pres.status} ${txt || ""}`.trim() }, 502);
     }
     const preview = await pres.json();
-    if (!preview?.ok) return json({ error: preview?.error || "Preview failed" }, 502);
+    if (!preview?.ok) return json({ error: preview?.error || "Preview failed" }, 409);
 
+    // >>> NEW: if overlapping sponsors leave zero purchasable area, stop here
+    const areaKm2 = Number(preview.area_km2 ?? 0);
+    if (!Number.isFinite(areaKm2) || areaKm2 <= 0) {
+      return json({ error: "No purchasable area for this slot (overlaps fully taken)" }, 409);
+    }
+
+    // Price from preview (with optional floor)
     const monthly = Number(preview.monthly_price ?? 0);
     if (!Number.isFinite(monthly) || monthly <= 0)
       return json({ error: "Invalid monthly price from preview" }, 500);
-
-    // Optional env floor
     const min = Number(process.env.MIN_PRICE_PER_MONTH ?? 0);
     const monthlyToBill = Math.max(monthly, Number.isFinite(min) ? min : 0);
 
-    // ---- 4) Create ad-hoc Product+Price for this subscription ----
+    // 4) Create ad-hoc Product + Price
     const product = await stripe.products.create({
       name: `Sponsor Slot #${slot} — Area ${areaId}`,
       metadata: { area_id: areaId, slot: String(slot), sub_row_id: subRowId },
     });
 
     const price = await stripe.prices.create({
-      unit_amount: Math.round(monthlyToBill * 100), // GBP→pence
+      unit_amount: Math.round(monthlyToBill * 100),
       currency: "gbp",
       recurring: { interval: "month" },
       product: product.id,
@@ -122,16 +114,11 @@ export default async (req) => {
       },
     });
 
-    // ---- 5) Create Checkout Session (subscription) ----
+    // 5) Checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ price: price.id, quantity: 1 }],
-      metadata: {
-        sub_row_id: subRowId,
-        business_id: businessId,
-        area_id: areaId,
-        slot: String(slot),
-      },
+      metadata: { sub_row_id: subRowId, business_id: businessId, area_id: areaId, slot: String(slot) },
       success_url: `${base}/#/dashboard?checkout=success`,
       cancel_url: `${base}/#/dashboard?checkout=cancel`,
     });
@@ -139,7 +126,6 @@ export default async (req) => {
     return json({ url: session.url });
   } catch (e) {
     console.error("[sponsored-checkout] error:", e);
-    const msg = (e && e.message) || "Unhandled error";
-    return json({ error: `Checkout 502 — ${msg}` }, 502);
+    return json({ error: `Checkout 502 — ${(e && e.message) || "Unhandled error"}` }, 502);
   }
 };
