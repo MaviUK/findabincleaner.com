@@ -2,89 +2,129 @@
 import { createClient } from "@supabase/supabase-js";
 import * as turf from "@turf/turf";
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+/**
+ * ENV expected:
+ * - SUPABASE_URL
+ * - SUPABASE_SERVICE_ROLE
+ * - RATE_GOLD_PER_KM2_PER_MONTH (number, optional)
+ * - RATE_SILVER_PER_KM2_PER_MONTH (number, optional)
+ * - RATE_BRONZE_PER_KM2_PER_MONTH (number, optional)
+ * - MIN_GOLD_PRICE_PER_MONTH (number, optional)
+ * - MIN_SILVER_PRICE_PER_MONTH (number, optional)
+ * - MIN_BRONZE_PRICE_PER_MONTH (number, optional)
+ */
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
+const ACTIVE_BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+
 /** Helpers */
-const toNumber = (v, d = 0) => {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-};
-const round = (n, p = 4) => Number(n.toFixed(p));
+function asMultiPolygon(geo) {
+  if (!geo) return null;
 
-/** Slot-specific pricing helpers with fallbacks */
-function slotPricing(slot) {
-  // Per-km² rates
-  const rateAny = toNumber(process.env.RATE_PER_KM2_PER_MONTH, 0);
-  const rateGold = toNumber(process.env.RATE_GOLD_PER_KM2_PER_MONTH, rateAny);
-  const rateSilver = toNumber(
-    process.env.RATE_SILVER_PER_KM2_PER_MONTH,
-    rateAny
-  );
-  const rateBronze = toNumber(
-    process.env.RATE_BRONZE_PER_KM2_PER_MONTH,
-    rateAny
-  );
-
-  // Minimum monthly
-  const minAny = toNumber(process.env.MIN_PRICE_PER_MONTH, 0);
-  const minGold = toNumber(process.env.MIN_GOLD_PRICE_PER_MONTH, minAny);
-  const minSilver = toNumber(process.env.MIN_SILVER_PRICE_PER_MONTH, minAny);
-  const minBronze = toNumber(process.env.MIN_BRONZE_PRICE_PER_MONTH, minAny);
-
-  if (slot === 1) return { rate: rateGold, min: minGold, label: "Gold" };
-  if (slot === 2) return { rate: rateSilver, min: minSilver, label: "Silver" };
-  return { rate: rateBronze, min: minBronze, label: "Bronze" };
-}
-
-/** Set of statuses that actually block a slot for others */
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
-
-/** Accepts synonyms from the client payload */
-function parseBody(body) {
-  const businessId =
-    body?.businessId || body?.cleanerId || body?.ownerId || null;
-  const areaId = body?.areaId || body?.area_id || null;
-  const slot = Number(body?.slot);
-  if (!businessId || !areaId || !Number.isFinite(slot) || slot < 1 || slot > 3) {
-    return { ok: false, error: "cleanerId, areaId, slot required" };
+  // FeatureCollection -> recurse
+  if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
+    const polys = geo.features.map(asMultiPolygon).filter(Boolean);
+    if (!polys.length) return null;
+    // union all features into a single MultiPolygon
+    let acc = polys[0];
+    for (let i = 1; i < polys.length; i++) {
+      acc = unionSafe(acc, polys[i]);
+    }
+    return acc;
   }
-  return { ok: true, businessId, areaId, slot };
-}
 
-/** Fetch the service area GeoJSON */
-async function loadAreaGeoJSON(areaId) {
-  const { data, error } = await sb
-    .from("service_areas")
-    .select("id, gj")
-    .eq("id", areaId)
-    .single();
-
-  if (error) throw new Error("Area not found");
-  const gj = data?.gj;
-  if (!gj || (gj.type !== "Polygon" && gj.type !== "MultiPolygon")) {
-    throw new Error("Area has invalid geometry");
+  // Feature -> recurse geometry
+  if (geo.type === "Feature" && geo.geometry) {
+    return asMultiPolygon(geo.geometry);
   }
-  return gj;
+
+  if (geo.type === "Polygon") {
+    return turf.multiPolygon([geo.coordinates]);
+  }
+  if (geo.type === "MultiPolygon") {
+    return turf.multiPolygon(geo.coordinates);
+  }
+
+  // some projects store under .gj or .geojson
+  if (geo.gj) return asMultiPolygon(geo.gj);
+  if (geo.geojson) return asMultiPolygon(geo.geojson);
+  if (geo.geometry) return asMultiPolygon(geo.geometry);
+
+  return null;
 }
 
-/** Compute area in km² (using turf) */
-function areaKm2(geojson) {
+function unionSafe(a, b) {
+  if (!a) return b || null;
+  if (!b) return a || null;
   try {
-    const m2 = turf.area(geojson);
+    const u = turf.union(a, b);
+    // turf.union may return Polygon; normalize to MultiPolygon
+    return asMultiPolygon(u);
+  } catch {
+    // fallback: dissolve by buffering 0
+    try {
+      const u = turf.buffer(turf.union(turf.buffer(a, 0), turf.buffer(b, 0)), 0);
+      return asMultiPolygon(u);
+    } catch {
+      return a;
+    }
+  }
+}
+
+function differenceSafe(a, b) {
+  if (!a) return null;
+  if (!b) return a;
+  try {
+    const d = turf.difference(a, b);
+    return asMultiPolygon(d);
+  } catch {
+    // robust fallback with tiny buffer to fix ring/winding issues
+    try {
+      const d = turf.difference(turf.buffer(a, 0), turf.buffer(b, 0));
+      return asMultiPolygon(d);
+    } catch {
+      return a; // if difference fails, be safe & return original (won’t underbill)
+    }
+  }
+}
+
+function km2FromArea(feature) {
+  if (!feature) return 0;
+  try {
+    const m2 = turf.area(feature);
     return m2 / 1_000_000;
   } catch {
-    // Fallback: 0 if geometry fails
     return 0;
   }
+}
+
+function priceFor(slot, km2) {
+  const s = Number(slot);
+  const rates = {
+    1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
+    2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
+    3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
+  };
+  const mins = {
+    1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 0),
+    2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 0),
+    3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 0),
+  };
+
+  const rate = rates[s] ?? 0;
+  const min = mins[s] ?? 0;
+
+  const raw = rate * km2;
+  // round to 2dp, apply minimum (but only if > 0 area)
+  const rounded = Math.round(raw * 100) / 100;
+  if (km2 <= 0) return 0;
+  return Math.max(rounded, min);
 }
 
 export default async (req) => {
@@ -97,41 +137,60 @@ export default async (req) => {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const parsed = parseBody(body);
-  if (!parsed.ok) return json({ error: parsed.error }, 400);
+  const businessId = body?.businessId || body?.cleanerId;
+  const areaId = body?.areaId || body?.area_id;
+  const slot = Number(body?.slot);
 
-  const { businessId, areaId, slot } = parsed;
+  if (!businessId || !areaId || !slot) {
+    return json({ ok: false, error: "businessId/cleanerId, areaId, and slot are required" }, 400);
+  }
 
   try {
-    // 1) Fetch the base area geometry
-    const baseGeo = await loadAreaGeoJSON(areaId);
+    // 1) Fetch the service area geometry
+    const { data: areaRow, error: areaErr } = await sb
+      .from("service_areas")
+      .select("id, gj")
+      .eq("id", areaId)
+      .single();
 
-    // 2) Check if another business already blocks this slot
-    const { data: blockers, error: blockErr } = await sb
+    if (areaErr || !areaRow?.gj) {
+      return json({ ok: false, error: "Area not found" }, 404);
+    }
+
+    let areaGeom = asMultiPolygon(areaRow.gj);
+    if (!areaGeom) {
+      return json({ ok: false, error: "Invalid area geometry" }, 422);
+    }
+
+    // 2) Collect blockers: other businesses with ACTIVE status on the SAME slot
+    const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id,status")
+      .select("id, business_id, status, slot, final_geojson")
       .eq("area_id", areaId)
-      .eq("slot", slot);
+      .eq("slot", slot) // ← only the selected slot blocks
+      .neq("business_id", businessId);
 
-    if (blockErr) throw new Error("DB error while checking blockers");
+    if (subsErr) {
+      console.error("[sponsored-preview] subsErr:", subsErr);
+      return json({ ok: false, error: "DB error" }, 500);
+    }
 
-    // Is there a blocking sub by someone else?
-    const blockedByOther = (blockers || []).some(
-      (r) => r.business_id !== businessId && BLOCKING.has(r.status)
-    );
+    // union all blocking footprints for this slot
+    let takenUnion = null;
+    for (const row of subs || []) {
+      if (!ACTIVE_BLOCKING.has(row.status)) continue; // ignore non-active-ish states
+      const g = asMultiPolygon(row.final_geojson);
+      if (!g) continue;
+      takenUnion = unionSafe(takenUnion, g);
+    }
 
-    // Also prevent one business holding multiple slots in the same area (business rule)
-    const ownsAnotherSlot = (blockers || []).some(
-      (r) => r.business_id === businessId && r.status && r.status !== "canceled"
-    );
-    const tryingSecondSlot =
-      ownsAnotherSlot &&
-      !(blockers || []).some(
-        (r) => r.business_id === businessId && Number(r.slot) === slot
-      );
+    // 3) Compute remaining purchasable region for this slot
+    const available = differenceSafe(areaGeom, takenUnion);
+    const km2 = km2FromArea(available);
+    const monthly = priceFor(slot, km2);
 
-    if (blockedByOther || tryingSecondSlot) {
-      // No purchasable region in this preview
+    // If nothing left, return ok with 0s (UI shows guidance)
+    if (!available || km2 <= 0) {
       return json({
         ok: true,
         area_km2: 0,
@@ -140,35 +199,17 @@ export default async (req) => {
       });
     }
 
-    // 3) (Optional) Subtract geometry masks for over-subscribed sub-regions here.
-    //    In the current data model, slots are whole-area claims, so if not blocked,
-    //    the entire area is purchasable. If/when you add per-slot mask polygons,
-    //    replace the `purchasableGeo = baseGeo` with a turf.difference/erase of
-    //    the union of blocking masks.
-    //
-    //    Example:
-    //    const unionMask = turf.union(...masksForThisSlot);
-    //    const purchasableGeo = turf.difference(baseGeo, unionMask) || null;
-
-    const purchasableGeo = baseGeo; // current baseline: whole area
-
-    // 4) Compute area and price
-    const km2 = purchasableGeo ? Math.max(0, areaKm2(purchasableGeo)) : 0;
-    const { rate, min } = slotPricing(slot);
-
-    // price = max(min, km2 * rate), rounded to 2dp
-    const rawPrice = Math.max(min, km2 * rate);
-    const monthly_price = round(rawPrice, 2);
+    // Normalize to plain GeoJSON MultiPolygon for the frontend
+    const final_geojson = turf.getGeom(available); // MultiPolygon geometry (not Feature)
 
     return json({
       ok: true,
-      area_km2: round(km2, 4),
-      monthly_price,
-      final_geojson: purchasableGeo,
+      area_km2: Number(km2.toFixed(6)),
+      monthly_price: Number(monthly.toFixed(2)),
+      final_geojson,
     });
   } catch (e) {
     console.error("[sponsored-preview] error:", e);
-    // Return a descriptive error for the UI while keeping a 500 status
-    return json({ ok: false, error: String(e?.message || e || "Preview failed") }, 500);
+    return json({ ok: false, error: "Preview failed" }, 500);
   }
 };
