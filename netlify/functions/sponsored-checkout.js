@@ -1,19 +1,16 @@
-// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 import * as turf from "@turf/turf";
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-// BLOCKING set aligned with preview
+// Only these statuses block, exactly as spec + preview.
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 const isBlocking = (s) => BLOCKING.has(String(s || "").toLowerCase());
+
+// Tiny epsilon to avoid float noise
+const EPS_KM2 = 1e-5;
 
 function rateForSlot(slot) {
   const base = Number(process.env.RATE_PER_KM2_PER_MONTH || 1);
@@ -35,90 +32,23 @@ function minForSlot(slot) {
 }
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
-  try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
+  try { body = await req.json(); } catch { return json({ error: "Invalid JSON" }, 400); }
 
   const areaId = body?.areaId;
   const slot = Number(body?.slot);
   const businessId = body?.businessId;
-  const previewId = body?.previewId || null;
-
   if (!areaId || !Number.isInteger(slot) || !businessId) {
     return json({ error: "Missing areaId, slot, or businessId" }, 400);
   }
 
   try {
-    // Best-effort cleanup for stale locks (>35m) if you created that RPC
-    try { await sb.rpc("cleanup_stale_sponsored_locks"); } catch {}
-
-    // STEP 1: If another business already holds a BLOCKING sponsor, hard block
-    const { data: existing, error: exErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("id, status, business_id, final_geojson")
-      .eq("area_id", areaId)
-      .eq("slot", slot);
-    if (exErr) throw exErr;
-
-    const live = (existing || []).find((r) => isBlocking(r.status));
-    if (live && live.business_id !== businessId) {
-      return json(
-        { error: `Slot #${slot} is already sponsored by another business.` },
-        409
-      );
-    }
-
-    // STEP 2: Acquire/refresh the concurrency lock via UPSERT
-    // - If the same business already has the lock, refresh it (no 409).
-    // - If the lock is stale (>35m), take it over.
-    // - Otherwise, return 409.
-    let lockId = null;
-    {
-      // Try to upsert first; ON CONFLICT requires specifying the conflict target
-      // Supabase upsert will do INSERT ... ON CONFLICT (area_id,slot) DO UPDATE ...
-      const { data: up, error: upErr } = await sb
-        .from("sponsored_locks")
-        .upsert(
-          {
-            area_id: areaId,
-            slot,
-            business_id: businessId,
-            created_at: new Date().toISOString(),
-          },
-          { onConflict: "area_id,slot", ignoreDuplicates: false, returning: "representation" }
-        )
-        .select("id, area_id, slot, business_id, created_at")
-        .single();
-
-      if (upErr) throw upErr;
-
-      // If the row belongs to another business and isn't stale, reject
-      const createdAt = up.created_at ? new Date(up.created_at) : new Date();
-      const ageMin = (Date.now() - createdAt.getTime()) / 60000;
-
-      if (up.business_id !== businessId && ageMin <= 35) {
-        return json(
-          { error: `Another checkout is already holding slot #${slot} for this area.` },
-          409
-        );
-      }
-
-      // If it belonged to another business but was stale, we’ve just refreshed it to us.
-      lockId = up.id;
-    }
-
-    // STEP 3: Re-run geometry with same BLOCKING set
+    // 1) Load area geometry
     const { data: areaRow, error: areaErr } = await sb
       .from("service_areas")
       .select("gj")
@@ -133,46 +63,53 @@ export default async (req) => {
     else if (gj.type === "MultiPolygon") base = turf.multiPolygon(gj.coordinates);
     else return json({ error: "Area geometry must be Polygon or MultiPolygon" }, 400);
 
+    // 2) Load subs for (area, slot)
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
-      .select("status, final_geojson")
+      .select("status, business_id, final_geojson")
       .eq("area_id", areaId)
       .eq("slot", slot);
     if (subsErr) throw subsErr;
 
     const blockers = (subs || []).filter((s) => isBlocking(s.status));
-    if (blockers.some((b) => !b.final_geojson)) {
-      return json({ error: "No purchasable area left for this slot." }, 400);
+
+    // a) If any blocking winner lacks final_geojson → whole slot blocked
+    if (blockers.some((b) => !b.final_geojson && b.business_id !== businessId)) {
+      return json({ error: `Slot #${slot} is fully blocked.` }, 409);
+    }
+
+    // b) Subtract union of all blockers' final_geojson (excluding my own rows)
+    let unionBlock = null;
+    for (const b of blockers) {
+      if (!b.final_geojson || b.business_id === businessId) continue;
+      const g = b.final_geojson;
+      const geom = g.type === "Polygon" ? turf.multiPolygon([g.coordinates])
+                 : g.type === "MultiPolygon" ? turf.multiPolygon(g.coordinates)
+                 : null;
+      if (!geom) continue;
+      unionBlock = unionBlock ? turf.union(unionBlock, geom) : geom;
     }
 
     let available = base;
-    for (const b of blockers) {
-      const g = b.final_geojson;
-      if (!g) continue;
-      let blockGeom;
-      if (g.type === "Polygon") blockGeom = turf.multiPolygon([g.coordinates]);
-      else if (g.type === "MultiPolygon") blockGeom = turf.multiPolygon(g.coordinates);
-      else continue;
-
+    if (unionBlock) {
       try {
-        available = turf.difference(available, blockGeom) || turf.multiPolygon([]);
+        available = turf.difference(base, unionBlock) || turf.multiPolygon([]);
       } catch (e) {
-        console.error("Geometry difference failed:", e);
+        console.error("difference failed:", e);
+        return json({ error: "Geometry difference failed" }, 400);
       }
     }
 
     const km2 = turf.area(available) / 1e6;
-    if (km2 < 0.00001) {
-      return json({ error: "No purchasable area left for this slot." }, 400);
+    if (km2 <= EPS_KM2) {
+      return json({ error: "No purchasable area left for this slot." }, 409);
     }
 
-    // STEP 4: Price
-    const rate = rateForSlot(slot);
-    const min = minForSlot(slot);
-    const monthly = Math.max(km2 * rate, min);
+    // 3) Price
+    const monthly = Math.max(km2 * rateForSlot(slot), minForSlot(slot));
     const unitAmount = Math.round(monthly * 100);
 
-    // STEP 5: Stripe session
+    // 4) Create Stripe Checkout
     const successUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`;
     const cancelUrl = `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`;
 
@@ -198,19 +135,9 @@ export default async (req) => {
         area_id: areaId,
         slot: String(slot),
         business_id: businessId,
-        preview_id: previewId || "",
-        lock_id: lockId,
-        km2: km2.toFixed(6),
+        // you can also store km2 or preview_id if you want
       },
     });
-
-    // best-effort: store the session id on the lock
-    try {
-      await sb
-        .from("sponsored_locks")
-        .update({ stripe_session_id: session.id })
-        .eq("id", lockId);
-    } catch {}
 
     return json({ url: session.url });
   } catch (err) {
