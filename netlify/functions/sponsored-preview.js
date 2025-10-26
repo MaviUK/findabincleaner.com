@@ -25,10 +25,11 @@ export default async (req) => {
     //   monthlyPrice: number (GBP)
     //   clipped: GeoJSON (MultiPolygon, Polygon, or Feature/FC)
 
-    // REPLACE these three lines with your real computed values:
-    const areaKm2 = body.__debug_area_km2 ?? 0;             // <— your computed area
-    const monthlyPrice = body.__debug_monthly ?? 0;         // <— your computed monthly price (GBP)
-    const clipped = body.__debug_multi ?? null;             // <— your computed clipped GeoJSON
+   // ✅ Your actual results from the existing preview logic
+const areaKm2 = result.area_km2;            // number
+const monthlyPrice = result.monthly_price;  // number in GBP
+const clipped = result.final_geojson;       // clipped MultiPolygon for the overlay
+
 
     // Build cache row (15 minute validity)
     const monthlyCents = Math.max(0, Math.round(Number(monthlyPrice) * 100));
