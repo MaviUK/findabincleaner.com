@@ -10,7 +10,7 @@ import AreaManageModal from "./AreaManageModal";
 // ---- Types ----
 export interface ServiceAreaRow {
   id: string;
-  business_id: string; // owner of the area
+  business_id: string;
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
@@ -22,18 +22,21 @@ type SlotState = {
   slot: Slot;
   taken: boolean;
   status: string | null;
-  /** normalized: will always contain the owner business id when taken */
   owner_business_id: string | null;
 };
 
 type SponsorshipState = {
   area_id: string;
-  slots: SlotState[]; // ALWAYS an array in local state
+  slots: SlotState[]; // normalized to array
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry")[];
+
+// statuses that should *block* a slot
+const isBlockingStatus = (s?: string | null) =>
+  ["active", "trialing", "past_due", "unpaid", "incomplete"].includes((s || "").toLowerCase());
 
 const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
@@ -167,15 +170,12 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
 }
 
 type Props = {
-  /** Accept either prop name; they’re the same UUID in your DB */
   businessId?: string;
   cleanerId?: string;
   sponsorshipVersion?: number;
-  /** Optional: parent can intercept Manage clicks. If omitted, a centered AreaManageModal opens. */
   onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
-// ---------------- Component ----------------
 export default function ServiceAreaEditor({
   businessId,
   cleanerId,
@@ -207,12 +207,12 @@ export default function ServiceAreaEditor({
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
   const [sponsorSlot, setSponsorSlot] = useState<Slot>(1);
 
-  // manage modal state (used when onSlotAction isn't provided)
+  // manage modal state
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<Slot>(1);
 
-  // ---- PREVIEW OVERLAY (clipped purchasable sub-region) ----
+  // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
   const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
@@ -227,7 +227,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (RPC still uses p_cleaner_id; we pass the business id value)
+  // Fetch areas (RPC still uses p_cleaner_id)
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -247,7 +247,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- SLOTS NORMALIZATION (ensures slots is always an array) -------
+  // ------- Fetch sponsorships and normalize to array -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -280,13 +280,19 @@ export default function ServiceAreaEditor({
           paint: a.paint,
         };
       }
+
+      // Helpful in dev to inspect what the server returned
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.debug("[ServiceAreaEditor] sponsorship map:", map);
+      }
+
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
   }, []);
-  // -------------------------------------------------------------------
 
   useEffect(() => {
     fetchSponsorship(serviceAreas.map((a) => a.id));
@@ -434,7 +440,6 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
-  // Helper over normalized state
   function slotInfo(areaId: string, slot: Slot): SlotState | undefined {
     const s = sponsorship[areaId];
     if (!s) return undefined;
@@ -516,16 +521,19 @@ export default function ServiceAreaEditor({
                 const s2 = slotInfo(a.id, 2);
                 const s3 = slotInfo(a.id, 3);
 
-                const mine1 = !!s1?.taken && s1.owner_business_id === myBusinessId;
-                const mine2 = !!s2?.taken && s2.owner_business_id === myBusinessId;
-                const mine3 = !!s3?.taken && s3.owner_business_id === myBusinessId;
+                // “mine” only when status is blocking AND I'm the owner
+                const mine1 = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id === myBusinessId;
+                const mine2 = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id === myBusinessId;
+                const mine3 = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id === myBusinessId;
 
                 const ownsAny = mine1 || mine2 || mine3;
 
-                const taken1ByOther = !!s1?.taken && s1.owner_business_id !== myBusinessId;
-                const taken2ByOther = !!s2?.taken && s2.owner_business_id !== myBusinessId;
-                const taken3ByOther = !!s3?.taken && s3.owner_business_id !== myBusinessId;
+                // taken by someone else: status blocks AND owned by a *different* business
+                const taken1ByOther = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id !== myBusinessId;
+                const taken2ByOther = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id !== myBusinessId;
+                const taken3ByOther = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id !== myBusinessId;
 
+                // disable when taken by others OR I already own a different slot here
                 const dis1 = taken1ByOther || (!mine1 && ownsAny);
                 const dis2 = taken2ByOther || (!mine2 && ownsAny);
                 const dis3 = taken3ByOther || (!mine3 && ownsAny);
@@ -552,8 +560,8 @@ export default function ServiceAreaEditor({
                     ? "You sponsor this slot"
                     : ownsAny
                     ? "You already sponsor a slot in this area"
-                    : slotState?.taken
-                    ? `Status: ${slotState?.status || "taken"}`
+                    : slotState && isBlockingStatus(slotState.status)
+                    ? `Status: ${slotState.status || "taken"}`
                     : "Available";
 
                 const label = (mine: boolean, takenByOther: boolean, n: Slot) =>
@@ -578,7 +586,7 @@ export default function ServiceAreaEditor({
                       </div>
                     </div>
 
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(1, mine1, dis1)}
@@ -587,6 +595,11 @@ export default function ServiceAreaEditor({
                       >
                         {label(mine1, taken1ByOther, 1)}
                       </button>
+                      {import.meta.env.DEV && s1?.status && (
+                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
+                          {s1.status}{s1.owner_business_id ? `:${s1.owner_business_id.slice(0,8)}` : ""}
+                        </span>
+                      )}
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
@@ -596,6 +609,11 @@ export default function ServiceAreaEditor({
                       >
                         {label(mine2, taken2ByOther, 2)}
                       </button>
+                      {import.meta.env.DEV && s2?.status && (
+                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
+                          {s2.status}{s2.owner_business_id ? `:${s2.owner_business_id.slice(0,8)}` : ""}
+                        </span>
+                      )}
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
@@ -605,12 +623,19 @@ export default function ServiceAreaEditor({
                       >
                         {label(mine3, taken3ByOther, 3)}
                       </button>
+                      {import.meta.env.DEV && s3?.status && (
+                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
+                          {s3.status}{s3.owner_business_id ? `:${s3.owner_business_id.slice(0,8)}` : ""}
+                        </span>
+                      )}
                     </div>
                   </li>
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
+                <li className="text-sm text-gray-500">
+                  No service areas yet. Click “New Area” to draw one.
+                </li>
               )}
             </ul>
           </div>
@@ -670,7 +695,7 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* non-editable painted overlays */}
+              {/* Painted overlays */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
@@ -697,7 +722,7 @@ export default function ServiceAreaEditor({
                   });
                 })}
 
-              {/* Preview overlay – drawn on top */}
+              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -738,7 +763,7 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* Manage modal (used when parent doesn't intercept) */}
+      {/* Manage modal */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
