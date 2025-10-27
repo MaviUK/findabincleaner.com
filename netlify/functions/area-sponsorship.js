@@ -9,13 +9,12 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// which subscription statuses should block a slot
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
+// Only these statuses block a slot (matches your UI logic)
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  // Parse body
   let body;
   try {
     body = await req.json();
@@ -27,7 +26,7 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // 1) Who owns each slot?
+    // who owns which slots?
     const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id")
@@ -35,7 +34,7 @@ export default async (req) => {
 
     if (subsErr) throw subsErr;
 
-    // 2) Remaining area per slot (from your materialized logic/view)
+    // how much area remains (per slot)?
     const { data: remaining, error: remErr } = await sb
       .from("v_area_slot_remaining")
       .select("area_id, slot, remaining_km2, sold_out")
@@ -43,48 +42,49 @@ export default async (req) => {
 
     if (remErr) throw remErr;
 
-    // Index helpers
+    // index helpers
     const subsByArea = new Map();
     for (const s of subs || []) {
       if (!subsByArea.has(s.area_id)) subsByArea.set(s.area_id, []);
       subsByArea.get(s.area_id).push(s);
     }
 
-    const remainingByArea = new Map();
-    for (const r of remaining || []) {
-      if (!remainingByArea.has(r.area_id)) remainingByArea.set(r.area_id, new Map());
-      remainingByArea.get(r.area_id).set(r.slot, r);
+    const remByArea = new Map();
+    for (const r of (remaining || [])) {
+      if (!remByArea.has(r.area_id)) remByArea.set(r.area_id, new Map());
+      remByArea.get(r.area_id).set(r.slot, r);
     }
 
-    // Build response
     const areas = areaIds.map((area_id) => {
       const sList = subsByArea.get(area_id) || [];
-      const remMap = remainingByArea.get(area_id) || new Map();
+      const rMap = remByArea.get(area_id) || new Map();
 
       const slots = [1, 2, 3].map((slot) => {
         const sub = sList.find((x) => x.slot === slot) || null;
-        const rem = remMap.get(slot) || null;
+        const r = rMap.get(slot) || null;
+
+        const status = sub?.status ?? null;
+        const taken = status ? BLOCKING.has(String(status).toLowerCase()) : false;
 
         return {
           slot,
-          taken: !!(sub && BLOCKING.has(String(sub.status || "").toLowerCase())),
-          status: sub?.status ?? null,
-          owner_business_id: sub?.business_id ?? null,
-          // optional extras so UI can display more if needed
+          taken,
+          status,
+          owner_business_id: sub?.business_id ?? null, // what your UI checks against
           remaining_km2:
-            rem?.remaining_km2 == null
+            r?.remaining_km2 == null
               ? null
-              : typeof rem.remaining_km2 === "number"
-              ? rem.remaining_km2
-              : Number(rem.remaining_km2),
-          sold_out: rem?.sold_out ?? null,
+              : typeof r.remaining_km2 === "number"
+              ? r.remaining_km2
+              : Number(r.remaining_km2),
+          sold_out: r?.sold_out ?? null,
         };
       });
 
       return { area_id, slots };
     });
 
-    return json({ areas });
+    return json({ areas }, 200);
   } catch (err) {
     console.error("area-sponsorship error:", err);
     return json({ error: "Internal Server Error" }, 500);
