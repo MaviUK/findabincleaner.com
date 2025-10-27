@@ -176,6 +176,9 @@ type Props = {
   onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
+type AvailMap = Record<string, { 1?: boolean; 2?: boolean; 3?: boolean }>;
+type AvailLoadingMap = Record<string, boolean>;
+
 export default function ServiceAreaEditor({
   businessId,
   cleanerId,
@@ -197,17 +200,19 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // slot availability from server-side *geometry* preview
+  const [slotAvail, setSlotAvail] = useState<AvailMap>({});
+  const [slotAvailLoading, setSlotAvailLoading] = useState<AvailLoadingMap>({});
+
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState<string>("");
   const [draftPolys, setDraftPolys] = useState<google.maps.Polygon[]>([]);
   const [creating, setCreating] = useState<boolean>(false);
 
-  // sponsor modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
   const [sponsorSlot, setSponsorSlot] = useState<Slot>(1);
 
-  // manage modal state
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
   const [manageSlot, setManageSlot] = useState<Slot>(1);
@@ -227,7 +232,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (RPC still uses p_cleaner_id)
+  // Fetch areas
   const fetchAreas = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -247,7 +252,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- Fetch sponsorships and normalize to array -------
+  // ------- Sponsorship occupancy (who owns the slot?) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -263,7 +268,6 @@ export default function ServiceAreaEditor({
       const map: SponsorshipMap = {};
       for (const a of raw.areas || []) {
         const rawSlots = a.slots;
-
         const slotsArray: SlotState[] = Array.isArray(rawSlots)
           ? rawSlots
           : Object.values(rawSlots || {}).map((s: any) => ({
@@ -273,20 +277,10 @@ export default function ServiceAreaEditor({
               owner_business_id:
                 s.owner_business_id ?? s.by_business_id ?? s.business_id ?? null,
             }));
-
-        map[a.area_id] = {
-          area_id: a.area_id,
-          slots: slotsArray,
-          paint: a.paint,
-        };
+        map[a.area_id] = { area_id: a.area_id, slots: slotsArray, paint: a.paint };
       }
 
-      // Helpful in dev to inspect what the server returned
-      if (import.meta.env.DEV) {
-        // eslint-disable-next-line no-console
-        console.debug("[ServiceAreaEditor] sponsorship map:", map);
-      }
-
+      if (import.meta.env.DEV) console.debug("[ServiceAreaEditor] sponsorship map:", map);
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
@@ -295,8 +289,54 @@ export default function ServiceAreaEditor({
   }, []);
 
   useEffect(() => {
-    fetchSponsorship(serviceAreas.map((a) => a.id));
+    const ids = serviceAreas.map((a) => a.id);
+    fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
+
+  // ------- Availability by geometry (is there anything left to buy?) -------
+  const computeAvailabilityForArea = useCallback(
+    async (areaId: string) => {
+      if (!areaId || !myBusinessId) return;
+      setSlotAvailLoading((m) => ({ ...m, [areaId]: true }));
+      try {
+        const run = async (slot: Slot) => {
+          try {
+            const res = await fetch("/.netlify/functions/sponsored-preview", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                businessId: myBusinessId,
+                cleanerId: myBusinessId,
+                areaId,
+                slot: Number(slot),
+              }),
+            });
+            if (!res.ok) return false;
+            const j = await res.json();
+            if (!j || !j.ok) return false;
+            const km2 = Number(j.area_km2);
+            return Number.isFinite(km2) && km2 > 0;
+          } catch {
+            return false;
+          }
+        };
+
+        const [a1, a2, a3] = await Promise.all([run(1), run(2), run(3)]);
+        setSlotAvail((m) => ({ ...m, [areaId]: { 1: a1, 2: a2, 3: a3 } }));
+      } finally {
+        setSlotAvailLoading((m) => ({ ...m, [areaId]: false }));
+      }
+    },
+    [myBusinessId]
+  );
+
+  useEffect(() => {
+    // compute availability for all visible areas
+    serviceAreas.forEach((a) => {
+      // skip if we’ve already computed for this area + version
+      computeAvailabilityForArea(a.id);
+    });
+  }, [serviceAreas, sponsorshipVersion, computeAvailabilityForArea]);
 
   const onMapLoad = useCallback((map: google.maps.Map) => {
     mapRef.current = map;
@@ -485,7 +525,8 @@ export default function ServiceAreaEditor({
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish
+                    the polygon.
                   </div>
                 )}
 
@@ -521,22 +562,30 @@ export default function ServiceAreaEditor({
                 const s2 = slotInfo(a.id, 2);
                 const s3 = slotInfo(a.id, 3);
 
-                // “mine” only when status is blocking AND I'm the owner
                 const mine1 = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id === myBusinessId;
                 const mine2 = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id === myBusinessId;
                 const mine3 = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id === myBusinessId;
 
                 const ownsAny = mine1 || mine2 || mine3;
 
-                // taken by someone else: status blocks AND owned by a *different* business
                 const taken1ByOther = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id !== myBusinessId;
                 const taken2ByOther = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id !== myBusinessId;
                 const taken3ByOther = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id !== myBusinessId;
 
-                // disable when taken by others OR I already own a different slot here
-                const dis1 = taken1ByOther || (!mine1 && ownsAny);
-                const dis2 = taken2ByOther || (!mine2 && ownsAny);
-                const dis3 = taken3ByOther || (!mine3 && ownsAny);
+                // Geometry-availability decision from preview
+                const avail = slotAvail[a.id] || {};
+                const hasGeo1 = avail[1] ?? true; // optimistic until computed
+                const hasGeo2 = avail[2] ?? true;
+                const hasGeo3 = avail[3] ?? true;
+                const busy = slotAvailLoading[a.id];
+
+                // Disable when:
+                // - taken by others, OR
+                // - I already own another slot here, OR
+                // - there is no purchasable sub-region left (hasGeoX === false)
+                const dis1 = taken1ByOther || (!mine1 && ownsAny) || (!mine1 && !taken1ByOther && hasGeo1 === false);
+                const dis2 = taken2ByOther || (!mine2 && ownsAny) || (!mine2 && !taken2ByOther && hasGeo2 === false);
+                const dis3 = taken3ByOther || (!mine3 && ownsAny) || (!mine3 && !taken3ByOther && hasGeo3 === false);
 
                 const clickSlot = async (slot: Slot, isMine: boolean, isDisabled: boolean) => {
                   if (isDisabled) return;
@@ -555,26 +604,28 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
-                const titleFor = (mine: boolean, slotState?: SlotState) =>
+                const titleFor = (mine: boolean, slotState?: SlotState, hasGeo?: boolean) =>
                   mine
                     ? "You sponsor this slot"
                     : ownsAny
                     ? "You already sponsor a slot in this area"
                     : slotState && isBlockingStatus(slotState.status)
                     ? `Status: ${slotState.status || "taken"}`
+                    : hasGeo === false
+                    ? "No purchasable region left for this slot"
+                    : busy
+                    ? "Checking availability…"
                     : "Available";
 
-                const label = (mine: boolean, takenByOther: boolean, n: Slot) =>
-                  mine ? `Manage #${n}` : takenByOther ? `Taken #${n}` : `Sponsor #${n}`;
+                const label = (mine: boolean, takenByOther: boolean, n: Slot, hasGeo?: boolean) =>
+                  mine ? `Manage #${n}` : takenByOther ? `Taken #${n}` : hasGeo === false ? `Sold Out #${n}` : `Sponsor #${n}`;
 
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{a.name}</div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(a.created_at).toLocaleString()}
-                        </div>
+                        <div className="text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</div>
                       </div>
                       <div className="flex gap-2">
                         <button className="btn" onClick={() => editArea(a)} disabled={loading}>
@@ -591,51 +642,35 @@ export default function ServiceAreaEditor({
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(1, mine1, dis1)}
                         disabled={dis1}
-                        title={titleFor(mine1, s1)}
+                        title={titleFor(mine1, s1, hasGeo1)}
                       >
-                        {label(mine1, taken1ByOther, 1)}
+                        {label(mine1, taken1ByOther, 1, hasGeo1)}
                       </button>
-                      {import.meta.env.DEV && s1?.status && (
-                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
-                          {s1.status}{s1.owner_business_id ? `:${s1.owner_business_id.slice(0,8)}` : ""}
-                        </span>
-                      )}
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(2, mine2, dis2)}
                         disabled={dis2}
-                        title={titleFor(mine2, s2)}
+                        title={titleFor(mine2, s2, hasGeo2)}
                       >
-                        {label(mine2, taken2ByOther, 2)}
+                        {label(mine2, taken2ByOther, 2, hasGeo2)}
                       </button>
-                      {import.meta.env.DEV && s2?.status && (
-                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
-                          {s2.status}{s2.owner_business_id ? `:${s2.owner_business_id.slice(0,8)}` : ""}
-                        </span>
-                      )}
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(3, mine3, dis3)}
                         disabled={dis3}
-                        title={titleFor(mine3, s3)}
+                        title={titleFor(mine3, s3, hasGeo3)}
                       >
-                        {label(mine3, taken3ByOther, 3)}
+                        {label(mine3, taken3ByOther, 3, hasGeo3)}
                       </button>
-                      {import.meta.env.DEV && s3?.status && (
-                        <span className="text-[10px] px-1 py-[2px] rounded bg-gray-100 text-gray-600">
-                          {s3.status}{s3.owner_business_id ? `:${s3.owner_business_id.slice(0,8)}` : ""}
-                        </span>
-                      )}
                     </div>
+                    {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
                   </li>
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">
-                  No service areas yet. Click “New Area” to draw one.
-                </li>
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
               )}
             </ul>
           </div>
@@ -695,7 +730,7 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* Painted overlays */}
+              {/* non-editable painted overlays */}
               {activeAreaId === null &&
                 serviceAreas.map((a) => {
                   const gj = a.gj;
