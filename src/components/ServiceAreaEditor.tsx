@@ -299,7 +299,7 @@ export default function ServiceAreaEditor({
       if (!areaId || !myBusinessId) return;
       setSlotAvailLoading((m) => ({ ...m, [areaId]: true }));
       try {
-        const run = async (slot: Slot) => {
+        const run = async (slot: Slot): Promise<boolean | undefined> => {
           try {
             const res = await fetch("/.netlify/functions/sponsored-preview", {
               method: "POST",
@@ -311,18 +311,35 @@ export default function ServiceAreaEditor({
                 slot: Number(slot),
               }),
             });
-            if (!res.ok) return false;
+
+            // If the call fails, don't mark sold out — unknown
+            if (!res.ok) return undefined;
+
             const j = await res.json();
-            if (!j || !j.ok) return false;
+            if (!j || !j.ok) return undefined;
+
             const km2 = Number(j.area_km2);
-            return Number.isFinite(km2) && km2 > 0;
+            if (!Number.isFinite(km2)) return undefined;
+
+            // Only set explicit true/false when we know for sure.
+            return km2 > 0; // true = has purchasable area, false = zero area left
           } catch {
-            return false;
+            return undefined; // network/server error -> unknown
           }
         };
 
         const [a1, a2, a3] = await Promise.all([run(1), run(2), run(3)]);
-        setSlotAvail((m) => ({ ...m, [areaId]: { 1: a1, 2: a2, 3: a3 } }));
+
+        // Merge without overwriting unknowns with false
+        setSlotAvail((m) => ({
+          ...m,
+          [areaId]: {
+            ...(m[areaId] || {}),
+            ...(a1 !== undefined ? { 1: a1 } : {}),
+            ...(a2 !== undefined ? { 2: a2 } : {}),
+            ...(a3 !== undefined ? { 3: a3 } : {}),
+          },
+        }));
       } finally {
         setSlotAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
@@ -333,7 +350,6 @@ export default function ServiceAreaEditor({
   useEffect(() => {
     // compute availability for all visible areas
     serviceAreas.forEach((a) => {
-      // skip if we’ve already computed for this area + version
       computeAvailabilityForArea(a.id);
     });
   }, [serviceAreas, sponsorshipVersion, computeAvailabilityForArea]);
