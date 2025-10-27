@@ -1,12 +1,8 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// Small helper to send JSON
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -14,59 +10,65 @@ const json = (body, status = 200) =>
   });
 
 export default async (req) => {
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+
+  let body;
   try {
-    if (req.method !== "POST") {
-      return json({ error: "Method not allowed" }, 405);
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" });
+  }
+
+  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  if (!areaIds.length) return json({ ok: true, areas: [] });
+
+  try {
+    // 1️⃣ Load slots and pricing data
+    const { data: subs, error: subErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("area_id, slot, status, business_id")
+      .in("area_id", areaIds);
+
+    if (subErr) throw subErr;
+
+    // 2️⃣ Load per-slot pricing (these can live in a simple config table)
+    const { data: pricing, error: priceErr } = await sb
+      .from("sponsor_slot_prices")
+      .select("slot, price_per_km2");
+    if (priceErr) throw priceErr;
+
+    const priceMap = Object.fromEntries(
+      (pricing || []).map((r) => [r.slot, r.price_per_km2])
+    );
+
+    // 3️⃣ Build normalized map
+    const areas = [];
+    for (const areaId of areaIds) {
+      const relevant = subs.filter((r) => r.area_id === areaId);
+      const slots = [1, 2, 3].map((n) => {
+        const r = relevant.find((x) => x.slot === n);
+        return {
+          slot: n,
+          taken: !!r,
+          status: r?.status ?? null,
+          owner_business_id: r?.business_id ?? null,
+          price_per_km2: priceMap[n] ?? 0,
+        };
+      });
+
+      // Optional: slot colours
+      const paint = {
+        1: { fill: "rgba(255,215,0,0.35)", stroke: "#B8860B" }, // gold
+        2: { fill: "rgba(192,192,192,0.35)", stroke: "#708090" }, // silver
+        3: { fill: "rgba(205,127,50,0.35)", stroke: "#8B5A2B" }, // bronze
+      }[1]; // default paint (slot 1 colour)
+
+      areas.push({ area_id: areaId, slots, paint });
     }
 
-    // Body shape: { areaIds: string[] }
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: "Invalid JSON" }, 400);
-    }
-
-    const areaIds = Array.isArray(body?.areaIds)
-      ? body.areaIds.filter(Boolean)
-      : [];
-
-    if (!areaIds.length) {
-      return json([]); // flat array (what the UI expects)
-    }
-
-    // Pull remaining availability from the view (already computes overlaps)
-    // View columns: area_id (uuid), slot (int), remaining_km2 (numeric), sold_out (bool)
-    const { data, error } = await supabase
-      .from("v_area_slot_remaining")
-      .select("area_id, slot, remaining_km2, sold_out")
-      .in("area_id", areaIds)
-      .order("area_id", { ascending: true })
-      .order("slot", { ascending: true });
-
-    if (error) {
-      console.error("area-sponsorship query error:", error);
-      return json({ error: "Database error" }, 500);
-    }
-
-    // Ensure we always return a FLAT ARRAY for the frontend
-    // e.g. [{ area_id, slot, remaining_km2, sold_out }, ...]
-    const results = (data ?? []).map((row) => ({
-      area_id: row.area_id,
-      slot: row.slot,
-      // coerce to number where possible; UI only displays, so keep as-is if null
-      remaining_km2:
-        typeof row.remaining_km2 === "number"
-          ? row.remaining_km2
-          : row.remaining_km2 == null
-          ? null
-          : Number(row.remaining_km2),
-      sold_out: !!row.sold_out,
-    }));
-
-    return json(results, 200);
-  } catch (err) {
-    console.error("area-sponsorship fatal error:", err);
-    return json({ error: "Internal Server Error" }, 500);
+    return json({ ok: true, areas });
+  } catch (e) {
+    console.error("area-sponsorship failed:", e);
+    return json({ ok: false, error: e?.message || "Server error" });
   }
 };
