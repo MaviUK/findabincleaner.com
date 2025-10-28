@@ -34,7 +34,7 @@ type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry")[];
 
-// statuses that count as “owned” / blocking for THAT exact slot by that owner
+// statuses that should *block* a slot
 const isBlockingStatus = (s?: string | null) =>
   ["active", "trialing", "past_due", "unpaid", "incomplete"].includes((s || "").toLowerCase());
 
@@ -252,7 +252,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- Sponsorship occupancy (who owns each slot?) -------
+  // ------- Sponsorship occupancy (who owns the slot?) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -312,15 +312,17 @@ export default function ServiceAreaEditor({
               }),
             });
 
-            if (!res.ok) return undefined; // keep optimistic until known
+            // If the call fails, don't mark sold out — unknown
+            if (!res.ok) return undefined;
+
             const j = await res.json();
             if (!j || !j.ok) return undefined;
 
             const km2 = Number(j.area_km2);
             if (!Number.isFinite(km2)) return undefined;
 
-            // true => has purchasable sub-region; false => zero left
-            return km2 > 0;
+            // Only set explicit true/false when we know for sure.
+            return km2 > 0; // true = has purchasable area, false = zero area left
           } catch {
             return undefined; // network/server error -> unknown
           }
@@ -328,6 +330,7 @@ export default function ServiceAreaEditor({
 
         const [a1, a2, a3] = await Promise.all([run(1), run(2), run(3)]);
 
+        // Merge without overwriting unknowns with false
         setSlotAvail((m) => ({
           ...m,
           [areaId]: {
@@ -345,6 +348,7 @@ export default function ServiceAreaEditor({
   );
 
   useEffect(() => {
+    // compute availability for all visible areas
     serviceAreas.forEach((a) => {
       computeAvailabilityForArea(a.id);
     });
@@ -578,19 +582,26 @@ export default function ServiceAreaEditor({
                 const mine2 = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id === myBusinessId;
                 const mine3 = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id === myBusinessId;
 
-                // Geometry-availability decision from preview per slot
+                const ownsAny = mine1 || mine2 || mine3;
+
+                const taken1ByOther = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id !== myBusinessId;
+                const taken2ByOther = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id !== myBusinessId;
+                const taken3ByOther = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id !== myBusinessId;
+
+                // Geometry-availability decision from preview
                 const avail = slotAvail[a.id] || {};
                 const hasGeo1 = avail[1] ?? true; // optimistic until computed
                 const hasGeo2 = avail[2] ?? true;
                 const hasGeo3 = avail[3] ?? true;
                 const busy = slotAvailLoading[a.id];
 
-                // Independent tiers rule:
-                // - If I own the slot => Manage
-                // - Else, enable purchase unless preview says there is ZERO remaining (hasGeoX === false)
-                const dis1 = !mine1 && hasGeo1 === false;
-                const dis2 = !mine2 && hasGeo2 === false;
-                const dis3 = !mine3 && hasGeo3 === false;
+                // Disable when:
+                // - taken by others, OR
+                // - I already own another slot here, OR
+                // - there is no purchasable sub-region left (hasGeoX === false)
+                const dis1 = taken1ByOther || (!mine1 && ownsAny) || (!mine1 && !taken1ByOther && hasGeo1 === false);
+                const dis2 = taken2ByOther || (!mine2 && ownsAny) || (!mine2 && !taken2ByOther && hasGeo2 === false);
+                const dis3 = taken3ByOther || (!mine3 && ownsAny) || (!mine3 && !taken3ByOther && hasGeo3 === false);
 
                 const clickSlot = async (slot: Slot, isMine: boolean, isDisabled: boolean) => {
                   if (isDisabled) return;
@@ -609,17 +620,21 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
-                const titleFor = (mine: boolean, hasGeo?: boolean) =>
+                const titleFor = (mine: boolean, slotState?: SlotState, hasGeo?: boolean) =>
                   mine
                     ? "You sponsor this slot"
+                    : ownsAny
+                    ? "You already sponsor a slot in this area"
+                    : slotState && isBlockingStatus(slotState.status)
+                    ? `Status: ${slotState.status || "taken"}`
                     : hasGeo === false
                     ? "No purchasable region left for this slot"
                     : busy
                     ? "Checking availability…"
                     : "Available";
 
-                const label = (mine: boolean, n: Slot, hasGeo?: boolean) =>
-                  mine ? `Manage #${n}` : hasGeo === false ? `Sold Out #${n}` : `Sponsor #${n}`;
+                const label = (mine: boolean, takenByOther: boolean, n: Slot, hasGeo?: boolean) =>
+                  mine ? `Manage #${n}` : takenByOther ? `Taken #${n}` : hasGeo === false ? `Sold Out #${n}` : `Sponsor #${n}`;
 
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
@@ -643,27 +658,27 @@ export default function ServiceAreaEditor({
                         className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(1, mine1, dis1)}
                         disabled={dis1}
-                        title={titleFor(mine1, hasGeo1)}
+                        title={titleFor(mine1, s1, hasGeo1)}
                       >
-                        {label(mine1, 1, hasGeo1)}
+                        {label(mine1, taken1ByOther, 1, hasGeo1)}
                       </button>
 
                       <button
                         className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(2, mine2, dis2)}
                         disabled={dis2}
-                        title={titleFor(mine2, hasGeo2)}
+                        title={titleFor(mine2, s2, hasGeo2)}
                       >
-                        {label(mine2, 2, hasGeo2)}
+                        {label(mine2, taken2ByOther, 2, hasGeo2)}
                       </button>
 
                       <button
                         className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={() => clickSlot(3, mine3, dis3)}
                         disabled={dis3}
-                        title={titleFor(mine3, hasGeo3)}
+                        title={titleFor(mine3, s3, hasGeo3)}
                       >
-                        {label(mine3, 3, hasGeo3)}
+                        {label(mine3, taken3ByOther, 3, hasGeo3)}
                       </button>
                     </div>
                     {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
