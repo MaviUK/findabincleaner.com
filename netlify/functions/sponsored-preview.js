@@ -9,6 +9,21 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+// --- helpers for pricing ---
+const toNum = (v) => (v == null ? null : Number(v));
+const rateForSlot = (slot) => {
+  switch (Number(slot)) {
+    case 1:
+      return toNum(process.env.RATE_GOLD_PER_KM2_PER_MONTH);
+    case 2:
+      return toNum(process.env.RATE_SILVER_PER_KM2_PER_MONTH);
+    case 3:
+      return toNum(process.env.RATE_BRONZE_PER_KM2_PER_MONTH);
+    default:
+      return null;
+  }
+};
+
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
@@ -16,7 +31,7 @@ export default async (req) => {
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON body" }); // 200 with ok:false on client
+    return json({ ok: false, error: "Invalid JSON body" }); // keep 200 with ok:false for client
   }
 
   const areaId = (body.areaId || body.area_id || "").trim();
@@ -46,10 +61,22 @@ export default async (req) => {
     const area_km2 = Number(row?.area_km2 ?? 0);
     const geojson = row?.gj ?? null;
 
+    // ---- pricing from env rates ----
+    const rate = rateForSlot(slot); // £ per km² per month
+    let price_cents = null;
+    if (Number.isFinite(rate) && area_km2 > 0) {
+      const gbp = area_km2 * rate;
+      price_cents = Math.round(gbp * 100); // integer cents
+    }
+    // --------------------------------
+
     return json({
       ok: true,
       area_km2,
-      geojson, // this is a GeoJSON geometry or null
+      geojson,             // GeoJSON geometry or null (your preview overlay)
+      price_cents,         // integer pence (null if no rate set or zero area)
+      currency: "gbp",
+      rate_per_km2: Number.isFinite(rate) ? rate : null, // helpful for debugging UI
     });
   } catch (e) {
     return json({ ok: false, error: e?.message || "Server error" });
