@@ -220,7 +220,7 @@ export default function ServiceAreaEditor({
   // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
-  the const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
+  const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
   const previewPolys = useMemo(() => geoToPaths(previewGeo), [previewGeo]);
   const previewActiveForArea = sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
