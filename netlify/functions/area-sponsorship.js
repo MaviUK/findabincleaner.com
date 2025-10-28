@@ -3,30 +3,29 @@ import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
-// Statuses that mean the slot is considered "taken"
-const BLOCKING = ["active", "trialing", "past_due", "unpaid", "incomplete"];
-
 export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-
-  let body;
   try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
+    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  if (!areaIds.length) return json({ areas: [] });
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
 
-  try {
-    // Pull *all* subs for these areas (we'll pick the latest per slot below)
+    const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+    if (!areaIds.length) return json({ areas: [] });
+
+    // Pull the most-recent subs per area & slot
     const { data, error } = await sb
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at")
@@ -35,40 +34,36 @@ export default async (req) => {
 
     if (error) throw error;
 
-    const byArea = new Map();
+    // Build map: area_id -> slot -> latest row
+    const latest = new Map(); // key: `${area_id}:${slot}` -> row
     for (const row of data || []) {
-      const area_id = row.area_id;
-      if (!byArea.has(area_id)) byArea.set(area_id, []);
-      byArea.get(area_id).push(row);
+      const key = `${row.area_id}:${row.slot}`;
+      if (!latest.has(key)) latest.set(key, row);
     }
 
+    // Compose response per area with independent tiers
     const areas = areaIds.map((area_id) => {
-      const rows = (byArea.get(area_id) || []).filter((r) =>
-        BLOCKING.includes((r.status || "").toLowerCase())
-      );
-
-      // pick the *latest* blocking record per slot
-      const latestBySlot = new Map(); // slot -> row
-      for (const r of rows) {
-        if (!latestBySlot.has(r.slot)) latestBySlot.set(r.slot, r);
-      }
-
-      const slots = [1, 2, 3].map((n) => {
-        const r = latestBySlot.get(n);
+      const slots = [1, 2, 3].map((slot) => {
+        const row = latest.get(`${area_id}:${slot}`) || null;
+        const status = (row?.status || "").toLowerCase() || null;
+        const taken = row ? BLOCKING.has(status) : false;
         return {
-          slot: n,
-          taken: !!r,
-          status: r?.status ?? null,
-          owner_business_id: r?.business_id ?? null,
+          slot,
+          taken,
+          status,
+          owner_business_id: row?.business_id ?? null,
         };
       });
 
-      // paint is optional; leave undefined or set separately if you color-fill on the map
-      return { area_id, slots, paint: undefined };
+      // Optional “paint” is purely cosmetic; keep neutral/default colors if you prefer
+      const paint = { tier: 0, fill: "rgba(0,0,0,0)", stroke: "#555" };
+
+      return { area_id, slots, paint };
     });
 
     return json({ areas });
   } catch (e) {
-    return json({ error: e.message || "Server error" }, 500);
+    console.error("[area-sponsorship] error:", e);
+    return json({ error: "Server error" }, 200); // Return 200 with error payload so UI doesn't crash
   }
-};
+}
