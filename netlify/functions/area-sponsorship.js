@@ -1,10 +1,20 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
+// JSON helper
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+// statuses that *block* the slot from being purchased by others
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -20,53 +30,64 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Prefer the view if it exists
-    const { data, error } = await sb
-      .from("v_area_slot_remaining")
-      .select("area_id, slot, remaining_km2, sold_out")
+    // Pull ALL subs for these areas; we’ll keep the most recent per (area_id, slot)
+    const { data: subs, error } = await supabase
+      .from("sponsored_subscriptions")
+      .select("area_id, slot, status, business_id, created_at")
       .in("area_id", areaIds);
 
-    if (error) {
-      console.error("[area-sponsorship] view query error:", error);
-      // Fallback: return “empty” slots so UI still renders and preview check will decide availability
-      const fallback = areaIds.map((id) => ({
-        area_id: id,
-        slots: [
-          { slot: 1, taken: false, status: null, owner_business_id: null },
-          { slot: 2, taken: false, status: null, owner_business_id: null },
-          { slot: 3, taken: false, status: null, owner_business_id: null },
-        ],
-      }));
-      return json({ areas: fallback });
+    if (error) throw error;
+
+    // Keep the latest sub per (area_id, slot)
+    const latest = new Map(); // key = `${area_id}:${slot}`
+    for (const row of subs || []) {
+      const key = `${row.area_id}:${row.slot}`;
+      const prev = latest.get(key);
+      if (!prev || new Date(row.created_at) > new Date(prev.created_at)) {
+        latest.set(key, row);
+      }
     }
 
-    // Group rows per area and expose a slot array the UI can consume
-    const grouped = new Map();
-    for (const r of data || []) {
-      if (!grouped.has(r.area_id)) grouped.set(r.area_id, []);
-      const soldOut = !!r.sold_out || Number(r.remaining_km2) <= 0;
-      grouped.get(r.area_id).push({
-        slot: Number(r.slot),
-        // We don't assert ownership here; taken/status is handled by other code/preview.
-        taken: false,
-        status: soldOut ? "sold_out" : null,
-        owner_business_id: null,
+    // Shape response the UI expects
+    //   { areas: [{ area_id, slots: [{slot, taken, status, owner_business_id}], paint? }] }
+    const byArea = new Map();
+    for (const areaId of areaIds) {
+      byArea.set(areaId, { area_id: areaId, slots: [] });
+    }
+
+    for (const [key, row] of latest.entries()) {
+      const areaId = row.area_id;
+      const area = byArea.get(areaId);
+      if (!area) continue;
+
+      area.slots.push({
+        slot: row.slot,
+        taken: BLOCKING.has(String(row.status || "").toLowerCase()),
+        status: row.status ?? null,
+        owner_business_id: row.business_id ?? null,
       });
     }
 
-    // Ensure all three slots are present per area
-    const areas = areaIds.map((id) => {
-      const slots = grouped.get(id) || [];
-      const bySlot = new Map(slots.map((s) => [s.slot, s]));
-      const full = [1, 2, 3].map((n) =>
-        bySlot.get(n) || { slot: n, taken: false, status: null, owner_business_id: null }
-      );
-      return { area_id: id, slots: full };
-    });
+    // Ensure all three slots are present (so UI can show “Sponsor #n” for missing ones)
+    for (const area of byArea.values()) {
+      const present = new Set(area.slots.map((s) => s.slot));
+      for (const s of [1, 2, 3]) {
+        if (!present.has(s)) {
+          area.slots.push({
+            slot: s,
+            taken: false,
+            status: null,
+            owner_business_id: null,
+          });
+        }
+      }
+      // stable ordering
+      area.slots.sort((a, b) => a.slot - b.slot);
+    }
 
-    return json({ areas });
+    return json({ areas: Array.from(byArea.values()) }, 200);
   } catch (err) {
-    console.error("[area-sponsorship] fatal:", err);
+    console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
   }
 };
