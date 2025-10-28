@@ -10,10 +10,6 @@ type Props = {
   onClearPreview?: () => void;
 };
 
-const RATE_KEYS = {
-  1: "RATE_GOLD_PER_KM2_PER_MONTH", // keep using your existing env var on server
-} as const;
-
 // simple money formatter
 const money = (n: number) =>
   new Intl.NumberFormat(undefined, { style: "currency", currency: "GBP" }).format(n);
@@ -26,24 +22,24 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  const slot = 1; // single-slot model
+  const slot = 1;
 
-  const [loading, setLoading] = useState(false);
+  const [loadingRate, setLoadingRate] = useState(false);
   const [rate, setRate] = useState<number | null>(null);
+
   const [totalKm2, setTotalKm2] = useState<number | null>(null);
   const [availKm2, setAvailKm2] = useState<number | null>(null);
+
   const [err, setErr] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
 
-  // fetch price rate (server reads env vars; client does NOT)
+  // price rate (server reads env vars; client does NOT)
   useEffect(() => {
     let cancelled = false;
-
     async function run() {
-      setLoading(true);
-      setErr(null);
+      if (!open) return;
+      setLoadingRate(true);
       try {
-        // ask server for the rate key we use for slot 1
         const res = await fetch("/.netlify/functions/area-pricing", {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -52,37 +48,35 @@ export default function AreaSponsorModal({
         if (!res.ok) throw new Error(`rate ${res.status}`);
         const j = await res.json();
         if (!cancelled) setRate(Number(j?.rate_per_km2 ?? 0));
-      } catch (e: any) {
+      } catch {
         if (!cancelled) setRate(null);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadingRate(false);
       }
     }
-
-    if (open) run();
+    run();
     return () => {
       cancelled = true;
     };
   }, [open, slot]);
 
-  // preview available + total area; also draw the purchasable sub-region
+  // preview available + total area; draw the purchasable sub-region
   useEffect(() => {
     let cancelled = false;
+    if (!open) return;
 
-    async function run() {
+    async function preview() {
       setErr(null);
       setAvailKm2(null);
       try {
-        // available area (purchasable sub-region with overlaps applied)
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }), // slot=1
+          body: JSON.stringify({ businessId, areaId, slot }),
         });
         if (!res.ok) throw new Error(`preview ${res.status}`);
         const j = await res.json();
         if (!j?.ok) throw new Error(j?.error || "Preview failed");
-
         if (!cancelled) {
           setAvailKm2(Number(j.area_km2 ?? 0));
           onPreviewGeoJSON?.(j.geojson ?? null);
@@ -93,7 +87,6 @@ export default function AreaSponsorModal({
       }
     }
 
-    // total area (original polygon)
     async function total() {
       try {
         const res = await fetch("/.netlify/functions/area-total", {
@@ -101,18 +94,17 @@ export default function AreaSponsorModal({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ areaId }),
         });
-        if (!res.ok) return;
+        if (!res.ok) return; // quietly ignore if function isn’t present
         const j = await res.json();
         if (!cancelled) setTotalKm2(Number(j?.total_km2 ?? 0));
       } catch {
-        /* ignore */
+        // ignore
       }
     }
 
-    if (open) {
-      run();
-      total();
-    }
+    preview();
+    total();
+
     return () => {
       cancelled = true;
       onClearPreview?.();
@@ -126,22 +118,25 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
+  // Tailwind overlay modal
   return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <div className="modal-head">
-          <div className="modal-title">Sponsor — Featured listing</div>
-          <button onClick={onClose} className="icon-btn">Close</button>
+    <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 p-4">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+        <div className="flex items-center justify-between p-4 border-b">
+          <h3 className="font-semibold">Sponsor — Featured listing</h3>
+          <button onClick={onClose} className="text-sm text-gray-600 hover:text-black">Close</button>
         </div>
 
-        <div className="space-y-3">
+        <div className="p-4 space-y-4">
           <div className="text-sm rounded bg-emerald-50 border border-emerald-200 px-3 py-2">
             Preview shows only the purchasable sub-region on the map.
           </div>
 
-          <div className="space-y-1">
+          <div>
             <div className="font-medium">Monthly price</div>
-            <div className="text-xs text-gray-500">Rate: {rate == null ? "—" : `${money(rate)} / km² / month`}</div>
+            <div className="text-xs text-gray-500">
+              Rate: {loadingRate ? "…" : rate == null ? "—" : `${money(rate)} / km² / month`}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-6">
@@ -167,7 +162,7 @@ export default function AreaSponsorModal({
           </div>
         </div>
 
-        <div className="modal-foot">
+        <div className="flex items-center justify-end gap-2 p-4 border-t">
           <button className="btn" onClick={onClose}>Cancel</button>
           <button
             className="btn btn-primary"
@@ -182,11 +177,11 @@ export default function AreaSponsorModal({
                     areaId,
                     cleanerId: businessId,
                     slot, // 1
-                    // the server will compute final price from env + km2 at order time
                   }),
                 });
                 const j = await res.json();
                 if (j?.url) window.location.href = j.url;
+                // if server blocks due to ownership, it should return 409 with error
               } finally {
                 setStarting(false);
               }
