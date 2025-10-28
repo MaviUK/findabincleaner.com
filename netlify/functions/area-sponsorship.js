@@ -1,101 +1,72 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const sb = createClient(
-const supabase = createClient(
-process.env.SUPABASE_URL,
-process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// Small helper to send JSON
 const json = (body, status = 200) =>
-new Response(JSON.stringify(body), {
-status,
-headers: { "content-type": "application/json" },
-});
+  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
-try {
+  try {
     body = await req.json();
   } catch {
     return json({ error: "Invalid JSON" }, 400);
   }
-    if (req.method !== "POST") {
-      return json({ error: "Method not allowed" }, 405);
-    }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
   if (!areaIds.length) return json({ areas: [] });
-    // Body shape: { areaIds: string[] }
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: "Invalid JSON" }, 400);
-    }
 
   try {
-    // ✅ Use the new SQL view so it includes the correct remaining + sold_out
+    // Prefer the view if it exists
     const { data, error } = await sb
-    const areaIds = Array.isArray(body?.areaIds)
-      ? body.areaIds.filter(Boolean)
-      : [];
-
-    if (!areaIds.length) {
-      return json([]); // flat array (what the UI expects)
-    }
-
-    // Pull remaining availability from the view (already computes overlaps)
-    // View columns: area_id (uuid), slot (int), remaining_km2 (numeric), sold_out (bool)
-    const { data, error } = await supabase
-.from("v_area_slot_remaining")
-.select("area_id, slot, remaining_km2, sold_out")
+      .from("v_area_slot_remaining")
+      .select("area_id, slot, remaining_km2, sold_out")
       .in("area_id", areaIds);
 
-    if (error) throw error;
-
-    // group slots by area_id for frontend
-    const grouped = {};
-    for (const row of data || []) {
-      if (!grouped[row.area_id]) grouped[row.area_id] = [];
-      grouped[row.area_id].push({
-        slot: row.slot,
-        remaining_km2: row.remaining_km2,
-        sold_out: row.sold_out,
-      });
-      .in("area_id", areaIds)
-      .order("area_id", { ascending: true })
-      .order("slot", { ascending: true });
-
     if (error) {
-      console.error("area-sponsorship query error:", error);
-      return json({ error: "Database error" }, 500);
-}
+      console.error("[area-sponsorship] view query error:", error);
+      // Fallback: return “empty” slots so UI still renders and preview check will decide availability
+      const fallback = areaIds.map((id) => ({
+        area_id: id,
+        slots: [
+          { slot: 1, taken: false, status: null, owner_business_id: null },
+          { slot: 2, taken: false, status: null, owner_business_id: null },
+          { slot: 3, taken: false, status: null, owner_business_id: null },
+        ],
+      }));
+      return json({ areas: fallback });
+    }
 
-    return json({ areas: grouped });
-    // Ensure we always return a FLAT ARRAY for the frontend
-    // e.g. [{ area_id, slot, remaining_km2, sold_out }, ...]
-    const results = (data ?? []).map((row) => ({
-      area_id: row.area_id,
-      slot: row.slot,
-      // coerce to number where possible; UI only displays, so keep as-is if null
-      remaining_km2:
-        typeof row.remaining_km2 === "number"
-          ? row.remaining_km2
-          : row.remaining_km2 == null
-          ? null
-          : Number(row.remaining_km2),
-      sold_out: !!row.sold_out,
-    }));
+    // Group rows per area and expose a slot array the UI can consume
+    const grouped = new Map();
+    for (const r of data || []) {
+      if (!grouped.has(r.area_id)) grouped.set(r.area_id, []);
+      const soldOut = !!r.sold_out || Number(r.remaining_km2) <= 0;
+      grouped.get(r.area_id).push({
+        slot: Number(r.slot),
+        // We don't assert ownership here; taken/status is handled by other code/preview.
+        taken: false,
+        status: soldOut ? "sold_out" : null,
+        owner_business_id: null,
+      });
+    }
 
-    return json(results, 200);
-} catch (err) {
-    console.error("area-sponsorship error", err);
-    return json({ error: err.message || "Server error" }, 500);
-    console.error("area-sponsorship fatal error:", err);
+    // Ensure all three slots are present per area
+    const areas = areaIds.map((id) => {
+      const slots = grouped.get(id) || [];
+      const bySlot = new Map(slots.map((s) => [s.slot, s]));
+      const full = [1, 2, 3].map((n) =>
+        bySlot.get(n) || { slot: n, taken: false, status: null, owner_business_id: null }
+      );
+      return { area_id: id, slots: full };
+    });
+
+    return json({ areas });
+  } catch (err) {
+    console.error("[area-sponsorship] fatal:", err);
     return json({ error: "Internal Server Error" }, 500);
-}
+  }
 };
