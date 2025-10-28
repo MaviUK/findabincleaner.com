@@ -1,320 +1,143 @@
-import React, { useEffect, useMemo, useState } from "react";
-
-type Slot = 1 | 2 | 3;
-
-type PreviewOk = {
-  ok: true;
-  area_km2: number | string;
-  monthly_price: number | string;
-
-  // possible geom keys
-  final_geojson?: any | null;
-  available?: any;
-  available_gj?: any;
-  available_geojson?: any;
-  geometry?: any;
-  geojson?: any;
-  multi?: any;
-};
-
-type PreviewErr = { ok?: false; error?: string };
-type PreviewResp = PreviewOk | PreviewErr;
+// src/components/AreaSponsorModal.tsx
+import React, { useEffect, useState } from "react";
 
 type Props = {
   open: boolean;
   onClose: () => void;
-
-  cleanerId?: string;
-  businessId?: string;
-
+  businessId: string;
   areaId: string;
-  slot: Slot;
-
-  onPreviewGeoJSON?: (multi: any) => void;
+  slot: 1 | 2 | 3;
+  onPreviewGeoJSON?: (multi: any | null) => void;   // draw the green preview on the map
   onClearPreview?: () => void;
 };
-
-function labelForSlot(s: Slot) {
-  return s === 1 ? "Gold" : s === 2 ? "Silver" : "Bronze";
-}
-
-function pickClippedGeom(json: any) {
-  return (
-    json?.final_geojson ??
-    json?.available ??
-    json?.available_gj ??
-    json?.available_geojson ??
-    json?.geometry ??
-    json?.geojson ??
-    json?.multi ??
-    null
-  );
-}
-
-async function callPreview({
-  cleanerId,
-  areaId,
-  slot,
-  signal,
-}: {
-  cleanerId: string;
-  areaId: string;
-  slot: Slot;
-  signal?: AbortSignal;
-}) {
-  const res = await fetch("/.netlify/functions/sponsored-preview", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      cleanerId,
-      businessId: cleanerId,
-      areaId,
-      area_id: areaId,
-      slot: Number(slot),
-    }),
-    signal,
-  });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`Preview ${res.status}${txt ? ` – ${txt}` : ""}`);
-  }
-
-  const json: PreviewResp = await res.json();
-  if (!("ok" in json) || !json.ok) {
-    throw new Error((json as PreviewErr)?.error || "Failed to compute preview");
-  }
-
-  const ok = json as PreviewOk;
-
-  const aNum = Number(ok.area_km2);
-  const mNum = Number(ok.monthly_price);
-
-  return {
-    km2: Number.isFinite(aNum) ? aNum : 0,
-    monthly: Number.isFinite(mNum) ? mNum : null,
-    geom: pickClippedGeom(ok),
-  };
-}
 
 export default function AreaSponsorModal({
   open,
   onClose,
-  cleanerId,
   businessId,
   areaId,
   slot,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  const ownerId = (businessId ?? cleanerId) || "";
-
-  const [computing, setComputing] = useState(false);
-  const [checkingOut, setCheckingOut] = useState(false);
-  const [areaKm2, setAreaKm2] = useState<number | null>(null);
-  const [monthly, setMonthly] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [wasClipped, setWasClipped] = useState(false);
+  const [areaKm2, setAreaKm2] = useState<number | null>(null);
+  const [priceCents, setPriceCents] = useState<number | null>(null);
+  const [ratePerKm2, setRatePerKm2] = useState<number | null>(null);
 
-  // Close on Escape
   useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        handleClose();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  // Compute preview & draw overlay
-  useEffect(() => {
-    if (!open || !ownerId) return;
-
     let cancelled = false;
-    const controller = new AbortController();
 
-    onClearPreview?.();
-    setErr(null);
-    setComputing(true);
-    setAreaKm2(null);
-    setMonthly(null);
-    setWasClipped(false);
-
-    (async () => {
-      try {
-        const { km2, monthly, geom } = await callPreview({
-          cleanerId: ownerId,
-          areaId,
-          slot,
-          signal: controller.signal,
-        });
-        if (cancelled) return;
-
-        setAreaKm2(km2);
-        setMonthly(monthly);
-        if (geom && onPreviewGeoJSON) {
-          setWasClipped(true);
-          onPreviewGeoJSON(geom);
-        }
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "Failed to compute preview");
-      } finally {
-        if (!cancelled) setComputing(false);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      onClearPreview?.();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, ownerId, areaId, slot]);
-
-  const nfGBP = useMemo(
-    () =>
-      new Intl.NumberFormat(undefined, {
-        style: "currency",
-        currency: "GBP",
-        maximumFractionDigits: 2,
-      }),
-    []
-  );
-
-  const priceLine = useMemo(() => {
-    if (areaKm2 == null && monthly == null) return "—";
-    const a = areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`;
-    const m = monthly == null ? "—" : `${nfGBP.format(monthly)}/month`;
-    return `Area: ${a} · Monthly: ${m}`;
-  }, [areaKm2, monthly, nfGBP]);
-
-  const hasPurchasableRegion = areaKm2 !== null && areaKm2 > 0;
-
-  function handleClose() {
-    onClearPreview?.();
-    onClose();
-  }
-
-  // Start checkout (server re-validates availability; no previewId needed)
-  async function handleCheckout() {
-    try {
-      setCheckingOut(true);
+    async function run() {
+      if (!open) return;
+      setLoading(true);
       setErr(null);
 
-      const res = await fetch("/.netlify/functions/sponsored-checkout", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          cleanerId: ownerId,
-          businessId: ownerId,
-          areaId,
-          area_id: areaId,
-          slot: Number(slot),
-          return_url:
-            typeof window !== "undefined" ? window.location.origin : undefined,
-        }),
-      });
+      try {
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ businessId, areaId, slot }),
+        });
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`Checkout ${res.status}${txt ? ` – ${txt}` : ""}`);
+        // Don’t blow up UI on 4xx/5xx, just show a friendly error
+        if (!res.ok) {
+          setErr(`Preview ${res.status}`);
+          setAreaKm2(null);
+          setPriceCents(null);
+          onClearPreview?.();
+          return;
+        }
+
+        const j = await res.json();
+        if (!j?.ok) {
+          setErr(j?.error || "Preview failed");
+          setAreaKm2(null);
+          setPriceCents(null);
+          onClearPreview?.();
+          return;
+        }
+
+        if (cancelled) return;
+
+        setAreaKm2(Number(j.area_km2 ?? 0));
+        setPriceCents(
+          typeof j.price_cents === "number" && Number.isFinite(j.price_cents)
+            ? j.price_cents
+            : null
+        );
+        setRatePerKm2(
+          typeof j.rate_per_km2 === "number" && Number.isFinite(j.rate_per_km2)
+            ? j.rate_per_km2
+            : null
+        );
+
+        // Draw green preview on the map
+        if (j.geojson) onPreviewGeoJSON?.(j.geojson);
+        else onClearPreview?.();
+      } catch (e: any) {
+        if (!cancelled) {
+          setErr(e?.message || "Network error");
+          onClearPreview?.();
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      const json = await res.json();
-      if (!json?.url) throw new Error("No checkout URL returned");
-      window.location.href = json.url;
-    } catch (e: any) {
-      setErr(e?.message || "Failed to start checkout");
-      setCheckingOut(false);
     }
-  }
 
-  if (!open) return null;
+    run();
+    return () => {
+      cancelled = true;
+      onClearPreview?.();
+    };
+  }, [open, businessId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-lg w-full max-w-lg">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">
-            Sponsor #{slot} — {labelForSlot(slot)}
-          </div>
-          <button
-            className="text-gray-600 hover:text-black disabled:opacity-50"
-            onClick={handleClose}
-            disabled={computing || checkingOut}
-            aria-label="Close"
-          >
-            Close
-          </button>
+  const monthlyText =
+    priceCents == null ? "—" : `£${(priceCents / 100).toFixed(2)}`;
+
+  return !open ? null : (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+        <div className="p-4 border-b flex items-center justify-between">
+          <div className="font-semibold">Sponsor #{slot} — {slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}</div>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>Close</button>
         </div>
 
         <div className="p-4 space-y-3">
           {err && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+            <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded p-2">
               {err}
             </div>
           )}
 
-          <p className="text-sm text-gray-700">
+          <div className="text-sm">
             We’ll only bill the part of your drawn area that’s actually available for slot #{slot}.
-          </p>
-
-          <div className="border rounded p-3 text-sm text-gray-800">
-            <div className="flex items-center justify-between">
-              <span>Available area:</span>
-              <span className="tabular-nums">
-                {areaKm2 == null ? "—" : `${areaKm2.toFixed(4)} km²`}
-              </span>
-            </div>
-            <div className="mt-1 flex items-center justify-between">
-              <span>
-                Monthly price (<span className="font-medium">{labelForSlot(slot)}</span>):
-              </span>
-              <span className="tabular-nums">
-                {monthly == null ? "—" : `${nfGBP.format(monthly)}/month`}
-              </span>
-            </div>
-
-            {computing && <div className="mt-2 text-xs text-gray-500">Computing preview…</div>}
-
-            {!computing && areaKm2 === 0 && (
-              <div className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
-                None of your drawn area is purchasable for this slot. Try adjusting your polygon.
-              </div>
-            )}
-
-            {wasClipped && !computing && hasPurchasableRegion && (
-              <div className="mt-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
-                Preview shows only the purchasable sub-region on the map.
-              </div>
-            )}
           </div>
 
-          {!computing && hasPurchasableRegion && (
-            <input
-              type="text"
-              className="mt-2 w-full rounded border border-gray-200 px-3 py-2 text-sm"
-              readOnly
-              value={priceLine}
-              aria-label="Price summary"
-            />
-          )}
+          <label className="block text-xs text-gray-500">Available area:</label>
+          <div className="input">
+            {loading ? "Loading…" : (areaKm2 ?? 0).toFixed(4)} km²
+          </div>
+
+          <label className="block text-xs text-gray-500">Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):</label>
+          <div className="input">{loading ? "Loading…" : monthlyText}</div>
+
+          <div className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
+            Preview shows only the purchasable sub-region on the map.
+          </div>
+
+          <div className="input flex items-center gap-2">
+            <span>Area: {(areaKm2 ?? 0).toFixed(4)} km²</span>
+            <span className="opacity-60">•</span>
+            <span>Monthly: {monthlyText}</span>
+          </div>
         </div>
 
-        <div className="px-4 py-3 border-t flex justify-end gap-2">
-          <button className="btn" onClick={handleClose} disabled={checkingOut}>
-            Cancel
-          </button>
-          <button
-            className="btn btn-primary disabled:opacity-50"
-            onClick={handleCheckout}
-            disabled={checkingOut || computing || !hasPurchasableRegion || !ownerId}
-          >
-            {checkingOut ? "Starting checkout…" : "Continue to checkout"}
+        <div className="p-4 border-t flex items-center justify-end gap-2">
+          <button className="btn" onClick={onClose}>Cancel</button>
+          <button className="btn btn-primary" disabled={loading || !priceCents}>
+            {loading ? "Starting checkout…" : "Continue to checkout"}
           </button>
         </div>
       </div>
