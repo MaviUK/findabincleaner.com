@@ -9,61 +9,102 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+// statuses that block a slot
+const BLOCKING = ["active", "trialing", "past_due", "unpaid", "incomplete"];
+
 export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
-
-  let body;
   try {
-    body = await req.json();
-  } catch {
-    return json({ error: "Invalid JSON" }, 400);
-  }
+    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
-  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  if (!areaIds.length) return json({ areas: [] });
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
 
-  try {
-    // 1) Who owns each slot right now?
-    const occ = await sb
-      .from("v_area_slot_occupancy")
-      .select("area_id, slot, owner_business_id, owner_status, owner_until")
-      .in("area_id", areaIds);
+    const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+    if (!areaIds.length) return json({ areas: [] });
 
-    if (occ.error) throw occ.error;
+    // 1) Remaining geometry per slot (from the view)
+    const { data: remain, error: rErr } = await sb
+      .from("v_area_slot_remaining")
+      .select("area_id, slot, remaining_km2, total_km2, sold_out")
+      .in("area_id", areaIds)
+      .order("area_id", { ascending: true })
+      .order("slot", { ascending: true });
 
-    // 2) Shape for UI: one object per area with 3 slots
+    if (rErr) {
+      console.error("area-sponsorship remain error:", rErr);
+      return json({ error: "Database error (remaining)" }, 500);
+    }
+
+    // 2) Active/taken subscriptions per slot (ownership)
+    const { data: subs, error: sErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("area_id, slot, business_id, status")
+      .in("area_id", areaIds)
+      .in("status", BLOCKING);
+
+    if (sErr) {
+      console.error("area-sponsorship subs error:", sErr);
+      return json({ error: "Database error (subscriptions)" }, 500);
+    }
+
+    // Index ownership by (area_id, slot)
+    const owned = new Map();
+    for (const row of subs || []) {
+      const key = `${row.area_id}:${row.slot}`;
+      // if multiple, prefer any blocking one (they all are) – keep the first
+      if (!owned.has(key)) owned.set(key, row);
+    }
+
+    // Build response grouped by area
     const byArea = new Map();
-    for (const id of areaIds) {
-      byArea.set(id, {
-        area_id: id,
-        slots: [
-          { slot: 1, taken: false, status: null, owner_business_id: null },
-          { slot: 2, taken: false, status: null, owner_business_id: null },
-          { slot: 3, taken: false, status: null, owner_business_id: null },
-        ],
-        // optional paint kept as-is / not used for blocking
-        paint: undefined,
+    for (const r of remain || []) {
+      const key = r.area_id;
+      if (!byArea.has(key)) byArea.set(key, { area_id: key, slots: [] });
+
+      const o = owned.get(`${r.area_id}:${r.slot}`);
+      byArea.get(key).slots.push({
+        slot: r.slot,
+        // geometry metrics
+        remaining_km2: typeof r.remaining_km2 === "number" ? r.remaining_km2 : Number(r.remaining_km2),
+        total_km2: typeof r.total_km2 === "number" ? r.total_km2 : Number(r.total_km2),
+        sold_out: !!r.sold_out,
+        // ownership
+        taken: !!o,
+        status: o?.status ?? null,
+        owner_business_id: o?.business_id ?? null,
       });
     }
 
-    const isBlocking = (s) =>
-      [
-        "active",
-        "trialing",
-        "past_due",
-        "unpaid",
-        "incomplete",
-        "processing",
-        "complete",
-        "paid",
-        "succeeded",
-      ].includes(String(s || "").toLowerCase());
+    // Ensure all three slots exist in the response, even if view returns fewer rows
+    for (const area_id of areaIds) {
+      if (!byArea.has(area_id)) byArea.set(area_id, { area_id, slots: [] });
+      const area = byArea.get(area_id);
+      const present = new Set(area.slots.map((s) => s.slot));
+      for (const s of [1, 2, 3]) {
+        if (!present.has(s)) {
+          const o = owned.get(`${area_id}:${s}`);
+          area.slots.push({
+            slot: s,
+            remaining_km2: null,
+            total_km2: null,
+            sold_out: false,
+            taken: !!o,
+            status: o?.status ?? null,
+            owner_business_id: o?.business_id ?? null,
+          });
+        }
+      }
+      // keep slot order
+      area.slots.sort((a, b) => a.slot - b.slot);
+    }
 
-    for (const row of occ.data || []) {
-      const a = byArea.get(row.area_id);
-      if (!a) continue;
-      const idx = Number(row.slot) - 1;
-      if (idx < 0 || idx > 2) continue;
-
-      const taken = isBlocking(row.owner_status) && row.owner_until && new Date(row.owner_until) > new Date();
-      a.slots[idx]()
+    return json({ areas: Array.from(byArea.values()) }, 200);
+  } catch (err) {
+    console.error("area-sponsorship fatal error:", err);
+    return json({ error: "Internal Server Error" }, 500);
+  }
+};
