@@ -9,20 +9,16 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// --- helpers for pricing ---
-const toNum = (v) => (v == null ? null : Number(v));
-const rateForSlot = (slot) => {
-  switch (Number(slot)) {
-    case 1:
-      return toNum(process.env.RATE_GOLD_PER_KM2_PER_MONTH);
-    case 2:
-      return toNum(process.env.RATE_SILVER_PER_KM2_PER_MONTH);
-    case 3:
-      return toNum(process.env.RATE_BRONZE_PER_KM2_PER_MONTH);
-    default:
-      return null;
-  }
-};
+// helper: pick correct rate from env by slot
+function rateForSlot(slot) {
+  const g = Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? NaN);
+  const s = Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? NaN);
+  const b = Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? NaN);
+  if (slot === 1) return g;
+  if (slot === 2) return s;
+  if (slot === 3) return b;
+  return NaN;
+}
 
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -31,7 +27,7 @@ export default async (req) => {
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON body" }); // keep 200 with ok:false for client
+    return json({ ok: false, error: "Invalid JSON body" });
   }
 
   const areaId = (body.areaId || body.area_id || "").trim();
@@ -45,38 +41,29 @@ export default async (req) => {
   }
 
   try {
-    // Call a tiny SQL helper that reads from v_area_slot_remaining and returns km2 + geojson
     const { data, error } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
+    if (error) return json({ ok: false, error: error.message || "Preview query failed" });
 
-    if (error) {
-      return json({ ok: false, error: error.message || "Preview query failed" });
-    }
-
-    // If no row, treat as zero/none rather than throwing
     const row = Array.isArray(data) ? data[0] : data;
-
     const area_km2 = Number(row?.area_km2 ?? 0);
     const geojson = row?.gj ?? null;
 
-    // ---- pricing from env rates ----
-    const rate = rateForSlot(slot); // £ per km² per month
-    let price_cents = null;
-    if (Number.isFinite(rate) && area_km2 > 0) {
-      const gbp = area_km2 * rate;
-      price_cents = Math.round(gbp * 100); // integer cents
-    }
-    // --------------------------------
+    const rate_per_km2 = rateForSlot(slot);               // £ per km² per month
+    const price_cents =
+      Number.isFinite(rate_per_km2) && Number.isFinite(area_km2)
+        ? Math.round(area_km2 * rate_per_km2 * 100)
+        : null;
 
     return json({
       ok: true,
       area_km2,
-      geojson,             // GeoJSON geometry or null (your preview overlay)
-      price_cents,         // integer pence (null if no rate set or zero area)
+      geojson,          // used to draw the green preview
+      rate_per_km2,     // for display/debug
+      price_cents,      // <-- frontend will show this
       currency: "gbp",
-      rate_per_km2: Number.isFinite(rate) ? rate : null, // helpful for debugging UI
     });
   } catch (e) {
     return json({ ok: false, error: e?.message || "Server error" });
