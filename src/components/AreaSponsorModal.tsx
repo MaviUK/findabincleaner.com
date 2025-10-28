@@ -5,28 +5,22 @@ type Props = {
   open: boolean;
   onClose: () => void;
 
-  businessId: string;
+  businessId: string; // cleaner/business id – currently unused by the preview, but kept if you later need it
   areaId: string;
   slot: 1 | 2 | 3;
 
-  // map preview hooks
-  onPreviewGeoJSON?: (multi: any) => void;
+  onPreviewGeoJSON?: (multi: any | null) => void;
   onClearPreview?: () => void;
 };
 
-function formatGBP(pennies: number | null | undefined) {
+function fmtMoneyPennies(pennies: number | null | undefined) {
   if (pennies == null || !Number.isFinite(pennies)) return "—";
-  const pounds = pennies / 100;
-  return pounds.toLocaleString("en-GB", {
+  return new Intl.NumberFormat("en-GB", {
     style: "currency",
     currency: "GBP",
+    minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  });
-}
-
-function fmtKm2(n: number | null | undefined) {
-  if (!Number.isFinite(n || NaN)) return "—";
-  return Number(n).toFixed(4);
+  }).format(pennies / 100);
 }
 
 export default function AreaSponsorModal({
@@ -39,197 +33,171 @@ export default function AreaSponsorModal({
   onClearPreview,
 }: Props) {
   const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
+  const [timedOut, setTimedOut] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const [areaKm2, setAreaKm2] = useState<number | null>(null);
-  const [priceCents, setPriceCents] = useState<number | null>(null);
   const [ratePerKm2, setRatePerKm2] = useState<number | null>(null);
+  const [priceCents, setPriceCents] = useState<number | null>(null);
 
-  const tierName = useMemo(
-    () => (slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"),
-    [slot]
-  );
-
-  // Fetch preview (area left + server-side price calc) with robust error handling
+  // Clear state when the modal is opened/closed
   useEffect(() => {
-    if (!open) return;
-
-    const ac = new AbortController();
-    const timeout = setTimeout(() => ac.abort(), 10000); // 10s hard timeout
-    let cancelled = false;
-
-    (async () => {
-      setLoading(true);
-      setErr(null);
-
-      try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
-          signal: ac.signal,
-        });
-
-        if (!res.ok) {
-          setErr(`Preview ${res.status}`);
-          setAreaKm2(null);
-          setPriceCents(null);
-          onClearPreview?.();
-          return;
-        }
-
-        const j = await res.json();
-
-        if (!j?.ok) {
-          setErr(j?.error || "Preview failed");
-          setAreaKm2(null);
-          setPriceCents(null);
-          onClearPreview?.();
-          return;
-        }
-
-        if (cancelled) return;
-
-        const km2 = Number(j.area_km2 ?? 0);
-        const rate = Number(j.rate_per_km2 ?? NaN);
-        const price = Number(j.price_cents ?? NaN);
-
-        setAreaKm2(Number.isFinite(km2) ? km2 : 0);
-        setRatePerKm2(Number.isFinite(rate) ? rate : null);
-        setPriceCents(Number.isFinite(price) ? price : null);
-
-        if (j.geojson) onPreviewGeoJSON?.(j.geojson);
-        else onClearPreview?.();
-      } catch (e: any) {
-        if (e?.name === "AbortError") {
-          setErr("Preview timed out. Please try again.");
-        } else {
-          setErr(e?.message || "Network error");
-        }
-        setAreaKm2(null);
-        setPriceCents(null);
-        onClearPreview?.();
-      } finally {
-        if (!cancelled) setLoading(false);
-        clearTimeout(timeout);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeout);
-      ac.abort();
+    if (!open) {
+      setLoading(false);
+      setTimedOut(false);
+      setError(null);
+      setAreaKm2(null);
+      setRatePerKm2(null);
+      setPriceCents(null);
       onClearPreview?.();
-    };
-  }, [open, businessId, areaId, slot, onPreviewGeoJSON, onClearPreview]);
+    }
+  }, [open, onClearPreview]);
 
-  async function startCheckout() {
-    // Keep your existing checkout function/flow if you already have one.
-    // This is a safe default that passes identifiers and lets the function
-    // re-derive price on the server.
+  async function runPreview() {
+    setLoading(true);
+    setTimedOut(false);
+    setError(null);
+
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 10000); // 10s hard timeout
+
     try {
-      setLoading(true);
-      setErr(null);
-
-      const res = await fetch("/.netlify/functions/start-checkout", {
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          businessId,
-          areaId,
-          slot,
-          // optional metadata; the backend should recompute price from env
-          // but sending these can help with debugging.
-          preview_area_km2: areaKm2,
-        }),
+        body: JSON.stringify({ businessId, areaId, slot }),
+        signal: controller.signal,
       });
+      clearTimeout(t);
 
+      // Network/HTTP failure
       if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(`Checkout ${res.status}${txt ? ` – ${txt}` : ""}`);
+        const text = await res.text().catch(() => "");
+        setError(`Preview failed (${res.status}). ${text || ""}`.trim());
+        setLoading(false);
+        return;
       }
 
-      const data = await res.json();
-      if (data?.url) {
-        window.location.href = data.url;
-      } else {
-        throw new Error(data?.error || "Could not start checkout.");
+      const j = await res.json();
+
+      if (!j?.ok) {
+        // Server returned ok:false with a reason
+        const msg = typeof j?.error === "string" ? j.error : "Preview failed.";
+        setError(msg);
+        setLoading(false);
+        onPreviewGeoJSON?.(null);
+        return;
       }
-    } catch (e: any) {
-      setErr(e?.message || "Failed to start checkout.");
-    } finally {
+
+      const km2 = Number(j.area_km2 ?? 0);
+      const rate = j.rate_per_km2 == null ? null : Number(j.rate_per_km2);
+      const cents = j.price_cents == null ? null : Number(j.price_cents);
+
+      setAreaKm2(Number.isFinite(km2) ? km2 : 0);
+      setRatePerKm2(rate != null && Number.isFinite(rate) ? rate : null);
+      setPriceCents(cents != null && Number.isFinite(cents) ? cents : null);
+
+      // Draw the purchasable sub-geometry
+      if (j.geojson) onPreviewGeoJSON?.(j.geojson);
+      else onPreviewGeoJSON?.(null);
+
       setLoading(false);
+    } catch (e: any) {
+      clearTimeout(t);
+      if (e?.name === "AbortError") {
+        setTimedOut(true);
+      } else {
+        setError(e?.message || "Preview failed.");
+      }
+      setLoading(false);
+      onPreviewGeoJSON?.(null);
     }
   }
 
-  if (!open) return null;
+  // Kick off preview whenever the modal opens or the slot changes
+  useEffect(() => {
+    if (!open) return;
+    runPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, areaId, slot]);
 
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-black/30 p-4">
-      <div className="w-full max-w-xl rounded-xl bg-white shadow-xl ring-1 ring-black/5 overflow-hidden">
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">Sponsor #{slot} — {tierName}</div>
-          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
-            Close
-          </button>
+  const rateDisplay = useMemo(() => {
+    if (ratePerKm2 == null) return "—";
+    // ratePerKm2 is GBP per km² per month
+    return `£${ratePerKm2.toFixed(2)} / km² / month`;
+  }, [ratePerKm2]);
+
+  return !open ? null : (
+    <div className="fixed inset-0 z-[10000] bg-black/40 flex items-center justify-center p-4">
+      <div className="w-full max-w-xl rounded-xl bg-white shadow-lg">
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <div className="font-semibold">Sponsor #{slot} — {slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}</div>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>Close</button>
         </div>
 
-        {/* Body */}
-        <div className="px-4 py-4 space-y-3">
+        <div className="px-5 py-4 space-y-3">
           <p className="text-sm text-gray-700">
             We’ll only bill the part of your drawn area that’s actually available for slot #{slot}.
           </p>
 
-          <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">
+          <div className="text-[12px] text-teal-800 bg-teal-50 border border-teal-200 rounded px-2 py-1">
             Preview shows only the purchasable sub-region on the map.
           </div>
 
-          {/* Summary rows */}
-          <div className="space-y-2 text-sm">
-            <div className="flex items-center justify-between">
-              <div className="text-gray-600">Available area:</div>
-              <div className="font-medium">{fmtKm2(areaKm2)} km²</div>
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Available area:</div>
+            <div className="text-sm text-gray-600">
+              {loading ? "—" : areaKm2 != null ? `${areaKm2.toFixed(4)} km²` : "—"}
             </div>
+          </div>
 
-            <div className="flex items-center justify-between">
-              <div className="text-gray-600">Monthly price ({tierName}):</div>
-              <div className="font-medium">
-                {formatGBP(priceCents)}
-              </div>
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Monthly price ({slot === 1 ? "Gold" : slot === 2 ? "Silver" : "Bronze"}):</div>
+            <div className="text-[12px] text-gray-500">Rate: {rateDisplay}</div>
+          </div>
+
+          {timedOut && (
+            <div className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+              Preview timed out. Please try again.
             </div>
+          )}
+          {!!error && !timedOut && (
+            <div className="text-[12px] text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1">
+              {error}
+            </div>
+          )}
 
-            {ratePerKm2 != null && (
-              <div className="text-[11px] text-gray-500">
-                Rate: {formatGBP(Math.round(ratePerKm2 * 100))} / km² / month
-              </div>
-            )}
-
-            {err && (
-              <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
-                {err}
-              </div>
-            )}
+          <div className="space-y-1">
+            <div className="text-sm font-medium">Totals</div>
+            <div className="text-sm text-gray-700">
+              Area: {areaKm2 != null ? `${areaKm2.toFixed(4)} km²` : "—"} • Monthly: {fmtMoneyPennies(priceCents)}
+            </div>
           </div>
         </div>
 
-        {/* Footer */}
-        <div className="px-4 pb-4 pt-2 flex items-center justify-between gap-3 border-t">
-          <div className="text-xs text-gray-500">
-            Area: {fmtKm2(areaKm2)} km² • Monthly: {formatGBP(priceCents)}
-          </div>
-
+        <div className="px-5 py-4 border-t flex items-center justify-between gap-3">
+          <button className="btn" onClick={onClose}>Cancel</button>
           <div className="flex items-center gap-2">
-            <button className="btn" onClick={onClose} disabled={loading}>
-              Cancel
+            <button
+              className="btn"
+              onClick={runPreview}
+              disabled={loading}
+              title="Re-run the preview"
+            >
+              {loading ? "Checking…" : "Retry preview"}
             </button>
             <button
               className="btn btn-primary"
-              onClick={startCheckout}
-              disabled={loading || !areaKm2 || !priceCents}
-              title={!areaKm2 ? "No purchasable area left" : undefined}
+              disabled={loading || !(priceCents != null && areaKm2 != null && areaKm2 > 0)}
+              onClick={() => {
+                // your existing “Continue to checkout” handler wired wherever you had it
+                const evt = new CustomEvent("sponsor:checkout", {
+                  detail: { areaId, slot, priceCents, areaKm2, ratePerKm2 },
+                });
+                window.dispatchEvent(evt);
+              }}
             >
-              {loading ? "Starting checkout..." : "Continue to checkout"}
+              {loading ? "Starting checkout…" : "Continue to checkout"}
             </button>
           </div>
         </div>
