@@ -335,7 +335,7 @@ export default function ServiceAreaEditor({
           return;
         }
         const km2 = Number(j.area_km2);
-        setSlotAvail((m) => ({ ...m, [areaId]: { 1: Number.isFinite(k2) ? km2 > 0 : undefined } }));
+        setSlotAvail((m) => ({ ...m, [areaId]: { 1: Number.isFinite(km2) ? km2 > 0 : undefined } }));
       } finally {
         setSlotAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
