@@ -3,17 +3,6 @@ import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-console.log("RATES USED:", {
-  gold: process.env.RATE_GOLD_PER_KM2_PER_MONTH,
-  silver: process.env.RATE_SILVER_PER_KM2_PER_MONTH,
-  bronze: process.env.RATE_BRONZE_PER_KM2_PER_MONTH,
-  area_km2,
-  slot,
-  price_cents,
-});
-
-
-
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
