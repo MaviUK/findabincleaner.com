@@ -1,20 +1,13 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// JSON helper
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
-
-// statuses that *block* the slot from being purchased by others
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -30,64 +23,47 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull ALL subs for these areas; we’ll keep the most recent per (area_id, slot)
-    const { data: subs, error } = await supabase
-      .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, created_at")
+    // 1) Who owns each slot right now?
+    const occ = await sb
+      .from("v_area_slot_occupancy")
+      .select("area_id, slot, owner_business_id, owner_status, owner_until")
       .in("area_id", areaIds);
 
-    if (error) throw error;
+    if (occ.error) throw occ.error;
 
-    // Keep the latest sub per (area_id, slot)
-    const latest = new Map(); // key = `${area_id}:${slot}`
-    for (const row of subs || []) {
-      const key = `${row.area_id}:${row.slot}`;
-      const prev = latest.get(key);
-      if (!prev || new Date(row.created_at) > new Date(prev.created_at)) {
-        latest.set(key, row);
-      }
-    }
-
-    // Shape response the UI expects
-    //   { areas: [{ area_id, slots: [{slot, taken, status, owner_business_id}], paint? }] }
+    // 2) Shape for UI: one object per area with 3 slots
     const byArea = new Map();
-    for (const areaId of areaIds) {
-      byArea.set(areaId, { area_id: areaId, slots: [] });
-    }
-
-    for (const [key, row] of latest.entries()) {
-      const areaId = row.area_id;
-      const area = byArea.get(areaId);
-      if (!area) continue;
-
-      area.slots.push({
-        slot: row.slot,
-        taken: BLOCKING.has(String(row.status || "").toLowerCase()),
-        status: row.status ?? null,
-        owner_business_id: row.business_id ?? null,
+    for (const id of areaIds) {
+      byArea.set(id, {
+        area_id: id,
+        slots: [
+          { slot: 1, taken: false, status: null, owner_business_id: null },
+          { slot: 2, taken: false, status: null, owner_business_id: null },
+          { slot: 3, taken: false, status: null, owner_business_id: null },
+        ],
+        // optional paint kept as-is / not used for blocking
+        paint: undefined,
       });
     }
 
-    // Ensure all three slots are present (so UI can show “Sponsor #n” for missing ones)
-    for (const area of byArea.values()) {
-      const present = new Set(area.slots.map((s) => s.slot));
-      for (const s of [1, 2, 3]) {
-        if (!present.has(s)) {
-          area.slots.push({
-            slot: s,
-            taken: false,
-            status: null,
-            owner_business_id: null,
-          });
-        }
-      }
-      // stable ordering
-      area.slots.sort((a, b) => a.slot - b.slot);
-    }
+    const isBlocking = (s) =>
+      [
+        "active",
+        "trialing",
+        "past_due",
+        "unpaid",
+        "incomplete",
+        "processing",
+        "complete",
+        "paid",
+        "succeeded",
+      ].includes(String(s || "").toLowerCase());
 
-    return json({ areas: Array.from(byArea.values()) }, 200);
-  } catch (err) {
-    console.error("area-sponsorship fatal error:", err);
-    return json({ error: "Internal Server Error" }, 500);
-  }
-};
+    for (const row of occ.data || []) {
+      const a = byArea.get(row.area_id);
+      if (!a) continue;
+      const idx = Number(row.slot) - 1;
+      if (idx < 0 || idx > 2) continue;
+
+      const taken = isBlocking(row.owner_status) && row.owner_until && new Date(row.owner_until) > new Date();
+      a.slots[idx]()
