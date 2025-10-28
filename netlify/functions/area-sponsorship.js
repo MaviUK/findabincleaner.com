@@ -1,92 +1,101 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+const supabase = createClient(
+process.env.SUPABASE_URL,
+process.env.SUPABASE_SERVICE_ROLE
+);
 
+// Small helper to send JSON
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-
-// Only these statuses block a slot (matches your UI logic)
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+new Response(JSON.stringify(body), {
+status,
+headers: { "content-type": "application/json" },
+});
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
-  try {
+try {
     body = await req.json();
   } catch {
     return json({ error: "Invalid JSON" }, 400);
   }
+    if (req.method !== "POST") {
+      return json({ error: "Method not allowed" }, 405);
+    }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
   if (!areaIds.length) return json({ areas: [] });
+    // Body shape: { areaIds: string[] }
+    let body;
+    try {
+      body = await req.json();
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
 
   try {
-    // who owns which slots?
-    const { data: subs, error: subsErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id")
-      .in("area_id", areaIds);
+    // ✅ Use the new SQL view so it includes the correct remaining + sold_out
+    const { data, error } = await sb
+    const areaIds = Array.isArray(body?.areaIds)
+      ? body.areaIds.filter(Boolean)
+      : [];
 
-    if (subsErr) throw subsErr;
-
-    // how much area remains (per slot)?
-    const { data: remaining, error: remErr } = await sb
-      .from("v_area_slot_remaining")
-      .select("area_id, slot, remaining_km2, sold_out")
-      .in("area_id", areaIds);
-
-    if (remErr) throw remErr;
-
-    // index helpers
-    const subsByArea = new Map();
-    for (const s of subs || []) {
-      if (!subsByArea.has(s.area_id)) subsByArea.set(s.area_id, []);
-      subsByArea.get(s.area_id).push(s);
+    if (!areaIds.length) {
+      return json([]); // flat array (what the UI expects)
     }
 
-    const remByArea = new Map();
-    for (const r of (remaining || [])) {
-      if (!remByArea.has(r.area_id)) remByArea.set(r.area_id, new Map());
-      remByArea.get(r.area_id).set(r.slot, r);
-    }
+    // Pull remaining availability from the view (already computes overlaps)
+    // View columns: area_id (uuid), slot (int), remaining_km2 (numeric), sold_out (bool)
+    const { data, error } = await supabase
+.from("v_area_slot_remaining")
+.select("area_id, slot, remaining_km2, sold_out")
+      .in("area_id", areaIds);
 
-    const areas = areaIds.map((area_id) => {
-      const sList = subsByArea.get(area_id) || [];
-      const rMap = remByArea.get(area_id) || new Map();
+    if (error) throw error;
 
-      const slots = [1, 2, 3].map((slot) => {
-        const sub = sList.find((x) => x.slot === slot) || null;
-        const r = rMap.get(slot) || null;
-
-        const status = sub?.status ?? null;
-        const taken = status ? BLOCKING.has(String(status).toLowerCase()) : false;
-
-        return {
-          slot,
-          taken,
-          status,
-          owner_business_id: sub?.business_id ?? null, // what your UI checks against
-          remaining_km2:
-            r?.remaining_km2 == null
-              ? null
-              : typeof r.remaining_km2 === "number"
-              ? r.remaining_km2
-              : Number(r.remaining_km2),
-          sold_out: r?.sold_out ?? null,
-        };
+    // group slots by area_id for frontend
+    const grouped = {};
+    for (const row of data || []) {
+      if (!grouped[row.area_id]) grouped[row.area_id] = [];
+      grouped[row.area_id].push({
+        slot: row.slot,
+        remaining_km2: row.remaining_km2,
+        sold_out: row.sold_out,
       });
+      .in("area_id", areaIds)
+      .order("area_id", { ascending: true })
+      .order("slot", { ascending: true });
 
-      return { area_id, slots };
-    });
+    if (error) {
+      console.error("area-sponsorship query error:", error);
+      return json({ error: "Database error" }, 500);
+}
 
-    return json({ areas }, 200);
-  } catch (err) {
-    console.error("area-sponsorship error:", err);
+    return json({ areas: grouped });
+    // Ensure we always return a FLAT ARRAY for the frontend
+    // e.g. [{ area_id, slot, remaining_km2, sold_out }, ...]
+    const results = (data ?? []).map((row) => ({
+      area_id: row.area_id,
+      slot: row.slot,
+      // coerce to number where possible; UI only displays, so keep as-is if null
+      remaining_km2:
+        typeof row.remaining_km2 === "number"
+          ? row.remaining_km2
+          : row.remaining_km2 == null
+          ? null
+          : Number(row.remaining_km2),
+      sold_out: !!row.sold_out,
+    }));
+
+    return json(results, 200);
+} catch (err) {
+    console.error("area-sponsorship error", err);
+    return json({ error: err.message || "Server error" }, 500);
+    console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
-  }
+}
 };
