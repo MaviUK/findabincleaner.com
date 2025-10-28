@@ -214,7 +214,6 @@ export default function ServiceAreaEditor({
   // single slot modal state
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
-  const sponsorSlot: Slot = 1;
 
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
@@ -336,7 +335,7 @@ export default function ServiceAreaEditor({
           return;
         }
         const km2 = Number(j.area_km2);
-        setSlotAvail((m) => ({ ...m, [areaId]: { 1: Number.isFinite(km2) ? km2 > 0 : undefined } }));
+        setSlotAvail((m) => ({ ...m, [areaId]: { 1: Number.isFinite(k2) ? km2 > 0 : undefined } }));
       } finally {
         setSlotAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
@@ -749,7 +748,7 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-      {/* Sponsor modal */}
+      {/* Sponsor modal (no slot prop) */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
@@ -759,20 +758,18 @@ export default function ServiceAreaEditor({
           }}
           businessId={myBusinessId}
           areaId={sponsorAreaId}
-          slot={1}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
           onClearPreview={() => clearPreview()}
         />
       )}
 
-      {/* Manage modal */}
+      {/* Manage modal (no slot prop) */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
           cleanerId={myBusinessId}
           areaId={manageAreaId}
-          slot={1}
         />
       )}
     </>
