@@ -9,6 +9,10 @@ type Props = {
   areaId: string; // service area id
   areaName?: string;
 
+  // Optional slot identifier coming from the editor (e.g. 1, "featured", etc.)
+  // We accept number|string to stay compatible with your `Slot` type in the caller.
+  slot?: number | string;
+
   // total area of this service area in km² – computed by the caller
   totalKm2?: number;
 
@@ -62,9 +66,12 @@ export default function AreaSponsorModal({
   areaId,
   areaName,
   totalKm2,
+  slot,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
+  const slotParam = slot ?? 1; // default to single-slot model if not provided
+
   const [loading, setLoading] = useState(false);
   const [rateLoading, setRateLoading] = useState(false);
 
@@ -76,26 +83,29 @@ export default function AreaSponsorModal({
 
   // pricing pieces
   const [currency, setCurrency] = useState<string>("GBP");
-  const [ratePerKm2, setRatePerKm2] = useState<number | null>(null); // generic “rate” endpoint
+  const [ratePerKm2, setRatePerKm2] = useState<number | null>(null); // from optional rate endpoint
   const [unitPrice, setUnitPrice] = useState<number | null>(null); // per km² per month (from preview/server env)
   const [minMonthly, setMinMonthly] = useState<number | null>(null); // minimum monthly
   const [serverMonthly, setServerMonthly] = useState<number | null>(null); // if server sent monthly
 
+  // Prefer unitPrice if provided by preview; else fall back to separate rate endpoint
+  const effectiveUnit = unitPrice ?? ratePerKm2;
+
   // Derived monthly cost if server did not provide one
   const computedMonthly = useMemo(() => {
     if (serverMonthly != null) return clamp2(serverMonthly);
-    if (availableKm2 == null || unitPrice == null) return null;
-    const raw = availableKm2 * unitPrice;
+    if (availableKm2 == null || effectiveUnit == null) return null;
+    const raw = availableKm2 * effectiveUnit;
     const minApplied = minMonthly != null ? Math.max(minMonthly, raw) : raw;
     return clamp2(minApplied);
-  }, [availableKm2, unitPrice, minMonthly, serverMonthly]);
+  }, [availableKm2, effectiveUnit, minMonthly, serverMonthly]);
 
   const coveragePct = useMemo(() => {
     if (availableKm2 == null || totalKm2 == null || totalKm2 === 0) return null;
     return Math.max(0, Math.min(100, (availableKm2 / totalKm2) * 100));
   }, [availableKm2, totalKm2]);
 
-  // Kick off preview + (optional) rate fetch when opened
+  // Kick off preview + (optional) rate fetch when opened / dependencies change
   useEffect(() => {
     if (!open) return;
 
@@ -114,7 +124,7 @@ export default function AreaSponsorModal({
             businessId,
             cleanerId: businessId, // same id in your schema
             areaId,
-            slot: 1, // single featured slot
+            slot: slotParam,
           }),
           signal: controller.signal,
         });
@@ -171,7 +181,7 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/area-rate", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ slot: 1 }),
+          body: JSON.stringify({ slot: slotParam }),
           signal: controller.signal,
         });
 
@@ -210,7 +220,7 @@ export default function AreaSponsorModal({
       controller.abort();
       onClearPreview?.();
     };
-  }, [open, businessId, areaId, onPreviewGeoJSON, onClearPreview]);
+  }, [open, businessId, areaId, slotParam, onPreviewGeoJSON, onClearPreview]);
 
   function close() {
     onClearPreview?.();
@@ -228,7 +238,7 @@ export default function AreaSponsorModal({
           businessId,
           cleanerId: businessId,
           areaId,
-          slot: 1,
+          slot: slotParam,
           // send the specific purchasable area we previewed, to price consistently
           preview_km2: availableKm2,
         }),
@@ -247,7 +257,7 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  const displayRate = unitPrice ?? ratePerKm2; // prefer unitPrice if preview provided it
+  const displayRate = effectiveUnit;
   const canCheckout =
     !loading && !checkingOut && availableKm2 != null && availableKm2 > 0;
 
