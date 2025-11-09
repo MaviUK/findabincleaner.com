@@ -1,4 +1,4 @@
- import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
  
  type Props = {
    open: boolean;
@@ -92,20 +92,14 @@
          const res = await fetch("/.netlify/functions/sponsored-preview", {
            method: "POST",
            headers: { "content-type": "application/json" },
--          body: JSON.stringify({
--            businessId,
--            cleanerId: businessId, // same id in your schema
--            areaId,
+           body: JSON.stringify({
+             businessId,
+             cleanerId: businessId, // same id in your schema
+             areaId,
 -            slot: 1, // single-slot model
--          }),
--        });
-+        body: JSON.stringify({
-+          businessId,
-+          cleanerId: businessId, // same id in your schema
-+          areaId,
-+          slot,
-+        }),
-+      });
++            slot,
+           }),
+         });
  
          if (!res.ok) {
            throw new Error(`Preview failed (${res.status})`);
@@ -129,17 +123,35 @@
          setCurrency(data.unit_currency || "GBP");
  
          // pricing
-         // Prefer server-provided major-unit fields. Fall back to pence if supplied.
-         const unit =
-@@ -151,51 +153,51 @@ export default function AreaSponsorModal({
+@@ -132,70 +134,69 @@ export default function AreaSponsorModal({
+         const monthly =
+           (typeof data.monthly_price === "number" ? data.monthly_price : null) ??
+           (typeof data.monthly_price_pence === "number" ? data.monthly_price_pence / 100 : null);
+ 
+         setUnitPrice(unit);
+         setMinMonthly(minm);
+         setServerMonthly(monthly);
+       } catch (e: any) {
+         if (!cancelled) {
+           setErr(e?.message || "Failed to load preview");
+           setAvailableKm2(null);
+           setUnitPrice(null);
+           setMinMonthly(null);
+           setServerMonthly(null);
+           if (onClearPreview) onClearPreview();
+         }
+       } finally {
+         if (!cancelled) setLoading(false);
+       }
      }
  
      loadPreview();
      return () => {
        cancelled = true;
      };
-     // eslint-disable-next-line react-hooks/exhaustive-deps
-   }, [open, businessId, areaId]);
+-    // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [open, businessId, areaId]);
++  }, [open, businessId, areaId, slot]);
  
    function close() {
      if (onClearPreview) onClearPreview();
@@ -184,6 +196,3 @@
              Close
            </button>
          </div>
- 
-EOF
-)
