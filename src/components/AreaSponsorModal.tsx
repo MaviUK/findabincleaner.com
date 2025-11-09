@@ -6,6 +6,7 @@ type Props = {
 
   businessId: string;         // cleaner/business id
   areaId: string;             // service area id
+  slot?: 1 | 2 | 3;           // service slot (defaults to 1 for legacy callers)
 
   // Map overlay callbacks from the editor
   onPreviewGeoJSON?: (multi: any) => void;
@@ -54,6 +55,7 @@ export default function AreaSponsorModal({
   onClose,
   businessId,
   areaId,
+  slot = 1,
   onPreviewGeoJSON,
   onClearPreview,
   totalKm2,
@@ -90,13 +92,13 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId,
-            cleanerId: businessId, // same id in your schema
-            areaId,
-            slot: 1, // single-slot model
-          }),
-        });
+        body: JSON.stringify({
+          businessId,
+          cleanerId: businessId, // same id in your schema
+          areaId,
+          slot,
+        }),
+      });
 
         if (!res.ok) {
           throw new Error(`Preview failed (${res.status})`);
@@ -173,7 +175,7 @@ export default function AreaSponsorModal({
           businessId,
           cleanerId: businessId,
           areaId,
-          slot: 1, // single-slot world
+          slot,
         }),
       });
       const data = await res.json();
