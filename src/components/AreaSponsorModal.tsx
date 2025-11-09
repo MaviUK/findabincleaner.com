@@ -1,9 +1,3 @@
- (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
-diff --git a/src/components/AreaSponsorModal.tsx b/src/components/AreaSponsorModal.tsx
-index 199e8a35bd186c62644f6db0bd08496e598cfe7e..25c0bfaf117d45c130d7dbe8f523c77ae5fc5164 100644
---- a/src/components/AreaSponsorModal.tsx
-+++ b/src/components/AreaSponsorModal.tsx
-@@ -1,124 +1,126 @@
  import React, { useEffect, useMemo, useState } from "react";
  
  type Props = {
