@@ -1,3 +1,4 @@
+// src/components/AreaSponsorModal.tsx
 import React, { useEffect, useMemo, useState } from "react";
 
 type Props = {
@@ -5,18 +6,18 @@ type Props = {
   onClose: () => void;
 
   // business / area
-  businessId: string;
-  areaId: string;
+  businessId: string; // cleaner/business id
+  areaId: string;     // service area id
   areaName?: string;
 
-  // total area of this service area in km² – optional (for coverage display)
+  // total area of this service area in km² – optional (UI will also accept total_km2 from server)
   totalKm2?: number;
 
   // Map overlay callbacks from the editor (optional)
   onPreviewGeoJSON?: (multi: any) => void;
   onClearPreview?: () => void;
 
-  // Kept only for backwards-compat while you remove it elsewhere; ignored here.
+  // Kept for compatibility while removing it elsewhere; ignored here.
   slot?: unknown;
 };
 
@@ -24,13 +25,14 @@ type PreviewResponse = {
   ok: boolean;
   error?: string;
   geojson?: any;
-  area_km2?: number; // available km² for purchase
+  area_km2?: number;     // purchasable area for Featured slot
+  total_km2?: number;    // total service area size
 
   // Optional pricing (major units)
-  unit_price?: number; // per km² / month
-  unit_currency?: string; // e.g., "GBP"
-  min_monthly?: number;
-  monthly_price?: number;
+  unit_price?: number;       // per km² / month
+  unit_currency?: string;    // e.g., "GBP"
+  min_monthly?: number;      // minimum monthly
+  monthly_price?: number;    // server-computed monthly
 
   // Pence fallbacks
   unit_price_pence?: number;
@@ -51,7 +53,7 @@ function money(n?: number | null, currency = "GBP") {
       maximumFractionDigits: 2,
     }).format(n);
   } catch {
-    return `£${n.toFixed(2)}`;
+    return `£${(+n).toFixed(2)}`;
   }
 }
 
@@ -69,6 +71,7 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
+  // loading / error states
   const [previewLoading, setPreviewLoading] = useState(false);
   const [rateLoading, setRateLoading] = useState(false);
   const loading = previewLoading || rateLoading;
@@ -76,6 +79,7 @@ export default function AreaSponsorModal({
   const [error, setError] = useState<string | null>(null);
   const [checkingOut, setCheckingOut] = useState(false);
 
+  // preview / pricing state
   const [availableKm2, setAvailableKm2] = useState<number | null>(null);
   const [previewLoaded, setPreviewLoaded] = useState(false);
 
@@ -85,7 +89,14 @@ export default function AreaSponsorModal({
   const [serverMonthly, setServerMonthly] = useState<number | null>(null);
   const [ratePerKm2, setRatePerKm2] = useState<number | null>(null); // optional /area-rate
 
+  // total area (from server; used if caller doesn't pass totalKm2)
+  const [totalKm2Server, setTotalKm2Server] = useState<number | null>(null);
+
+  // occupancy (is this area already taken by someone else?)
+  const [occupiedByOther, setOccupiedByOther] = useState<boolean | null>(null);
+
   const effectiveUnit = unitPrice ?? ratePerKm2;
+  const derivedTotalKm2 = totalKm2 ?? totalKm2Server ?? null;
 
   const computedMonthly = useMemo(() => {
     if (serverMonthly != null) return round2(serverMonthly);
@@ -96,11 +107,11 @@ export default function AreaSponsorModal({
   }, [availableKm2, effectiveUnit, minMonthly, serverMonthly]);
 
   const coveragePct = useMemo(() => {
-    if (availableKm2 == null || totalKm2 == null || totalKm2 === 0) return null;
-    return Math.max(0, Math.min(100, (availableKm2 / totalKm2) * 100));
-  }, [availableKm2, totalKm2]);
+    if (availableKm2 == null || derivedTotalKm2 == null || derivedTotalKm2 === 0) return null;
+    return Math.max(0, Math.min(100, (availableKm2 / derivedTotalKm2) * 100));
+  }, [availableKm2, derivedTotalKm2]);
 
-  // Load preview (single-slot world; server may ignore slot)
+  // Load preview (single Featured slot; server may ignore slot)
   useEffect(() => {
     if (!open) return;
 
@@ -116,9 +127,9 @@ export default function AreaSponsorModal({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             businessId,
-            cleanerId: businessId, // same id in your schema
+            cleanerId: businessId,
             areaId,
-            slot: 1, // retained for back-compat; server can ignore
+            slot: 1, // kept for back-compat
           }),
         });
         if (!res.ok) throw new Error(`Preview failed (${res.status})`);
@@ -134,7 +145,7 @@ export default function AreaSponsorModal({
 
         if (data.geojson && onPreviewGeoJSON) onPreviewGeoJSON(data.geojson);
 
-        // pricing (prefer major units)
+        // pricing (prefer major units; fallback to pence)
         const unit =
           typeof data.unit_price === "number"
             ? data.unit_price
@@ -160,6 +171,11 @@ export default function AreaSponsorModal({
         setMinMonthly(minm);
         setServerMonthly(monthly);
         setCurrency(data.unit_currency || "GBP");
+
+        // accept total area from server (for coverage)
+        if (typeof data.total_km2 === "number" && isFinite(data.total_km2)) {
+          setTotalKm2Server(Math.max(0, data.total_km2));
+        }
       } catch (e: any) {
         if (!cancelled) {
           setError(e?.message || "Preview error");
@@ -176,7 +192,7 @@ export default function AreaSponsorModal({
       onClearPreview?.();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, businessId, areaId]); // exclude callback identities
+  }, [open, businessId, areaId]); // deliberately avoid callback identities
 
   // Optional back-compat rate endpoint
   useEffect(() => {
@@ -221,6 +237,36 @@ export default function AreaSponsorModal({
     };
   }, [open]);
 
+  // Occupancy (is the area already taken by another business?)
+  useEffect(() => {
+    if (!open) return;
+
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await fetch("/.netlify/functions/area-sponsorship", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ areaIds: [areaId] }),
+        });
+        if (!res.ok) { if (!cancelled) setOccupiedByOther(null); return; }
+        const { areas } = await res.json();
+
+        const rec = areas?.[0];
+        // Support both shapes: simple {taken, owner_business_id} or slots[0]
+        const taken = rec?.taken ?? rec?.slots?.[0]?.taken;
+        const owner = rec?.owner_business_id ?? rec?.slots?.[0]?.owner_business_id;
+
+        if (!cancelled) setOccupiedByOther(Boolean(taken && owner && owner !== businessId));
+      } catch {
+        if (!cancelled) setOccupiedByOther(null);
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [open, areaId, businessId]);
+
   function close() {
     onClearPreview?.();
     onClose();
@@ -237,7 +283,7 @@ export default function AreaSponsorModal({
           businessId,
           cleanerId: businessId,
           areaId,
-          slot: 1,
+          slot: 1, // ignored server-side in single-slot world
           preview_km2: availableKm2,
         }),
       });
@@ -254,10 +300,12 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  const hasNoPurchasableArea =
-    previewLoaded && availableKm2 != null && availableKm2 <= 0;
+  // unified availability rule
+  const soldOut =
+    (availableKm2 != null && availableKm2 <= 0) || occupiedByOther === true;
+
   const canCheckout =
-    !loading && !checkingOut && availableKm2 != null && availableKm2 > 0;
+    !loading && !checkingOut && !soldOut && availableKm2 != null && availableKm2 > 0;
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4">
@@ -278,7 +326,7 @@ export default function AreaSponsorModal({
             Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub‑region.
           </div>
 
-          {hasNoPurchasableArea && (
+          {soldOut && (
             <div className="rounded-md border text-xs px-3 py-2 bg-yellow-50 border-yellow-200 text-yellow-800">
               This area isn’t available to purchase right now.
             </div>
@@ -303,7 +351,9 @@ export default function AreaSponsorModal({
           <div className="grid grid-cols-2 gap-4">
             <Stat
               label="Total area"
-              value={totalKm2 != null ? `${fmtKm2(totalKm2)} km²` : "—"}
+              value={
+                derivedTotalKm2 != null ? `${fmtKm2(derivedTotalKm2)} km²` : "—"
+              }
             />
             <Stat
               label="Available area"
@@ -344,10 +394,10 @@ export default function AreaSponsorModal({
             <Stat
               label="Availability"
               value={
-                previewLoaded
-                  ? hasNoPurchasableArea
-                    ? "Not available"
-                    : "Available"
+                occupiedByOther === true
+                  ? "Taken"
+                  : previewLoaded
+                  ? (availableKm2 != null && availableKm2 > 0 ? "Available" : "Not available")
                   : "Checking…"
               }
             />
