@@ -48,7 +48,11 @@ export default async (req) => {
     if (takenErr) throw takenErr;
 
     const soldOut = (takenRows?.length || 0) > 0;
-    const soldTo = soldOut ? takenRows![0].business_id : null;
+    const soldTo =
+  soldOut && takenRows && takenRows.length > 0
+    ? takenRows[0].business_id
+    : null;
+
 
     // 2) Load the saved service-area geometry so we can compute total_km2
     let total_km2 = null;
