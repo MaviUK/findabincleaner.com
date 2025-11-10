@@ -6,15 +6,15 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-// JSON helper
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
 
-// statuses that *block* the area from being purchased by others
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
+// Only real, usable subscriptions should block.
+// Drop 'incomplete' and 'unpaid' to avoid false occupancy from abandoned checkouts.
+const BLOCKING = new Set(["active", "trialing", "past_due"]);
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -36,8 +36,6 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull all subs for these areas (ignore slot in single-slot world).
-    // If you still have multiple rows per area, we’ll pick the latest *blocking* one.
     const { data: subs, error } = await supabase
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at")
@@ -45,7 +43,6 @@ export default async (req) => {
 
     if (error) throw error;
 
-    // Group by area
     const byArea = new Map(areaIds.map((id) => [id, []]));
     for (const row of subs || []) {
       const arr = byArea.get(row.area_id);
@@ -55,7 +52,6 @@ export default async (req) => {
     const areas = areaIds.map((area_id) => {
       const rows = byArea.get(area_id) || [];
 
-      // Find the latest *blocking* row
       let latestBlocking = null;
       for (const r of rows) {
         const isBlock = BLOCKING.has(String(r.status || "").toLowerCase());
