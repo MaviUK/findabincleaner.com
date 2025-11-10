@@ -13,7 +13,7 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// statuses that *block* the slot from being purchased by others
+// statuses that *block* the area from being purchased by others
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
 
 export default async (req) => {
@@ -26,11 +26,18 @@ export default async (req) => {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  const areaIds =
+    Array.isArray(body?.areaIds) && body.areaIds.length
+      ? body.areaIds.filter(Boolean)
+      : Array.isArray(body?.area_ids)
+      ? body.area_ids.filter(Boolean)
+      : [];
+
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull ALL subs for these areas; we’ll keep the most recent per (area_id, slot)
+    // Pull all subs for these areas (ignore slot in single-slot world).
+    // If you still have multiple rows per area, we’ll pick the latest *blocking* one.
     const { data: subs, error } = await supabase
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at")
@@ -38,54 +45,48 @@ export default async (req) => {
 
     if (error) throw error;
 
-    // Keep the latest sub per (area_id, slot)
-    const latest = new Map(); // key = `${area_id}:${slot}`
+    // Group by area
+    const byArea = new Map(areaIds.map((id) => [id, []]));
     for (const row of subs || []) {
-      const key = `${row.area_id}:${row.slot}`;
-      const prev = latest.get(key);
-      if (!prev || new Date(row.created_at) > new Date(prev.created_at)) {
-        latest.set(key, row);
-      }
+      const arr = byArea.get(row.area_id);
+      if (arr) arr.push(row);
     }
 
-    // Shape response the UI expects
-    //   { areas: [{ area_id, slots: [{slot, taken, status, owner_business_id}], paint? }] }
-    const byArea = new Map();
-    for (const areaId of areaIds) {
-      byArea.set(areaId, { area_id: areaId, slots: [] });
-    }
+    const areas = areaIds.map((area_id) => {
+      const rows = byArea.get(area_id) || [];
 
-    for (const [key, row] of latest.entries()) {
-      const areaId = row.area_id;
-      const area = byArea.get(areaId);
-      if (!area) continue;
-
-      area.slots.push({
-        slot: row.slot,
-        taken: BLOCKING.has(String(row.status || "").toLowerCase()),
-        status: row.status ?? null,
-        owner_business_id: row.business_id ?? null,
-      });
-    }
-
-    // Ensure all three slots are present (so UI can show “Sponsor #n” for missing ones)
-    for (const area of byArea.values()) {
-      const present = new Set(area.slots.map((s) => s.slot));
-      for (const s of [1, 2, 3]) {
-        if (!present.has(s)) {
-          area.slots.push({
-            slot: s,
-            taken: false,
-            status: null,
-            owner_business_id: null,
-          });
+      // Find the latest *blocking* row
+      let latestBlocking = null;
+      for (const r of rows) {
+        const isBlock = BLOCKING.has(String(r.status || "").toLowerCase());
+        if (isBlock) {
+          if (
+            !latestBlocking ||
+            new Date(r.created_at).getTime() > new Date(latestBlocking.created_at).getTime()
+          ) {
+            latestBlocking = r;
+          }
         }
       }
-      // stable ordering
-      area.slots.sort((a, b) => a.slot - b.slot);
-    }
 
-    return json({ areas: Array.from(byArea.values()) }, 200);
+      const taken = !!latestBlocking;
+      const status = latestBlocking?.status ?? null;
+      const owner_business_id = latestBlocking?.business_id ?? null;
+
+      // Back-compat: also return slots[] with slot=1 only
+      const slots = [
+        {
+          slot: 1,
+          taken,
+          status,
+          owner_business_id,
+        },
+      ];
+
+      return { area_id, taken, status, owner_business_id, slots };
+    });
+
+    return json({ areas }, 200);
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
