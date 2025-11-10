@@ -5,7 +5,7 @@ import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
 import AreaManageModal from "./AreaManageModal";
 
-/** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs */
+/** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
 // ---- Types ----
 export interface ServiceAreaRow {
@@ -16,10 +16,12 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-type Slot = 1 | 2 | 3;
+// Keep Slot for backwards-compat with other components that still type it
+type Slot = 1;
 
-type SlotState = {
-  slot: Slot;
+// A single-slot occupancy shape we use internally.
+// We also keep reading old shapes (with .slots[]) for backwards-compat.
+type SingleSlotState = {
   taken: boolean;
   status: string | null;
   owner_business_id: string | null;
@@ -27,9 +29,10 @@ type SlotState = {
 
 type SponsorshipState = {
   area_id: string;
-  slots: SlotState[]; // normalized to array
+  slot: SingleSlotState; // single Featured slot
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
+
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry")[];
@@ -173,10 +176,12 @@ type Props = {
   businessId?: string;
   cleanerId?: string;
   sponsorshipVersion?: number;
+  // Keep for backwards-compat; we’ll call with slot = 1 if provided.
   onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
-type AvailMap = Record<string, { 1?: boolean; 2?: boolean; 3?: boolean }>;
+// geometry-availability map (single-slot)
+type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
 export default function ServiceAreaEditor({
@@ -200,9 +205,9 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // slot availability from server-side *geometry* preview
-  const [slotAvail, setSlotAvail] = useState<AvailMap>({});
-  const [slotAvailLoading, setSlotAvailLoading] = useState<AvailLoadingMap>({});
+  // geometry-based availability from server
+  const [avail, setAvail] = useState<AvailMap>({});
+  const [availLoading, setAvailLoading] = useState<AvailLoadingMap>({});
 
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
   const [draftName, setDraftName] = useState<string>("");
@@ -211,11 +216,9 @@ export default function ServiceAreaEditor({
 
   const [sponsorOpen, setSponsorOpen] = useState(false);
   const [sponsorAreaId, setSponsorAreaId] = useState<string | null>(null);
-  const [sponsorSlot, setSponsorSlot] = useState<Slot>(1);
 
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
-  const [manageSlot, setManageSlot] = useState<Slot>(1);
 
   // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
@@ -252,7 +255,7 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- Sponsorship occupancy (who owns the slot?) -------
+  // ------- Sponsorship occupancy (single-slot) -------
   const fetchSponsorship = useCallback(async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
@@ -267,17 +270,41 @@ export default function ServiceAreaEditor({
 
       const map: SponsorshipMap = {};
       for (const a of raw.areas || []) {
-        const rawSlots = a.slots;
-        const slotsArray: SlotState[] = Array.isArray(rawSlots)
-          ? rawSlots
-          : Object.values(rawSlots || {}).map((s: any) => ({
-              slot: s.slot as Slot,
-              taken: Boolean(s.taken),
-              status: s.status ?? null,
+        // Back-compat: if server still returns `slots`, prefer slot 1; else accept single-record format
+        let slot: SingleSlotState | null = null;
+
+        if (Array.isArray(a.slots)) {
+          const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
+          if (s1) {
+            slot = {
+              taken: Boolean(s1.taken || (s1.status && isBlockingStatus(s1.status))),
+              status: s1.status ?? null,
               owner_business_id:
-                s.owner_business_id ?? s.by_business_id ?? s.business_id ?? null,
-            }));
-        map[a.area_id] = { area_id: a.area_id, slots: slotsArray, paint: a.paint };
+                s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
+            };
+          }
+        } else if (a.slots && typeof a.slots === "object") {
+          const s1 = Object.values(a.slots).find((s: any) => Number((s as any)?.slot) === 1) as any;
+          if (s1) {
+            slot = {
+              taken: Boolean(s1.taken || (s1.status && isBlockingStatus(s1.status))),
+              status: s1.status ?? null,
+              owner_business_id:
+                s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
+            };
+          }
+        }
+
+        if (!slot) {
+          // New simple shape support: { owner_business_id, status, taken }
+          slot = {
+            taken: Boolean(a.taken || (a.status && isBlockingStatus(a.status))),
+            status: a.status ?? null,
+            owner_business_id: a.owner_business_id ?? a.business_id ?? null,
+          };
+        }
+
+        map[a.area_id] = { area_id: a.area_id, slot, paint: a.paint };
       }
 
       if (import.meta.env.DEV) console.debug("[ServiceAreaEditor] sponsorship map:", map);
@@ -297,51 +324,34 @@ export default function ServiceAreaEditor({
   const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
-      setSlotAvailLoading((m) => ({ ...m, [areaId]: true }));
+      setAvailLoading((m) => ({ ...m, [areaId]: true }));
       try {
-        const run = async (slot: Slot): Promise<boolean | undefined> => {
-          try {
-            const res = await fetch("/.netlify/functions/sponsored-preview", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({
-                businessId: myBusinessId,
-                cleanerId: myBusinessId,
-                areaId,
-                slot: Number(slot),
-              }),
-            });
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            businessId: myBusinessId,
+            cleanerId: myBusinessId,
+            areaId,
+            slot: 1, // back-compat; server may ignore in single-slot world
+          }),
+        });
 
-            // If the call fails, don't mark sold out — unknown
-            if (!res.ok) return undefined;
+        if (!res.ok) {
+          setAvail((m) => ({ ...m, [areaId]: undefined }));
+          return;
+        }
 
-            const j = await res.json();
-            if (!j || !j.ok) return undefined;
+        const j = await res.json();
+        if (!j || !j.ok) {
+          setAvail((m) => ({ ...m, [areaId]: undefined }));
+          return;
+        }
 
-            const km2 = Number(j.area_km2);
-            if (!Number.isFinite(km2)) return undefined;
-
-            // Only set explicit true/false when we know for sure.
-            return km2 > 0; // true = has purchasable area, false = zero area left
-          } catch {
-            return undefined; // network/server error -> unknown
-          }
-        };
-
-        const [a1, a2, a3] = await Promise.all([run(1), run(2), run(3)]);
-
-        // Merge without overwriting unknowns with false
-        setSlotAvail((m) => ({
-          ...m,
-          [areaId]: {
-            ...(m[areaId] || {}),
-            ...(a1 !== undefined ? { 1: a1 } : {}),
-            ...(a2 !== undefined ? { 2: a2 } : {}),
-            ...(a3 !== undefined ? { 3: a3 } : {}),
-          },
-        }));
+        const km2 = Number(j.area_km2);
+        setAvail((m) => ({ ...m, [areaId]: Number.isFinite(km2) ? km2 > 0 : undefined }));
       } finally {
-        setSlotAvailLoading((m) => ({ ...m, [areaId]: false }));
+        setAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
     },
     [myBusinessId]
@@ -496,10 +506,9 @@ export default function ServiceAreaEditor({
     [isLoaded, draftPolys]
   );
 
-  function slotInfo(areaId: string, slot: Slot): SlotState | undefined {
+  function getAreaSlotState(areaId: string): SingleSlotState | undefined {
     const s = sponsorship[areaId];
-    if (!s) return undefined;
-    return (s.slots as SlotState[]).find((x) => x.slot === slot);
+    return s?.slot;
   }
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
@@ -574,74 +583,60 @@ export default function ServiceAreaEditor({
             {/* List */}
             <ul className="space-y-2">
               {serviceAreas.map((a) => {
-                const s1 = slotInfo(a.id, 1);
-                const s2 = slotInfo(a.id, 2);
-                const s3 = slotInfo(a.id, 3);
+                const s = getAreaSlotState(a.id);
+                const mine =
+                  !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
+                const takenByOther =
+                  !!s && isBlockingStatus(s.status) && s.owner_business_id !== myBusinessId;
 
-                const mine1 = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id === myBusinessId;
-                const mine2 = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id === myBusinessId;
-                const mine3 = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id === myBusinessId;
+                const hasGeo = avail[a.id] ?? true; // optimistic until computed
+                const busy = availLoading[a.id];
 
-                const ownsAny = mine1 || mine2 || mine3;
+                const disabled =
+                  takenByOther || (!mine && !takenByOther && hasGeo === false);
 
-                const taken1ByOther = !!s1 && isBlockingStatus(s1.status) && s1.owner_business_id !== myBusinessId;
-                const taken2ByOther = !!s2 && isBlockingStatus(s2.status) && s2.owner_business_id !== myBusinessId;
-                const taken3ByOther = !!s3 && isBlockingStatus(s3.status) && s3.owner_business_id !== myBusinessId;
+                const title =
+                  mine
+                    ? "You sponsor this area"
+                    : takenByOther
+                    ? `Taken${s?.status ? ` (${s.status})` : ""}`
+                    : hasGeo === false
+                    ? "No purchasable region available"
+                    : busy
+                    ? "Checking availability…"
+                    : "Available";
 
-                // Geometry-availability decision from preview
-                const avail = slotAvail[a.id] || {};
-                const hasGeo1 = avail[1] ?? true; // optimistic until computed
-                const hasGeo2 = avail[2] ?? true;
-                const hasGeo3 = avail[3] ?? true;
-                const busy = slotAvailLoading[a.id];
+                const label = mine
+                  ? "Manage"
+                  : takenByOther
+                  ? "Taken"
+                  : hasGeo === false
+                  ? "Sold out"
+                  : "Sponsor (Featured)";
 
-                // Disable when:
-                // - taken by others, OR
-                // - I already own another slot here, OR
-                // - there is no purchasable sub-region left (hasGeoX === false)
-                const dis1 = taken1ByOther || (!mine1 && ownsAny) || (!mine1 && !taken1ByOther && hasGeo1 === false);
-                const dis2 = taken2ByOther || (!mine2 && ownsAny) || (!mine2 && !taken2ByOther && hasGeo2 === false);
-                const dis3 = taken3ByOther || (!mine3 && ownsAny) || (!mine3 && !taken3ByOther && hasGeo3 === false);
-
-                const clickSlot = async (slot: Slot, isMine: boolean, isDisabled: boolean) => {
-                  if (isDisabled) return;
-                  if (isMine) {
+                const onClick = async () => {
+                  if (disabled) return;
+                  if (mine) {
                     if (onSlotAction) {
-                      await onSlotAction({ id: a.id, name: a.name }, slot);
+                      await onSlotAction({ id: a.id, name: a.name }, 1);
                     } else {
                       setManageAreaId(a.id);
-                      setManageSlot(slot);
                       setManageOpen(true);
                     }
                     return;
                   }
                   setSponsorAreaId(a.id);
-                  setSponsorSlot(slot);
                   setSponsorOpen(true);
                 };
-
-                const titleFor = (mine: boolean, slotState?: SlotState, hasGeo?: boolean) =>
-                  mine
-                    ? "You sponsor this slot"
-                    : ownsAny
-                    ? "You already sponsor a slot in this area"
-                    : slotState && isBlockingStatus(slotState.status)
-                    ? `Status: ${slotState.status || "taken"}`
-                    : hasGeo === false
-                    ? "No purchasable region left for this slot"
-                    : busy
-                    ? "Checking availability…"
-                    : "Available";
-
-                const label = (mine: boolean, takenByOther: boolean, n: Slot, hasGeo?: boolean) =>
-                  mine ? `Manage #${n}` : takenByOther ? `Taken #${n}` : hasGeo === false ? `Sold Out #${n}` : `Sponsor #${n}`;
 
                 return (
                   <li key={a.id} className="border rounded-lg p-3">
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{a.name}</div>
-                        <div className="text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</div>
+                        <div className="text-xs text-gray-500">
+                          {new Date(a.created_at).toLocaleString()}
+                        </div>
                       </div>
                       <div className="flex gap-2">
                         <button className="btn" onClick={() => editArea(a)} disabled={loading}>
@@ -655,38 +650,26 @@ export default function ServiceAreaEditor({
 
                     <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
-                        className={`btn ${dis1 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(1, mine1, dis1)}
-                        disabled={dis1}
-                        title={titleFor(mine1, s1, hasGeo1)}
+                        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={onClick}
+                        disabled={disabled}
+                        title={title}
                       >
-                        {label(mine1, taken1ByOther, 1, hasGeo1)}
-                      </button>
-
-                      <button
-                        className={`btn ${dis2 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(2, mine2, dis2)}
-                        disabled={dis2}
-                        title={titleFor(mine2, s2, hasGeo2)}
-                      >
-                        {label(mine2, taken2ByOther, 2, hasGeo2)}
-                      </button>
-
-                      <button
-                        className={`btn ${dis3 ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={() => clickSlot(3, mine3, dis3)}
-                        disabled={dis3}
-                        title={titleFor(mine3, s3, hasGeo3)}
-                      >
-                        {label(mine3, taken3ByOther, 3, hasGeo3)}
+                        {label}
                       </button>
                     </div>
-                    {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
+                    {busy && (
+                      <div className="text-[10px] text-gray-500 mt-1">
+                        Checking availability…
+                      </div>
+                    )}
                   </li>
                 );
               })}
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
+                <li className="text-sm text-gray-500">
+                  No service areas yet. Click “New Area” to draw one.
+                </li>
               )}
             </ul>
           </div>
@@ -699,21 +682,7 @@ export default function ServiceAreaEditor({
                   className="inline-block w-4 h-4 rounded"
                   style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }}
                 />
-                Gold (Slot #1)
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(192,192,192,0.35)", border: "2px solid #708090" }}
-                />
-                Silver (Slot #2)
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(205,127,50,0.35)", border: "2px solid #8B5A2B" }}
-                />
-                Bronze (Slot #3)
+                Sponsored (Featured)
               </span>
             </div>
             <div className="font-semibold mb-1">Tips</div>
@@ -808,7 +777,8 @@ export default function ServiceAreaEditor({
           }}
           businessId={myBusinessId}
           areaId={sponsorAreaId}
-          slot={sponsorSlot}
+          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
+          // totalKm2 is optional; we can omit or compute if you prefer
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
           onClearPreview={() => clearPreview()}
         />
@@ -821,7 +791,7 @@ export default function ServiceAreaEditor({
           onClose={() => setManageOpen(false)}
           cleanerId={myBusinessId}
           areaId={manageAreaId}
-          slot={manageSlot}  // ✅ Fix: provide required prop
+          slot={1} // single Featured slot (back-compat with AreaManageModal)
         />
       )}
     </>
