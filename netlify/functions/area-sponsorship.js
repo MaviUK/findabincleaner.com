@@ -12,9 +12,16 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// Only real, usable subscriptions should block.
-// Drop 'incomplete' and 'unpaid' to avoid false occupancy from abandoned checkouts.
-const BLOCKING = new Set(["active", "trialing", "past_due"]);
+// statuses that block purchase
+const BLOCKING = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "incomplete_expired",
+  "paused",
+]);
 
 export default async (req) => {
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
@@ -26,63 +33,71 @@ export default async (req) => {
     return json({ error: "Invalid JSON" }, 400);
   }
 
-  const areaIds =
-    Array.isArray(body?.areaIds) && body.areaIds.length
-      ? body.areaIds.filter(Boolean)
-      : Array.isArray(body?.area_ids)
-      ? body.area_ids.filter(Boolean)
-      : [];
-
+  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    const { data: subs, error } = await supabase
+    // Pull all rows for these areas/slots (we will select the most-recent BLOCKING row if present)
+    const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at")
       .in("area_id", areaIds);
 
     if (error) throw error;
 
-    const byArea = new Map(areaIds.map((id) => [id, []]));
-    for (const row of subs || []) {
-      const arr = byArea.get(row.area_id);
-      if (arr) arr.push(row);
+    // Build response:
+    // For each (area, slot): if there exists ANY row with blocking status,
+    // choose the most recent of those; otherwise choose the most recent row overall.
+    const byAreaSlot = new Map(); // key = `${area}:${slot}` -> array of rows
+    for (const r of rows || []) {
+      const k = `${r.area_id}:${r.slot}`;
+      if (!byAreaSlot.has(k)) byAreaSlot.set(k, []);
+      byAreaSlot.get(k).push(r);
     }
 
-    const areas = areaIds.map((area_id) => {
-      const rows = byArea.get(area_id) || [];
+    const byArea = new Map();
+    for (const areaId of areaIds) {
+      byArea.set(areaId, { area_id: areaId, slots: [] });
+    }
 
-      let latestBlocking = null;
-      for (const r of rows) {
-        const isBlock = BLOCKING.has(String(r.status || "").toLowerCase());
-        if (isBlock) {
-          if (
-            !latestBlocking ||
-            new Date(r.created_at).getTime() > new Date(latestBlocking.created_at).getTime()
-          ) {
-            latestBlocking = r;
-          }
+    for (const [key, arr] of byAreaSlot.entries()) {
+      arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      const [areaId, slotStr] = key.split(":");
+      const slot = Number(slotStr);
+
+      // pick most recent BLOCKING row if any
+      const blocking = arr.find((r) => BLOCKING.has(String(r.status || "").toLowerCase()));
+      const chosen = blocking ?? arr[0];
+
+      const taken = !!chosen && BLOCKING.has(String(chosen.status || "").toLowerCase());
+      const area = byArea.get(areaId);
+      if (!area) continue;
+
+      area.slots.push({
+        slot,
+        taken,
+        status: chosen?.status ?? null,
+        owner_business_id: chosen?.business_id ?? null,
+      });
+    }
+
+    // Ensure we have 3 slots (or 1 if you’ve already consolidated to single-slot) in the reply
+    for (const area of byArea.values()) {
+      const present = new Set(area.slots.map((s) => s.slot));
+      for (const s of [1, 2, 3]) {
+        if (!present.has(s)) {
+          area.slots.push({
+            slot: s,
+            taken: false,
+            status: null,
+            owner_business_id: null,
+          });
         }
       }
+      area.slots.sort((a, b) => a.slot - b.slot);
+    }
 
-      const taken = !!latestBlocking;
-      const status = latestBlocking?.status ?? null;
-      const owner_business_id = latestBlocking?.business_id ?? null;
-
-      // Back-compat: also return slots[] with slot=1 only
-      const slots = [
-        {
-          slot: 1,
-          taken,
-          status,
-          owner_business_id,
-        },
-      ];
-
-      return { area_id, taken, status, owner_business_id, slots };
-    });
-
-    return json({ areas }, 200);
+    return json({ areas: Array.from(byArea.values()) });
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
