@@ -1,15 +1,17 @@
 // netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
-import area from "@turf/area";
+import turfArea from "@turf/area";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
 
-const BLOCKING = new Set([
+// Any of these means the area is taken for Featured (single-slot)
+const BLOCKING = [
   "active",
   "trialing",
   "past_due",
@@ -17,7 +19,7 @@ const BLOCKING = new Set([
   "incomplete",
   "incomplete_expired",
   "paused",
-]);
+];
 
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -26,82 +28,92 @@ export default async (req) => {
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON body" });
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
   const areaId = (body.areaId || body.area_id || "").trim();
-  const slot = Number(body.slot ?? 1);
-  if (!areaId || !/^[0-9a-f-]{36}$/i.test(areaId)) return json({ ok: false, error: "Missing or invalid areaId" });
-  if (![1, 2, 3].includes(slot)) return json({ ok: false, error: "Missing or invalid slot (1..3)" });
+  const businessId = (body.businessId || body.cleanerId || "").trim(); // who is asking
+  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
 
   try {
-    // 1) HARD BLOCK: if any blocking subscription exists for this (area,slot), return zero
-    const { data: subs, error: subsErr } = await sb
+    // 1) SOLD-OUT CHECK: does ANYONE already hold Featured for this area?
+    const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("status")
+      .select("id,business_id,status,created_at")
       .eq("area_id", areaId)
-      .eq("slot", slot);
+      .in("status", BLOCKING)
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-    if (subsErr) throw subsErr;
+    if (takenErr) throw takenErr;
 
-    const hasBlocking = (subs || []).some((r) => BLOCKING.has(String(r.status || "").toLowerCase()));
-    if (hasBlocking) {
-      // Still compute total for UI, but available is 0
-      let total_km2 = null;
-      const { data: sa } = await sb.from("service_areas").select("gj").eq("id", areaId).maybeSingle();
-      if (sa?.gj) {
-        try {
-          const m2 = area(sa.gj);
-          if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-        } catch {}
-      }
-      return json({ ok: true, area_km2: 0, total_km2, rate_per_km2: null, price_cents: 0, geojson: null });
-    }
+    const soldOut = (takenRows?.length || 0) > 0;
+    const soldTo = soldOut ? takenRows![0].business_id : null;
 
-    // 2) Otherwise, fall back to your geometric preview function
-    const { data, error } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
-    if (error) return json({ ok: false, error: error.message || "Preview query failed" });
-
-    const row = Array.isArray(data) ? data[0] : data;
-    const area_km2 = Number(row?.area_km2 ?? 0) || 0;
-    const geojson = row?.gj ?? null;
-
-    // Total area
+    // 2) Load the saved service-area geometry so we can compute total_km2
     let total_km2 = null;
     const { data: sa, error: saErr } = await sb
       .from("service_areas")
       .select("gj")
       .eq("id", areaId)
       .maybeSingle();
-    if (!saErr && sa?.gj) {
+    if (saErr) throw saErr;
+
+    if (sa?.gj) {
       try {
-        const m2 = area(sa.gj);
+        const m2 = turfArea(sa.gj);
         if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-      } catch {}
+      } catch {
+        // swallow, keep null
+      }
     }
 
-    // Pricing (major units env backed)
-    const rateMap = {
-      1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
-      2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
-      3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0),
-    };
-    const rate_per_km2 = Number.isFinite(rateMap[slot]) ? rateMap[slot] : 0;
-    const price_cents = Math.round(area_km2 * rate_per_km2 * 100);
+    // 3) If someone else already owns Featured, force available area to 0 and no overlay
+    // (Single-slot product: there is nothing left to buy in this area.)
+    let area_km2 = 0;
+    let geojson = null;
+
+    if (!soldOut /* nothing taken yet */) {
+      // If you also intersect with existing shapes for a multi-slot model, do that here.
+      // For single-slot Featured, the purchasable region is simply "the whole saved area".
+      area_km2 = total_km2 ?? 0;
+      geojson = sa?.gj ?? null;
+    }
+
+    // 4) Price signals (major units)
+    const unit_price =
+      Number(process.env.RATE_PER_KM2_PER_MONTH) ||
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH) ||
+      0;
+    const min_monthly =
+      Number(process.env.MIN_PRICE_PER_MONTH) ||
+      Number(process.env.MIN_GOLD_PRICE_PER_MONTH) ||
+      0;
+    const unit_currency = "GBP";
+
+    const rawMonthly = (area_km2 || 0) * (unit_price || 0);
+    const monthly_price = Math.max(min_monthly || 0, Number.isFinite(rawMonthly) ? rawMonthly : 0);
 
     return json({
       ok: true,
-      area_km2,
-      total_km2,
-      rate_per_km2,
-      price_cents,
+      // geometry
       geojson,
+      // areas
+      area_km2: Number.isFinite(area_km2) ? area_km2 : 0,
+      total_km2: Number.isFinite(total_km2) ? total_km2 : null,
+      // pricing
+      unit_price,
+      min_monthly,
+      unit_currency,
+      monthly_price,
+      // saleability
+      sold_out: soldOut,
+      sold_to_business_id: soldTo,
+      // helpful to the client for messaging
+      is_owner: soldOut && businessId && soldTo === businessId,
     });
   } catch (e) {
-    console.error("sponsored-preview error:", e);
+    console.error("[sponsored-preview] error", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
