@@ -28,7 +28,7 @@ export default async (req) => {
     return json({ ok: false, error: "Missing or invalid areaId" }, 400);
   }
 
-  // Single-slot world: accept 'slot' but ignore it; always treat as featured.
+  // Single-slot world: accept 'slot' but ignore it; always treat as featured (1).
   const SLOT = 1;
 
   try {
@@ -55,7 +55,7 @@ export default async (req) => {
         const m2 = turfArea(sa.gj); // returns m²
         if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
       } catch {
-        // ignore; total_km2 stays null
+        // ignore
       }
     }
 
@@ -63,18 +63,18 @@ export default async (req) => {
     const unit_price =
       Number(process.env.RATE_PER_KM2_PER_MONTH ?? "") ||
       Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? "") ||
-      Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? "") || // legacy fallback
+      Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? "") ||
       Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? "") ||
       0;
 
     const min_monthly =
       Number(process.env.MIN_PRICE_PER_MONTH ?? "") ||
-      Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? "") || // legacy fallbacks
-      Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? "") ||
-      Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? "") ||
+      Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? "") ||
+      Number(process.env.MIN_SILVER_PER_MONTH ?? process.env.MIN_SILVER_PRICE_PER_MONTH ?? "") ||
+      Number(process.env.MIN_BRONZE_PER_MONTH ?? process.env.MIN_BRONZE_PRICE_PER_MONTH ?? "") ||
       0;
 
-    const unit_currency = "GBP"; // adjust if you support multi-currency
+    const unit_currency = "GBP";
 
     // Derived monthly: apply minimum if set
     const rawMonthly = area_km2 * unit_price;
