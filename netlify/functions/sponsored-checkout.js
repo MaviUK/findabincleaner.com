@@ -1,160 +1,200 @@
 // netlify/functions/sponsored-checkout.js
-import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
-import area from "@turf/area";
-import intersect from "@turf/intersect";
-import difference from "@turf/difference";
-import union from "@turf/union";
+import Stripe from "stripe";
+import * as turf from "@turf/turf";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2023-10-16" });
 
-const json = (b, s = 200) =>
-  new Response(JSON.stringify(b), { status: s, headers: { "content-type": "application/json" } });
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete"]);
+const km2 = (m2) => (Number.isFinite(m2) ? m2 / 1_000_000 : 0);
 
-function toFeature(geo) {
+function toMultiPolygonFeature(geo) {
   if (!geo) return null;
-  if (geo.type === "Feature") return geo;
-  if (geo.type === "Polygon" || geo.type === "MultiPolygon") return { type: "Feature", geometry: geo, properties: {} };
+  let g = geo;
+  if (g.type === "Feature") g = g.geometry;
+  if (g.type === "FeatureCollection") {
+    const polys = g.features
+      .map((f) => (f.type === "Feature" ? f.geometry : f))
+      .filter((gg) => gg && (gg.type === "Polygon" || gg.type === "MultiPolygon"));
+    if (!polys.length) return null;
+    let cur = turf.feature(polys[0]);
+    for (let i = 1; i < polys.length; i++) {
+      try {
+        cur = turf.union(cur, turf.feature(polys[i])) || cur;
+      } catch {}
+    }
+    g = cur.geometry;
+  }
+  if (g.type === "Polygon") return turf.multiPolygon([g.coordinates]);
+  if (g.type === "MultiPolygon") return turf.multiPolygon(g.coordinates);
   return null;
 }
-function unionMany(features) {
+
+function unionAll(features) {
   if (!features.length) return null;
-  let acc = features[0];
+  let cur = features[0];
   for (let i = 1; i < features.length; i++) {
     try {
-      acc = union(acc, features[i]) || acc;
-    } catch {}
+      const u = turf.union(cur, features[i]);
+      if (u) cur = u;
+    } catch {
+      cur = features[i];
+    }
   }
-  return acc;
+  return cur;
 }
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
+
+  const businessId = (body.businessId || body.cleanerId || "").trim();
+  const areaId = (body.areaId || body.area_id || "").trim();
+  const slot = Number(body.slot ?? 1);
+
+  if (!areaId || !/^[0-9a-f-]{36}$/i.test(areaId))
+    return json({ ok: false, error: "Missing or invalid areaId" }, 400);
+  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
+  if (slot !== 1) return json({ ok: false, error: "Invalid slot. Only slot=1 is supported." }, 400);
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const businessId = String(body.businessId || body.cleanerId || "").trim();
-    const areaId = String(body.areaId || body.area_id || "").trim();
-    const slot = 1;
-
-    if (!businessId || !areaId) return json({ error: "Missing businessId or areaId" }, 400);
-
-    // 1) Pull target area
-    const { data: target, error: tErr } = await sb
+    // Load target geometry
+    const { data: sa, error: saErr } = await sb
       .from("service_areas")
-      .select("gj")
+      .select("id, gj")
       .eq("id", areaId)
       .maybeSingle();
-    if (tErr || !target?.gj) return json({ error: "Area not found" }, 404);
 
-    const targetF = toFeature(target.gj);
-    if (!targetF) return json({ error: "Invalid area geometry" }, 400);
+    if (saErr || !sa?.gj) return json({ ok: false, error: "Area not found" }, 404);
+    const target = toMultiPolygonFeature(sa.gj);
+    if (!target) return json({ ok: false, error: "Invalid target geometry" }, 400);
 
-    // 2) Union of active Featured sponsorships by others ∩ target
-    const { data: taken, error: sErr } = await sb
+    // Other subscriptions (blocking)
+    const { data: subs, error: subsErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id, area_id, status, slot, area:service_areas(gj)")
-      .eq("slot", slot);
-    if (sErr) return json({ error: sErr.message || "Failed to query sponsorships" }, 500);
+      .select("id, business_id, area_id, status, final_geojson")
+      .eq("slot", 1)
+      .neq("business_id", businessId);
 
-    const activeOthers = (taken || []).filter(
-      (r) =>
-        r?.area?.gj &&
-        r.business_id &&
-        r.business_id !== businessId &&
-        BLOCKING.has(String(r.status || "").toLowerCase())
-    );
+    if (subsErr) return json({ ok: false, error: subsErr.message || "Failed to load subscriptions" }, 500);
 
-    const overlaps = [];
-    for (const r of activeOthers) {
-      const otherF = toFeature(r.area.gj);
-      if (!otherF) continue;
-      try {
-        const ov = intersect(otherF, targetF);
-        if (ov) overlaps.push(ov);
-      } catch {}
+    // Build blockers
+    const blockerFeatures = [];
+    for (const s of subs || []) {
+      const status = String(s.status || "").toLowerCase();
+      if (!BLOCKING.has(status)) continue;
+
+      let srcGeo = s.final_geojson;
+      if (!srcGeo) {
+        const { data: a } = await sb.from("service_areas").select("gj").eq("id", s.area_id).maybeSingle();
+        srcGeo = a?.gj || null;
+      }
+      const feat = toMultiPolygonFeature(srcGeo);
+      if (feat) blockerFeatures.push(feat);
     }
-    const occupied = overlaps.length ? unionMany(overlaps) : null;
+    const blockersUnion = blockerFeatures.length ? unionAll(blockerFeatures) : null;
 
-    let remaining = null;
-    if (!occupied) remaining = targetF;
-    else {
+    // Difference
+    let purchGeom = null;
+    if (!blockersUnion) {
+      purchGeom = target;
+    } else {
       try {
-        remaining = difference(targetF, occupied) || null;
+        purchGeom = turf.difference(target, blockersUnion) || null;
       } catch {
-        remaining = null;
+        try {
+          if (!turf.booleanIntersects(target, blockersUnion)) purchGeom = target;
+        } catch {}
       }
     }
 
-    const remaining_km2 = remaining ? area(remaining) / 1_000_000 : 0;
-    if (!remaining || remaining_km2 <= 0) {
-      // Another business already covers (all of) this polygon
-      return json({ error: "Sold out for this coverage" }, 409);
+    const area_km2 = purchGeom ? km2(turf.area(purchGeom)) : 0;
+    if (!area_km2 || area_km2 <= 0) {
+      return json({ ok: false, error: "No purchasable area available" }, 400);
     }
 
-    // 3) Price (safe fallbacks)
-    const rate =
-      Number(process.env.RATE_PER_KM2_PER_MONTH) ||
-      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH) ||
-      1;
-    const minMonthly = Number(process.env.MIN_PRICE_PER_MONTH) || Number(process.env.MIN_GOLD_PRICE_PER_MONTH) || 1;
+    // Pricing (major units)
+    const currency = (process.env.RATE_CURRENCY || "GBP").toUpperCase();
+    const unit_price =
+      Number(process.env.RATE_PER_KM2_PER_MONTH ??
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+        0);
+    const min_monthly = Number(process.env.MIN_PRICE_PER_MONTH ??
+      process.env.MIN_GOLD_PRICE_PER_MONTH ??
+      0);
+    const monthly_price = Math.max(min_monthly, unit_price * area_km2);
 
-    const raw = Math.max(0, remaining_km2 * rate);
-    const monthlyMajor = Math.max(minMonthly, raw);
-    const monthlyCents = Math.round(monthlyMajor * 100);
-    if (!monthlyCents) return json({ error: "Calculated amount must be > 0" }, 400);
-
-    // 4) Ensure Stripe customer
-    let customerId = null;
-    const { data: biz, error: bizErr } = await sb
-      .from("businesses")
-      .select("stripe_customer_id")
-      .eq("id", businessId)
-      .maybeSingle();
-    if (bizErr) console.warn("Fetch stripe_customer_id error:", bizErr);
-    if (biz?.stripe_customer_id) {
-      customerId = biz.stripe_customer_id;
-    } else {
-      const cust = await stripe.customers.create({ metadata: { business_id: businessId } });
-      customerId = cust.id;
-      await sb.from("businesses").update({ stripe_customer_id: customerId }).eq("id", businessId);
+    // Ensure or create Stripe customer for this business
+    // (You may already store stripe_customer_id; adapt as needed.)
+    let stripeCustomerId = null;
+    {
+      // Example: look up from a profile table; adjust to your schema
+      const { data: prof } = await sb
+        .from("profiles")
+        .select("stripe_customer_id")
+        .eq("id", businessId)
+        .maybeSingle();
+      if (prof?.stripe_customer_id) {
+        stripeCustomerId = prof.stripe_customer_id;
+      } else {
+        const c = await stripe.customers.create({ metadata: { businessId } });
+        stripeCustomerId = c.id;
+        await sb.from("profiles").update({ stripe_customer_id: c.id }).eq("id", businessId);
+      }
     }
 
-    const site = process.env.PUBLIC_SITE_URL || "http://localhost:8888";
+    // Create a one-line-item recurring subscription via Checkout
+    const priceInMinor = Math.round(monthly_price * 100); // pence
+    const productName = "Featured Area Sponsorship";
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      customer: customerId || undefined,
+      customer: stripeCustomerId,
       line_items: [
         {
           price_data: {
-            currency: "gbp",
+            currency: currency.toLowerCase(),
             product_data: {
-              name: "Featured Sponsorship",
-              description: "First in local search for this service area.",
+              name: productName,
+              metadata: {
+                area_id: areaId,
+                business_id: businessId,
+              },
             },
+            // Monthly unit price = computed monthly for this geometry
+            unit_amount: priceInMinor,
             recurring: { interval: "month" },
-            unit_amount: monthlyCents,
           },
           quantity: 1,
         },
       ],
-      success_url: `${site}/#/dashboard?checkout=success`,
-      cancel_url: `${site}/#/dashboard?checkout=cancel`,
+      // Metadata saved on the session so webhook can finalize
       metadata: {
         business_id: businessId,
         area_id: areaId,
-        slot: String(slot),
+        slot: "1",
+        // persist the purchasable geometry the user previewed (optional; keep small)
+        preview_area_km2: String(area_km2),
       },
-      allow_promotion_codes: true,
+      success_url: `${process.env.PUBLIC_SITE_URL || "https://findabincleaner.com"}/#/dashboard?checkout=success`,
+      cancel_url: `${process.env.PUBLIC_SITE_URL || "https://findabincleaner.com"}/#/dashboard?checkout=cancel`,
     });
 
-    return json({ url: session.url });
+    return json({ ok: true, url: session.url });
   } catch (e) {
-    console.error("sponsored-checkout error:", e);
-    return json({ error: e?.message || "Server error" }, 500);
+    return json({ ok: false, error: e?.message || "Checkout error" }, 500);
   }
 };
