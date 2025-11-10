@@ -7,7 +7,6 @@ import AreaManageModal from "./AreaManageModal";
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
-// ---- Types ----
 export interface ServiceAreaRow {
   id: string;
   business_id: string;
@@ -16,11 +15,9 @@ export interface ServiceAreaRow {
   created_at: string;
 }
 
-// Keep Slot for backwards-compat with other components that still type it
+// Keep Slot type for back-compat where needed
 type Slot = 1;
 
-// A single-slot occupancy shape we use internally.
-// We also keep reading old shapes (with .slots[]) for backwards-compat.
 type SingleSlotState = {
   taken: boolean;
   status: string | null;
@@ -37,9 +34,8 @@ type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 
 type Libraries = ("drawing" | "geometry")[];
 
-// statuses that should *block* a slot
 const isBlockingStatus = (s?: string | null) =>
-  ["active", "trialing", "past_due", "unpaid", "incomplete"].includes((s || "").toLowerCase());
+  ["active", "trialing", "past_due"].includes((s || "").toLowerCase());
 
 const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
@@ -176,11 +172,9 @@ type Props = {
   businessId?: string;
   cleanerId?: string;
   sponsorshipVersion?: number;
-  // Keep for backwards-compat; we’ll call with slot = 1 if provided.
   onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
-// geometry-availability map (single-slot)
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
@@ -270,24 +264,14 @@ export default function ServiceAreaEditor({
 
       const map: SponsorshipMap = {};
       for (const a of raw.areas || []) {
-        // Back-compat: if server still returns `slots`, prefer slot 1; else accept single-record format
+        // accept either simple shape or legacy slots[] (pick slot=1)
         let slot: SingleSlotState | null = null;
 
         if (Array.isArray(a.slots)) {
           const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
           if (s1) {
             slot = {
-              taken: Boolean(s1.taken || (s1.status && isBlockingStatus(s1.status))),
-              status: s1.status ?? null,
-              owner_business_id:
-                s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
-            };
-          }
-        } else if (a.slots && typeof a.slots === "object") {
-          const s1 = Object.values(a.slots).find((s: any) => Number((s as any)?.slot) === 1) as any;
-          if (s1) {
-            slot = {
-              taken: Boolean(s1.taken || (s1.status && isBlockingStatus(s1.status))),
+              taken: Boolean(s1.taken),
               status: s1.status ?? null,
               owner_business_id:
                 s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
@@ -296,9 +280,8 @@ export default function ServiceAreaEditor({
         }
 
         if (!slot) {
-          // New simple shape support: { owner_business_id, status, taken }
           slot = {
-            taken: Boolean(a.taken || (a.status && isBlockingStatus(a.status))),
+            taken: Boolean(a.taken),
             status: a.status ?? null,
             owner_business_id: a.owner_business_id ?? a.business_id ?? null,
           };
@@ -333,7 +316,7 @@ export default function ServiceAreaEditor({
             businessId: myBusinessId,
             cleanerId: myBusinessId,
             areaId,
-            slot: 1, // back-compat; server may ignore in single-slot world
+            slot: 1, // back-compat; server may ignore
           }),
         });
 
@@ -358,7 +341,6 @@ export default function ServiceAreaEditor({
   );
 
   useEffect(() => {
-    // compute availability for all visible areas
     serviceAreas.forEach((a) => {
       computeAvailabilityForArea(a.id);
     });
@@ -778,20 +760,19 @@ export default function ServiceAreaEditor({
           businessId={myBusinessId}
           areaId={sponsorAreaId}
           areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
-          // totalKm2 is optional; we can omit or compute if you prefer
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
           onClearPreview={() => clearPreview()}
         />
       )}
 
-      {/* Manage modal */}
+      {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
           cleanerId={myBusinessId}
           areaId={manageAreaId}
-          slot={1} // single Featured slot (back-compat with AreaManageModal)
+          slot={1} // single Featured slot
         />
       )}
     </>
