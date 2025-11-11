@@ -1,4 +1,3 @@
-// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
@@ -34,52 +33,41 @@ export default async (req) => {
   const areaId = (body.areaId || "").trim();
   const businessId = (body.businessId || "").trim();
   const slot = Number(body.slot || 1);
-
   if (!areaId || !businessId) return json({ ok: false, error: "Missing params" }, 400);
   if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Hard block if owned by another business
-    const { data: takenRows, error: takenErr } = await sb
+    // HARD OWNERSHIP CHECK: any blocking row by another business => block
+    const { data: blockers, error: blkErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
       .eq("area_id", areaId)
-      .eq("slot", slot)
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .eq("slot", slot);
 
-    if (takenErr) return json({ ok: false, error: takenErr.message || "Ownership check failed" }, 500);
+    if (blkErr) return json({ ok: false, error: blkErr.message || "Ownership check failed" }, 500);
 
-    const hasRow = Array.isArray(takenRows) && takenRows.length > 0;
-    const row = hasRow ? takenRows[0] : null;
-    const rowStatus = String(row?.status || "").toLowerCase();
-    const ownedByOther = hasRow && BLOCKING.has(rowStatus) && row.business_id !== businessId;
-
-    if (ownedByOther) {
+    const taken = (blockers || []).some(
+      (r) => BLOCKING.has(String(r.status || "").toLowerCase()) && r.business_id !== businessId
+    );
+    if (taken) {
       return json(
-        {
-          ok: false,
-          error: "This featured slot is already owned by another business.",
-          code: "SLOT_TAKEN",
-        },
+        { ok: false, error: "This featured slot is already owned by another business.", code: "SLOT_TAKEN" },
         409
       );
     }
 
-    // 2) (Optional) Ensure there’s still purchasable geometry if you allow partials
+    // Ensure there’s still purchasable geometry (>0)
     const { data: prevData, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
     if (prevErr) return json({ ok: false, error: prevErr.message || "Preview failed" }, 500);
-
     const km2 = Number((Array.isArray(prevData) ? prevData[0] : prevData)?.area_km2 ?? 0);
     if (!Number.isFinite(km2) || km2 <= 0) {
       return json({ ok: false, error: "No purchasable area available for this slot." }, 409);
     }
 
-    // 3) Create your Stripe Checkout session (simplified)
-    // Price is calculated client-side for display, but always recompute/validate server-side in production.
+    // price
     const rate_per_km2 =
       Number(process.env.RATE_PER_KM2_PER_MONTH) ||
       Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH) ||
@@ -88,7 +76,6 @@ export default async (req) => {
       Number(process.env.MIN_PRICE_PER_MONTH) ||
       Number(process.env.MIN_GOLD_PRICE_PER_MONTH) ||
       1;
-
     const monthly = Math.max(km2 * rate_per_km2, floor_monthly);
     const unitAmount = Math.round(monthly * 100);
 
@@ -110,11 +97,7 @@ export default async (req) => {
           quantity: 1,
         },
       ],
-      metadata: {
-        area_id: areaId,
-        business_id: businessId,
-        slot: String(slot),
-      },
+      metadata: { area_id: areaId, business_id: businessId, slot: String(slot) },
     });
 
     return json({ ok: true, url: session.url });
