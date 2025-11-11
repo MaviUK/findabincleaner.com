@@ -1,6 +1,4 @@
-// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
-import area from "@turf/area";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
@@ -10,6 +8,7 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+// statuses that block the slot
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -33,59 +32,50 @@ export default async (req) => {
   const areaId = (body.areaId || "").trim();
   const businessId = (body.businessId || body.cleanerId || "").trim();
   const slot = Number(body.slot || 1);
-
-  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400); // single featured slot
+  if (!areaId || !businessId) return json({ ok: false, error: "Missing params" }, 400);
+  if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400); // single featured slot
 
   try {
-    // 1) Who owns this slot, if anyone?
-    const { data: takenRows, error: takenErr } = await sb
+    // 1) HARD OWNERSHIP CHECK: block if ANY blocking row exists by another business
+    const { data: blockers, error: blkErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
       .eq("area_id", areaId)
-      .eq("slot", slot)
-      .order("created_at", { ascending: false })
-      .limit(1);
+      .eq("slot", slot);
 
-    if (takenErr) return json({ ok: false, error: takenErr.message || "Ownership check failed" }, 500);
+    if (blkErr) return json({ ok: false, error: blkErr.message || "Ownership check failed" }, 500);
 
-    const hasRow = Array.isArray(takenRows) && takenRows.length > 0;
-    const row = hasRow ? takenRows[0] : null;
-    const rowStatus = String(row?.status || "").toLowerCase();
-    const ownedByOther = hasRow && BLOCKING.has(rowStatus) && row.business_id !== businessId;
+    const blocker = (blockers || []).find(
+      (r) => BLOCKING.has(String(r.status || "").toLowerCase()) && r.business_id !== businessId
+    );
+    const ownedByOther = Boolean(blocker);
 
-    // 2) Compute remaining purchasable sub-geometry via your RPC
-    //    (If you don’t have partial-geometry logic, you can return the whole polygon.
-    //     We still block below if somebody else owns it.)
+    // 2) Get remaining purchasable area (km²) from your Postgres RPC
     const { data: prevData, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
-
-    if (prevErr) return json({ ok: false, error: prevErr.message || "Preview query failed" }, 500);
+    if (prevErr) return json({ ok: false, error: prevErr.message || "Preview failed" }, 500);
 
     const row0 = Array.isArray(prevData) ? prevData[0] : prevData || {};
-    const km2 = Number(row0?.area_km2 ?? 0);
+    const available_km2 = Number(row0?.area_km2 ?? 0);
     const previewGeo = row0?.gj ?? null;
 
-    // 3) Compute total_km2 from service_areas.gj with turf.area
-    let total_km2 = null;
-    const { data: sa, error: saErr } = await sb
-      .from("service_areas")
-      .select("gj")
-      .eq("id", areaId)
-      .maybeSingle();
-    if (!saErr && sa?.gj) {
-      try {
-        const m2 = area(sa.gj); // m²
-        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-      } catch {
-        // ignore
-      }
-    }
+    // 3) Compute *total* area with PostGIS too (consistent with available)
+    //    Create this SQL function once in your DB:
+    //    create or replace function area_total_km2(p_area_id uuid)
+    //    returns numeric language sql stable as $$
+    //      select coalesce(
+    //        ST_Area( ST_SetSRID(ST_GeomFromGeoJSON(sa.gj::json),4326)::geography )/1000000.0, 0)
+    //      from service_areas sa where sa.id = p_area_id;
+    //    $$;
+    const { data: totalReply, error: totalErr } = await sb.rpc("area_total_km2", {
+      p_area_id: areaId,
+    });
+    if (totalErr) return json({ ok: false, error: totalErr.message || "Total area failed" }, 500);
+    const total_km2 = Number(totalReply ?? 0);
 
-    // 4) Pricing (use your env rates)
+    // 4) rates
     const rate_per_km2 =
       Number(process.env.RATE_PER_KM2_PER_MONTH) ||
       Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH) ||
@@ -95,27 +85,31 @@ export default async (req) => {
       Number(process.env.MIN_GOLD_PRICE_PER_MONTH) ||
       1;
 
-    // 5) If owned by another business, report as sold_out and expose owner id; set area to 0
+    // Clamp available to not exceed total (just in case of rounding noise)
+    const availClamped =
+      Number.isFinite(available_km2) && Number.isFinite(total_km2)
+        ? Math.min(available_km2, total_km2)
+        : available_km2;
+
     if (ownedByOther) {
       return json({
         ok: true,
         sold_out: true,
-        sold_to_business_id: row?.business_id || null,
+        sold_to_business_id: blocker?.business_id || null,
         area_km2: 0,
         total_km2,
         rate_per_km2,
         floor_monthly,
         unit_currency: "GBP",
-        geojson: null, // don’t preview when owned by someone else
+        geojson: null,
       });
     }
 
-    // 6) Otherwise return available preview
     return json({
       ok: true,
       sold_out: false,
       sold_to_business_id: null,
-      area_km2: Number.isFinite(km2) ? km2 : 0,
+      area_km2: Number.isFinite(availClamped) ? availClamped : 0,
       total_km2,
       rate_per_km2,
       floor_monthly,
