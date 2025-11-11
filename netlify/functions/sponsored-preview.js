@@ -1,82 +1,104 @@
-// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 import area from "@turf/area";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
+// HTTP helper
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+// statuses that block a slot
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
+
+// sane epsilon for float comparisons
+const EPS = 1e-6;
 
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   let body;
-  try { body = await req.json(); } catch { return json({ ok: false, error: "Invalid JSON" }); }
+  try {
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
+  }
 
-  const areaId = String(body.areaId || body.area_id || "").trim();
-  const businessId = String(body.businessId || body.cleanerId || "").trim();
-  const slot = 1;
+  const areaId = (body.areaId || body.area_id || "").trim();
+  const slot = Number(body.slot || 1);
+  const businessId = (body.businessId || body.cleanerId || "").trim();
 
-  if (!areaId) return json({ ok: false, error: "Missing areaId" });
-  if (!businessId) return json({ ok: false, error: "Missing businessId" });
+  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400); // single “featured” slot
+  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
 
   try {
-    // 1) SOLD-OUT check (another owner currently holds the featured slot)
-    const { data: ownerRow, error: ownerErr } = await sb
-      .from("v_featured_slot_owner")
-      .select("owner_business_id")
+    // 1) Is the slot already owned by someone else?
+    const { data: takenRows, error: takenErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("business_id, status")
       .eq("area_id", areaId)
-      .eq("slot", slot)
-      .maybeSingle();
+      .eq("slot", slot);
 
-    if (ownerErr) throw ownerErr;
+    if (takenErr) throw takenErr;
+
+    // keep only *blocking* rows
+    const blocking = (takenRows || []).filter(
+      (r) => BLOCKING.has(String(r.status || "").toLowerCase())
+    );
 
     const ownedByOther =
-      ownerRow && ownerRow.owner_business_id && ownerRow.owner_business_id !== businessId;
+      (blocking?.length || 0) > 0 &&
+      String(blocking[0].business_id) !== String(businessId);
 
-    // 2) Remaining sub-geometry and area (km²)
-    //    NOTE: even if geometry says >0, if ownedByOther is true we treat it as sold out.
-    const { data: prev, error: prevErr } = await sb.rpc("area_remaining_preview", {
+    // 2) Ask DB for remaining purchasable geometry (may be zero if fully occupied)
+    //    This RPC returns: [{ area_km2, gj }] or a single row; handle both.
+    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(prev) ? prev[0] : prev;
-    const area_km2 = Number(row?.area_km2 ?? 0) || 0;
+    const row = Array.isArray(previewRow) ? previewRow[0] : previewRow || {};
+    let remaining_km2 = Number(row?.area_km2 ?? 0) || 0;
     const geojson = row?.gj ?? null;
 
-    // 3) Total area of the saved area (km²)
+    // 3) Also compute the *total* area of the saved service area, for the modal’s “Total area”
     let total_km2 = null;
     const { data: sa, error: saErr } = await sb
       .from("service_areas")
       .select("gj")
       .eq("id", areaId)
       .maybeSingle();
-    if (sa?.gj && !saErr) {
+    if (!saErr && sa?.gj) {
       try {
         const m2 = area(sa.gj);
         if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
       } catch { /* ignore */ }
     }
 
-    // clamp available to total if both exist
-    const available_km2 =
-      total_km2 != null ? Math.max(0, Math.min(area_km2, total_km2)) : area_km2;
+    // 4) Slot already owned by someone else → force sold-out, zero availability
+    const sold_out = ownedByOther || remaining_km2 <= EPS;
+    if (ownedByOther) remaining_km2 = 0;
 
-    // price (your env rate)
-    const rate_per_km2 = Number(process.env.RATE_PER_KM2_PER_MONTH || 0);
-    const price_cents = Math.round((ownedByOther ? 0 : available_km2) * rate_per_km2 * 100);
+    // 5) Rate & price
+    const rate_per_km2 =
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0
+      ) || 0;
+    const price_cents = Math.round(Math.max(remaining_km2, 0) * rate_per_km2 * 100);
 
     return json({
       ok: true,
-      sold_out: !!ownedByOther,
-      area_km2: ownedByOther ? 0 : available_km2, // if sold out, present 0
+      sold_out,
+      available_km2: Math.max(0, remaining_km2),
       total_km2,
       rate_per_km2,
       price_cents,
-      geojson: ownedByOther ? null : geojson,     // do not preview if sold out
-      message: ownedByOther ? "Featured slot is already owned by another business." : null,
+      geojson,
+      reason: ownedByOther ? "owned_by_other" : remaining_km2 <= EPS ? "no_remaining" : "ok",
     });
   } catch (e) {
     return json({ ok: false, error: e?.message || "Server error" }, 500);
