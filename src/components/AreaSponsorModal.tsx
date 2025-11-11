@@ -4,32 +4,24 @@ import React, { useEffect, useMemo, useState } from "react";
 type Props = {
   open: boolean;
   onClose: () => void;
-
-  // ids
   businessId: string;
   areaId: string;
-  areaName?: string;
-
-  // Optional map overlay hooks from the editor
+  // if you keep slots in DB, keep this; otherwise hardcode 1
+  slot?: number;
   onPreviewGeoJSON?: (multi: any) => void;
   onClearPreview?: () => void;
 };
 
-// small helpers
-function clamp2(n: number) {
-  return Math.max(0, Math.round(n * 100) / 100);
-}
-function formatMoney(amountMajor?: number | null, currency = "GBP") {
-  if (amountMajor == null || !isFinite(amountMajor)) return "—";
+function money(pounds: number, currency = "GBP") {
   try {
     return new Intl.NumberFormat("en-GB", {
       style: "currency",
       currency,
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
-    }).format(amountMajor);
+    }).format(pounds);
   } catch {
-    return `£${amountMajor.toFixed(2)}`;
+    return `£${pounds.toFixed(2)}`;
   }
 }
 
@@ -38,7 +30,7 @@ export default function AreaSponsorModal({
   onClose,
   businessId,
   areaId,
-  areaName,
+  slot = 1,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
@@ -46,109 +38,83 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // geometry/area
+  // numbers coming from server
   const [totalKm2, setTotalKm2] = useState<number | null>(null);
   const [availableKm2, setAvailableKm2] = useState<number | null>(null);
-
-  // pricing (major units)
-  const [unitPrice, setUnitPrice] = useState<number | null>(null);
-  const [minMonthly, setMinMonthly] = useState<number | null>(null);
-  const [serverMonthly, setServerMonthly] = useState<number | null>(null);
+  const [ratePerKm2, setRatePerKm2] = useState<number>(1);
   const [currency, setCurrency] = useState<string>("GBP");
+  const [floorMonthly, setFloorMonthly] = useState<number>(1);
 
-  // saleability
-  const [soldOut, setSoldOut] = useState<boolean>(false);
-  const [isOwner, setIsOwner] = useState<boolean>(false);
-  const [ownerBusinessId, setOwnerBusinessId] = useState<string | null>(null);
-
-  const computedMonthly = useMemo(() => {
-    if (serverMonthly != null) return clamp2(serverMonthly);
-    if (availableKm2 == null || unitPrice == null) return null;
-    const raw = availableKm2 * unitPrice;
-    const minApplied = minMonthly != null ? Math.max(minMonthly, raw) : raw;
-    return clamp2(minApplied);
-  }, [availableKm2, unitPrice, minMonthly, serverMonthly]);
-
-  const coveragePct = useMemo(() => {
-    if (availableKm2 == null || totalKm2 == null || totalKm2 <= 0) return null;
-    return Math.max(0, Math.min(100, (availableKm2 / totalKm2) * 100));
-  }, [availableKm2, totalKm2]);
+  const monthly = useMemo(() => {
+    const km2 = availableKm2 ?? 0;
+    const raw = Math.max(km2 * ratePerKm2, floorMonthly);
+    if (!isFinite(raw)) return 0;
+    return Math.round(raw * 100) / 100;
+  }, [availableKm2, ratePerKm2, floorMonthly]);
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
+    void loadPreview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, areaId, slot, businessId]);
 
-    async function run() {
-      setLoading(true);
-      setError(null);
+  async function loadPreview() {
+    setLoading(true);
+    setError(null);
 
-      try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId,
-            cleanerId: businessId, // tolerate older server code
-            areaId,
-          }),
-        });
+    try {
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId,
+          cleanerId: businessId,
+          areaId,
+          slot,
+        }),
+      });
 
-        const j = await res.json().catch(() => ({}));
-        if (!res.ok || !j?.ok) {
-          throw new Error(
-            j?.error || `Preview ${res.status} ${res.statusText || ""}`.trim()
-          );
-        }
-        if (cancelled) return;
-
-        // geometry + overlay
-        const geo = j.geojson ?? null;
-        if (geo && onPreviewGeoJSON) onPreviewGeoJSON(geo);
-        if (!geo && onClearPreview) onClearPreview();
-
-        // areas
-        const total = Number(j.total_km2 ?? null);
-        const avail = Number(j.area_km2 ?? null);
-        setTotalKm2(Number.isFinite(total) ? total : null);
-        setAvailableKm2(Number.isFinite(avail) ? avail : null);
-
-        // pricing (major units from server)
-        const unit = Number(j.unit_price ?? null);
-        const minm = Number(j.min_monthly ?? null);
-        const monthly = Number(j.monthly_price ?? null);
-        const curr = typeof j.unit_currency === "string" ? j.unit_currency : "GBP";
-        setUnitPrice(Number.isFinite(unit) ? unit : null);
-        setMinMonthly(Number.isFinite(minm) ? minm : null);
-        setServerMonthly(Number.isFinite(monthly) ? monthly : null);
-        setCurrency(curr);
-
-        // saleability
-        setSoldOut(Boolean(j.sold_out));
-        setIsOwner(Boolean(j.is_owner));
-        setOwnerBusinessId(j.sold_to_business_id || null);
-      } catch (e: any) {
-        setError(e?.message || "Failed to load preview");
-        setTotalKm2(null);
-        setAvailableKm2(null);
-        setUnitPrice(null);
-        setMinMonthly(null);
-        setServerMonthly(null);
-        setSoldOut(false);
-        setIsOwner(false);
-        setOwnerBusinessId(null);
+      if (!res.ok) {
+        // Network-level failure – treat as sold out (0) but show the message
+        setAvailableKm2(0);
+        setError(`Preview ${res.status}`);
         if (onClearPreview) onClearPreview();
-      } finally {
-        if (!cancelled) setLoading(false);
+        return;
       }
+
+      const j = await res.json();
+
+      if (!j || j.ok === false) {
+        // Server said not purchasable / blocked / sold out
+        const msg =
+          j?.error ||
+          "No purchasable area left for this slot.";
+        setError(msg);
+        setAvailableKm2(0);
+        if (onClearPreview) onClearPreview();
+        return;
+      }
+
+      const km2 = Number(j.area_km2 ?? 0);
+      setAvailableKm2(Number.isFinite(km2) ? km2 : 0);
+
+      if (typeof j.total_km2 === "number") {
+        setTotalKm2(j.total_km2);
+      }
+
+      if (typeof j.rate_per_km2 === "number") setRatePerKm2(j.rate_per_km2);
+      if (typeof j.floor_monthly === "number") setFloorMonthly(j.floor_monthly);
+      if (j.unit_currency) setCurrency(String(j.unit_currency).toUpperCase());
+
+      if (j.geojson && onPreviewGeoJSON) onPreviewGeoJSON(j.geojson);
+    } catch (e: any) {
+      setAvailableKm2(0);
+      setError(e?.message || "Preview error");
+      if (onClearPreview) onClearPreview();
+    } finally {
+      setLoading(false);
     }
-
-    run();
-
-    return () => {
-      cancelled = true;
-      onClearPreview?.();
-    };
-  }, [open, businessId, areaId, onPreviewGeoJSON, onClearPreview]);
+  }
 
   async function startCheckout() {
     setCheckingOut(true);
@@ -160,166 +126,119 @@ export default function AreaSponsorModal({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           businessId,
-          cleanerId: businessId,
           areaId,
-          preview_km2: availableKm2, // keep price consistent with preview
+          slot,
+          // let the function re-validate + price server-side
         }),
       });
 
       const j = await res.json().catch(() => ({}));
+
       if (!res.ok || !j?.ok || !j?.url) {
-        throw new Error(j?.error || "Could not start checkout");
+        const msg =
+          j?.error ||
+          `Checkout failed${res.ok ? "" : ` (${res.status})`}.`;
+        setError(msg);
+        setCheckingOut(false);
+        return;
       }
+
       window.location.href = j.url;
     } catch (e: any) {
-      setError(e?.message || "Could not start checkout.");
+      setError(e?.message || "Checkout error");
       setCheckingOut(false);
     }
   }
 
-  function close() {
-    onClearPreview?.();
-    onClose();
-  }
+  const buyDisabled =
+    loading ||
+    checkingOut ||
+    availableKm2 === null ||
+    availableKm2 <= 0;
 
   if (!open) return null;
 
-  const total = totalKm2;
-  const avail = availableKm2;
-
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-xl rounded-2xl bg-white shadow-xl ring-1 ring-black/5 overflow-hidden">
-        <div className="px-5 py-4 border-b flex items-center justify-between">
-          <h3 className="font-semibold text-lg">
-            Sponsor — {areaName || ""}
-          </h3>
-          <button className="text-sm opacity-70 hover:opacity-100" onClick={close}>
-            Close
-          </button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="bg-white w-[640px] max-w-[95vw] rounded-xl shadow-xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-semibold text-lg">Sponsor — {/** name is shown by parent card */}Bangor</h3>
+          <button className="btn" onClick={onClose}>Close</button>
         </div>
 
-        <div className="px-5 py-4 space-y-4">
-          <div className="rounded-md border text-xs px-3 py-2 bg-emerald-50 border-emerald-200 text-emerald-800">
-            Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub-region.
+        <div className="rounded border p-2 mb-3 text-sm bg-emerald-50 text-emerald-800">
+          Featured sponsorship makes you first in local search results. Preview highlights the
+          purchasable sub-region.
+        </div>
+
+        {error && (
+          <div className="rounded border p-2 mb-3 text-sm bg-red-50 text-red-700">
+            {error}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Total area</div>
+            <div className="font-semibold">
+              {totalKm2 === null ? "—" : `${totalKm2.toFixed(3)} km²`}
+            </div>
           </div>
 
-          {soldOut && !isOwner && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-              No purchasable area left for this slot. Another business already sponsors this area.
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Available area</div>
+            <div className="font-semibold">
+              {availableKm2 === null ? "Loading..." : `${availableKm2.toFixed(3)} km²`}
             </div>
-          )}
+          </div>
 
-          {isOwner && (
-            <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">
-              You already sponsor this area.
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Price per km² / month</div>
+            <div className="font-semibold">
+              {money(ratePerKm2, currency)}
+              <div className="text-[10px] text-gray-500">From server</div>
             </div>
-          )}
+          </div>
 
-          {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-              {error}
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Minimum monthly</div>
+            <div className="font-semibold">
+              {money(floorMonthly, currency)}
+              <div className="text-[10px] text-gray-500">Floor price</div>
             </div>
-          )}
+          </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <Stat
-              label="Total area"
-              value={total != null ? `${total.toFixed(3)} km²` : "—"}
-            />
-            <Stat
-              label="Available area"
-              value={
-                loading
-                  ? "Loading…"
-                  : avail != null
-                  ? `${avail.toFixed(3)} km²`
-                  : "—"
-              }
-            />
-            <Stat
-              label="Price per km² / month"
-              value={unitPrice != null ? formatMoney(unitPrice, currency) : "—"}
-              hint="From server"
-            />
-            <Stat
-              label="Minimum monthly"
-              value={minMonthly != null ? formatMoney(minMonthly, currency) : "—"}
-              hint="Floor price"
-            />
-            <Stat
-              label="Your monthly price"
-              value={
-                loading
-                  ? "Loading…"
-                  : computedMonthly != null
-                  ? formatMoney(computedMonthly, currency)
-                  : "—"
-              }
-              emphasis
-            />
-            <Stat
-              label="Coverage"
-              value={
-                coveragePct == null
-                  ? "—"
-                  : `${coveragePct.toFixed(1)}% of your polygon`
-              }
-            />
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Your monthly price</div>
+            <div className="font-semibold">
+              {availableKm2 === null ? "Loading..." : money(monthly, currency)}
+            </div>
+          </div>
+
+          <div className="rounded border p-3">
+            <div className="text-xs text-gray-500 mb-1">Coverage</div>
+            <div className="font-semibold">
+              {totalKm2 && availableKm2 !== null && totalKm2 > 0
+                ? `${Math.min(100, (availableKm2 / totalKm2) * 100).toFixed(1)}% of your polygon`
+                : "100.0% of your polygon"}
+            </div>
           </div>
         </div>
 
-        <div className="px-5 py-4 border-t flex items-center justify-end gap-2">
-          <button className="btn" onClick={close} disabled={loading || checkingOut}>
+        <div className="flex items-center justify-end gap-2">
+          <button className="btn" onClick={onClose} disabled={checkingOut || loading}>
             Cancel
           </button>
           <button
-            className="btn btn-primary"
+            className={`btn btn-primary ${buyDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
             onClick={startCheckout}
-            disabled={
-              loading ||
-              checkingOut ||
-              soldOut ||
-              isOwner ||
-              !avail ||
-              avail <= 0
-            }
-            title={
-              soldOut
-                ? "Area already has a Featured sponsor"
-                : isOwner
-                ? "You already sponsor this area"
-                : !avail || avail <= 0
-                ? "No purchasable area available"
-                : "Proceed to checkout"
-            }
+            disabled={buyDisabled}
+            title={buyDisabled ? "No purchasable area available" : "Proceed to checkout"}
           >
-            {checkingOut ? "Redirecting…" : "Buy now"}
+            {checkingOut ? "Redirecting..." : buyDisabled ? "Sold out" : "Buy now"}
           </button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  hint,
-  emphasis,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-  emphasis?: boolean;
-}) {
-  return (
-    <div className="rounded-lg border p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className={"mt-1 " + (emphasis ? "text-xl font-semibold" : "text-base font-medium")}>
-        {value}
-      </div>
-      {hint && <div className="text-[10px] text-gray-400 mt-1">{hint}</div>}
     </div>
   );
 }
