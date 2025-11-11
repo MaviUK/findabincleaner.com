@@ -2,31 +2,10 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-// ---- env / setup -----------------------------------------------------------
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
-
-const PUBLIC_SITE_URL = process.env.PUBLIC_SITE_URL || "http://localhost:8888";
-
-// rate/min settings (major units, e.g., GBP)
-const RATE_DEFAULT = Number(process.env.RATE_PER_KM2_PER_MONTH ?? 0);
-const RATE_GOLD = Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? RATE_DEFAULT);
-
-const MIN_DEFAULT = Number(process.env.MIN_PRICE_PER_MONTH ?? 0);
-const MIN_GOLD = Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? MIN_DEFAULT);
-
-// Blocking statuses = others can’t buy
-const BLOCKING = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "paused",
-]);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -34,18 +13,8 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-const clamp2 = (n) => Math.max(0, Math.round(n * 100) / 100);
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 
-// ---- helper: compute price for Featured (slot 1) ---------------------------
-function computeMonthlyMajor(availableKm2) {
-  // Featured = “gold”
-  const unit = Number.isFinite(RATE_GOLD) ? RATE_GOLD : 0;
-  const floor = Number.isFinite(MIN_GOLD) ? MIN_GOLD : 0;
-  const raw = (Number(availableKm2) || 0) * unit;
-  return clamp2(Math.max(floor, raw));
-}
-
-// ---- main handler ----------------------------------------------------------
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
@@ -53,113 +22,96 @@ export default async (req) => {
   try {
     body = await req.json();
   } catch {
-    return json({ ok: false, error: "Invalid JSON body" }, 400);
+    return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const businessId = (body.businessId || body.cleanerId || "").trim();
-  const areaId = (body.areaId || "").trim();
-  // single-slot model: Featured = slot 1
-  const slot = 1;
+  const businessId = String(body.businessId || "").trim();
+  const areaId = String(body.areaId || "").trim();
+  const slot = Number(body.slot ?? 1);
 
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
-  if (!areaId || !/^[0-9a-f-]{36}$/i.test(areaId)) {
-    return json({ ok: false, error: "Missing or invalid areaId" }, 400);
-  }
+  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (!Number.isFinite(slot) || slot < 1) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Check if the slot is already taken by someone else (most recent, blocking)
-    const { data: subs, error: subsErr } = await sb
+    // 1) Check if another business blocks this slot
+    const { data: taken, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id,status,created_at")
+      .select("business_id,status")
       .eq("area_id", areaId)
       .eq("slot", slot)
-      .order("created_at", { ascending: false });
+      .order("created_at", { ascending: false })
+      .limit(1);
 
-    if (subsErr) {
-      return json({ ok: false, error: subsErr.message || "DB error (subs)" }, 500);
+    if (takenErr) throw takenErr;
+
+    if (Array.isArray(taken) && taken.length > 0) {
+      const row = taken[0];
+      const status = String(row.status || "").toLowerCase();
+      if (BLOCKING.has(status) && row.business_id !== businessId) {
+        return json({ ok: false, error: "This slot is already taken.", conflict: true }, 409);
+      }
     }
 
-    const takenRows = (subs || []).filter((r) =>
-      BLOCKING.has(String(r.status || "").toLowerCase())
-    );
-
-    if (takenRows && takenRows.length > 0 && takenRows[0].business_id !== businessId) {
-      return json(
-        { ok: false, error: "This area is already sponsored by another business." },
-        409
-      );
-    }
-
-    // 2) Re-check remaining purchasable sub-geometry (server-side truth)
-    const { data: preview, error: previewErr } = await sb.rpc("area_remaining_preview", {
+    // 2) Recompute available km2 via RPC; reject if 0
+    const { data, error } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
-
-    if (previewErr) {
-      return json({ ok: false, error: previewErr.message || "Preview query failed" }, 500);
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    const area_km2 = Number(row?.area_km2 ?? 0) || 0;
+    if (area_km2 <= 0) {
+      return json({ ok: false, error: "No purchasable area left for this slot." }, 200);
     }
 
-    const previewRow = Array.isArray(preview) ? preview[0] : preview;
-    const availableKm2 = Number(previewRow?.area_km2 ?? 0) || 0;
+    // 3) Pricing
+    const rateMap = {
+      1: Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 1),
+      2: Number(process.env.RATE_SILVER_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 1),
+      3: Number(process.env.RATE_BRONZE_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 1),
+    };
+    const rate_per_km2 = Number.isFinite(rateMap[slot]) ? rateMap[slot] : 1;
 
-    if (!(availableKm2 > 0)) {
-      return json(
-        { ok: false, error: "No purchasable area available for this slot." },
-        409
-      );
-    }
+    const floorMap = {
+      1: Number(process.env.MIN_GOLD_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 1),
+      2: Number(process.env.MIN_SILVER_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 1),
+      3: Number(process.env.MIN_BRONZE_PRICE_PER_MONTH ?? process.env.MIN_PRICE_PER_MONTH ?? 1),
+    };
+    const floor_monthly = Number.isFinite(floorMap[slot]) ? floorMap[slot] : 1;
 
-    // 3) Compute price (in pence)
-    const monthlyMajor = computeMonthlyMajor(availableKm2);
-    const amountPence = Math.max(0, Math.round(monthlyMajor * 100));
-    const currency = (previewRow?.unit_currency || "GBP").toLowerCase();
+    const monthly = Math.max(area_km2 * rate_per_km2, floor_monthly);
+    const amount_cents = Math.max(1, Math.round(monthly * 100));
+    const siteUrl = process.env.PUBLIC_SITE_URL || "http://localhost:5173";
 
-    // 4) Create Stripe Checkout (subscription, dynamic recurring price)
+    // 4) Create a simple recurring price on the fly (or use an existing Price ID if you prefer)
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      // Create a dynamic recurring price
+      success_url: `${siteUrl}/#dashboard?checkout=success`,
+      cancel_url: `${siteUrl}/#dashboard?checkout=cancel`,
       line_items: [
         {
           price_data: {
-            currency,
+            currency: "gbp",
             recurring: { interval: "month" },
             product_data: {
-              name: "Featured Sponsorship",
-              description:
-                "Your listing is featured first in search results for this service area.",
+              name: `Featured Sponsorship — Area ${areaId} (slot ${slot})`,
+              metadata: { area_id: areaId, slot: String(slot), business_id: businessId },
             },
-            unit_amount: amountPence, // integer (pence)
+            unit_amount: amount_cents,
           },
           quantity: 1,
         },
       ],
-      // Have Stripe create a customer if one doesn’t exist
-      customer_creation: "always",
-      success_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
-      // Useful metadata for your webhook
-      subscription_data: {
-        metadata: {
-          business_id: businessId,
-          area_id: areaId,
-          slot: String(slot),
-          monthly_price_pence: String(amountPence),
-          available_km2: String(availableKm2),
-        },
-      },
       metadata: {
-        business_id: businessId,
         area_id: areaId,
         slot: String(slot),
-        monthly_price_pence: String(amountPence),
-        available_km2: String(availableKm2),
+        business_id: businessId,
       },
     });
 
     return json({ ok: true, url: session.url }, 200);
   } catch (e) {
-    console.error("[sponsored-checkout] fatal:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
