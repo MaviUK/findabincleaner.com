@@ -1,17 +1,18 @@
-// src/components/AreaSponsorModal.tsx
 import React, { useEffect, useMemo, useState } from "react";
 
-type Slot = 1; // single featured slot
+type Slot = 1;
 
 type Props = {
   open: boolean;
   onClose: () => void;
 
-  businessId: string;       // cleaner/business id
-  areaId: string;           // service area id
-  slot?: Slot;              // defaults to 1 (featured)
+  businessId: string;
+  areaId: string;
+  slot?: Slot;
 
-  // Map preview hooks (optional but recommended)
+  /** Optional display-only name (fixes build error from caller). */
+  areaName?: string;
+
   onPreviewGeoJSON?: (gj: any | null) => void;
   onClearPreview?: () => void;
 };
@@ -19,16 +20,12 @@ type Props = {
 type PreviewState = {
   loading: boolean;
   error: string | null;
-
-  // from server
   soldOut: boolean;
   totalKm2: number | null;
   availableKm2: number | null;
   priceCents: number | null;
   ratePerKm2: number | null;
   reason?: "owned_by_other" | "no_remaining" | "ok";
-
-  // for overlay
   geojson: any | null;
 };
 
@@ -46,6 +43,7 @@ export default function AreaSponsorModal({
   businessId,
   areaId,
   slot = 1,
+  areaName,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
@@ -65,7 +63,6 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // kick off preview when modal opens
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -78,13 +75,10 @@ export default function AreaSponsorModal({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ businessId, areaId, slot }),
         });
-
         const j = await res.json();
 
         if (!res.ok || !j?.ok) {
-          const msg =
-            j?.error ||
-            (typeof j?.message === "string" ? j.message : "Preview failed");
+          const msg = j?.error || j?.message || "Preview failed";
           throw new Error(msg);
         }
 
@@ -93,8 +87,11 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        const availableKm2 =
-          j.sold_out ? 0 : (typeof j.available_km2 === "number" ? j.available_km2 : 0);
+        const availableKm2 = j.sold_out
+          ? 0
+          : typeof j.available_km2 === "number"
+          ? j.available_km2
+          : 0;
 
         if (!cancelled) {
           setPv({
@@ -103,16 +100,15 @@ export default function AreaSponsorModal({
             soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
             totalKm2,
             availableKm2,
-            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
+            priceCents:
+              typeof j.price_cents === "number" ? j.price_cents : null,
             ratePerKm2:
               typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
             geojson: j.geojson ?? null,
             reason: j.reason,
           });
         }
-
-        // map overlay preview
-        if (onPreviewGeoJSON) onPreviewGeoJSON(j.geojson ?? null);
+        onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
         if (!cancelled) {
           setPv((s) => ({
@@ -127,7 +123,7 @@ export default function AreaSponsorModal({
             geojson: null,
           }));
         }
-        if (onPreviewGeoJSON) onPreviewGeoJSON(null);
+        onPreviewGeoJSON?.(null);
       }
     };
 
@@ -135,12 +131,10 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, businessId, areaId, slot]);
+  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
 
-  // clear preview overlay when closing
   const handleClose = () => {
-    if (onClearPreview) onClearPreview();
+    onClearPreview?.();
     onClose();
   };
 
@@ -165,11 +159,9 @@ export default function AreaSponsorModal({
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ businessId, areaId, slot }),
       });
-
       const j = await res.json();
 
       if (!res.ok || !j?.ok) {
-        // 409s (conflict) get shown inline as a friendly banner
         const message =
           j?.message ||
           j?.error ||
@@ -177,19 +169,14 @@ export default function AreaSponsorModal({
             ? "No purchasable area left for this slot."
             : "Checkout failed");
         setCheckoutErr(message);
-
-        // If the server says it's sold out now, reflect immediately
-        if (res.status === 409) {
-          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
-        }
+        if (res.status === 409) setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
         setCheckingOut(false);
         return;
       }
 
       const url = j.url as string | undefined;
-      if (url) {
-        window.location.assign(url);
-      } else {
+      if (url) window.location.assign(url);
+      else {
         setCheckoutErr("Checkout session missing redirect URL.");
         setCheckingOut(false);
       }
@@ -205,16 +192,20 @@ export default function AreaSponsorModal({
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
       <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">Sponsor — {/* area name removed intentionally */}</div>
-          <button className="btn" onClick={handleClose}>Close</button>
+          <div className="font-semibold">
+            Sponsor — {areaName ? areaName : "Area"}
+          </div>
+          <button className="btn" onClick={handleClose}>
+            Close
+          </button>
         </div>
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub-region.
+            Featured sponsorship makes you first in local search results. Preview
+            highlights the purchasable sub-region.
           </div>
 
-          {/* Error banners */}
           {pv.error && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
               {pv.error}
@@ -240,15 +231,14 @@ export default function AreaSponsorModal({
               value={GBP(pv.ratePerKm2 ?? null)}
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
-            <Stat
-              label="Your monthly price"
-              value={GBP(monthlyPrice)}
-            />
+            <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
             <Stat label="Coverage" value="100.0% of your polygon" />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1">
-            <button className="btn" onClick={handleClose}>Cancel</button>
+            <button className="btn" onClick={handleClose}>
+              Cancel
+            </button>
             <button
               className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
               onClick={startCheckout}
@@ -264,7 +254,6 @@ export default function AreaSponsorModal({
   );
 }
 
-/** Small stat card used in the modal */
 function Stat({
   label,
   value,
