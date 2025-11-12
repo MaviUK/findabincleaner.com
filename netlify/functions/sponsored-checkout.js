@@ -1,145 +1,227 @@
-import { createClient } from "@supabase/supabase-js";
-import Stripe from "stripe";
+// netlify/functions/sponsored-checkout.js
+const { createClient } = require("@supabase/supabase-js");
+const Stripe = require("stripe");
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+/**
+ * Helper to read a numeric env var (defaults to 0 if missing/invalid)
+ */
+function readIntEnv(name, defaultValue) {
+  const raw = process.env[name];
+  const n = raw != null ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : defaultValue;
+}
 
-const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
-const EPS = 1e-6;
-
-export default async (req) => {
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
-
-  let body;
+exports.handler = async (event) => {
   try {
-    body = await req.json();
-  } catch {
-    return json({ ok: false, error: "Invalid JSON" }, 400);
-  }
+    if (event.httpMethod !== "POST") {
+      return {
+        statusCode: 405,
+        body: "Method Not Allowed",
+      };
+    }
 
-  const businessId = (body.businessId || body.cleanerId || "").trim();
-  const areaId = (body.areaId || body.area_id || "").trim();
-  const slot = Number(body.slot || 1);
+    const payload = JSON.parse(event.body || "{}");
+    const businessId = payload.businessId;
+    const areaId = payload.areaId;
+    const slotRaw = payload.slot;
 
-  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
-  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
+    if (!businessId || !areaId) {
+      return {
+        statusCode: 400,
+        body: JSON.stringify({
+          ok: false,
+          error: "Missing businessId or areaId",
+        }),
+      };
+    }
 
-  try {
-    // 1) Hard block: is this featured slot owned by someone else?
-    const { data: takenRows, error: takenErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("business_id, status")
-      .eq("area_id", areaId)
-      .eq("slot", slot);
+    // Slots are 1-based in the DB. Default to 1 if not provided.
+    const slot =
+      Number.isFinite(Number(slotRaw)) && Number(slotRaw) > 0
+        ? Number(slotRaw)
+        : 1;
 
-    if (takenErr) throw takenErr;
-
-    const blocking = (takenRows || []).filter((r) =>
-      BLOCKING.has(String(r.status || "").toLowerCase())
+    const supabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE
     );
-    const ownedByOther =
-      (blocking?.length || 0) > 0 &&
-      String(blocking[0].business_id) !== String(businessId);
 
-    if (ownedByOther) {
-      return json(
-        {
+    // 1. Ask DB how much area is left for this area+slot
+    const { data: previewData, error: previewError } = await supabase.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
+
+    if (previewError) {
+      console.error("area_remaining_preview error", previewError);
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
           ok: false,
-          code: "slot_taken",
-          message: "No purchasable area left for this slot.",
-        },
-        409
-      );
+          error: `Failed to calculate remaining area: ${previewError.message}`,
+        }),
+      };
     }
 
-    // 2) Pull remaining area from our preview RPC and enforce epsilon
-    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
-    if (prevErr) throw prevErr;
+    const previewRow =
+      (Array.isArray(previewData) ? previewData[0] : previewData) || null;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] : previewRow || {};
-    const available_km2 = Math.max(0, Number(row?.area_km2 ?? 0) || 0);
-
-    if (available_km2 <= EPS) {
-      return json(
-        {
+    if (!previewRow) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({
           ok: false,
-          code: "no_remaining",
-          message: "No purchasable area left for this slot.",
-        },
-        409
-      );
+          error: "No preview data returned for this area",
+        }),
+      };
     }
 
-    // 3) Resolve price (rate * available_km2)
-    const rate_per_km2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0
-      ) || 0;
-    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
+    const totalKm2 = Number(previewRow.total_km2) || 0;
+    const availableKm2 = Math.max(
+      0,
+      Number(previewRow.available_km2) || 0
+    );
+    const soldOut = Boolean(previewRow.sold_out);
+    const reason = previewRow.reason || "unknown";
 
-    // 4) Get (or create) the Stripe customer for this business
-    const { data: biz, error: bizErr } = await sb
-      .from("businesses")
-      .select("stripe_customer_id, name, email")
-      .eq("id", businessId)
-      .maybeSingle();
-    if (bizErr) throw bizErr;
-
-    let stripeCustomerId = biz?.stripe_customer_id || null;
-    if (!stripeCustomerId) {
-      const customer = await stripe.customers.create({
-        name: biz?.name || "Customer",
-        email: biz?.email || undefined,
-      });
-      stripeCustomerId = customer.id;
-
-      await sb
-        .from("businesses")
-        .update({ stripe_customer_id: stripeCustomerId })
-        .eq("id", businessId);
+    // If nothing is purchasable, block checkout
+    if (soldOut || availableKm2 <= 0) {
+      return {
+        statusCode: 409, // Conflict
+        body: JSON.stringify({
+          ok: false,
+          error: "No purchasable area for this slot",
+          reason,
+          totalKm2,
+          availableKm2,
+        }),
+      };
     }
 
-    // 5) Create a one-off Checkout Session to start the subscription (or first month)
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      metadata: {
+    // 2. Compute price.
+    //    We use env vars so it matches your existing rate/floor logic.
+    //    - RATE_PER_KM2_PER_MONTH: pennies per km² per month (e.g. 100 = £1)
+    //    - MIN_PRICE_PER_MONTH: floor monthly price in pennies
+    const ratePerKm2Pennies = readIntEnv("RATE_PER_KM2_PER_MONTH", 100); // default £1
+    const minPricePerMonthPennies = readIntEnv("MIN_PRICE_PER_MONTH", 100); // default £1
+
+    const rawMonthlyPennies = Math.round(availableKm2 * ratePerKm2Pennies);
+    const monthlyPricePennies = Math.max(
+      minPricePerMonthPennies,
+      rawMonthlyPennies
+    );
+
+    const currency = "gbp";
+
+    // 3. Create a provisional sponsored_subscriptions row
+    const { data: insertData, error: insertError } = await supabase
+      .from("sponsored_subscriptions")
+      .insert({
         business_id: businessId,
         area_id: areaId,
-        slot: String(slot),
-      },
+        slot,
+        status: "incomplete",
+        price_monthly_pennies: monthlyPricePennies,
+        currency,
+      })
+      .select()
+      .single();
+
+    if (insertError) {
+      console.error("Insert sponsored_subscriptions error", insertError);
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
+          ok: false,
+          error: `Failed to create provisional subscription: ${insertError.message}`,
+        }),
+      };
+    }
+
+    const subscriptionId = insertData.id;
+
+    // 4. Stripe Checkout session
+    const stripeSecret = process.env.STRIPE_SECRET_KEY;
+    if (!stripeSecret) {
+      console.error("Missing STRIPE_SECRET_KEY env var");
+      return {
+        statusCode: 500,
+        body: JSON.stringify({
+          ok: false,
+          error: "Stripe secret key is not configured",
+        }),
+      };
+    }
+
+    const stripe = new Stripe(stripeSecret, { apiVersion: "2024-06-20" });
+
+    const publicSiteUrl = process.env.PUBLIC_SITE_URL || "https://findabincleaner.com";
+
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      payment_method_types: ["card"],
+      success_url: `${publicSiteUrl}/#/dashboard?checkout=success`,
+      cancel_url: `${publicSiteUrl}/#/dashboard?checkout=cancel`,
       line_items: [
         {
           price_data: {
-            currency: "gbp",
-            product_data: {
-              name: "Featured service area",
-              description: "Be shown first in local search for this area.",
+            currency,
+            recurring: {
+              interval: "month",
             },
-            unit_amount: amount_cents, // monthly
-            recurring: { interval: "month" },
+            unit_amount: monthlyPricePennies,
+            product_data: {
+              name: `Featured sponsorship for area`,
+              description: `Area ID ${areaId}, slot ${slot}`,
+            },
           },
           quantity: 1,
         },
       ],
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      metadata: {
+        sponsored_subscription_id: subscriptionId,
+        area_id: areaId,
+        business_id: businessId,
+        slot: String(slot),
+      },
     });
 
-    return json({ ok: true, url: session.url }, 200);
-  } catch (e) {
-    return json({ ok: false, error: e?.message || "Server error" }, 500);
+    // Save the session ID so webhooks/post-verify can tie things together
+    const { error: updateError } = await supabase
+      .from("sponsored_subscriptions")
+      .update({
+        stripe_checkout_session_id: session.id,
+      })
+      .eq("id", subscriptionId);
+
+    if (updateError) {
+      console.error("Update sponsored_subscriptions error", updateError);
+      // Don't fail the checkout just because we couldn't persist the session id;
+      // but do log it.
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        ok: true,
+        url: session.url,
+        subscriptionId,
+        totalKm2,
+        availableKm2,
+        monthlyPricePennies,
+      }),
+    };
+  } catch (err) {
+    console.error("sponsored-checkout handler error", err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        ok: false,
+        error: err.message || "Unknown error",
+      }),
+    };
   }
 };
