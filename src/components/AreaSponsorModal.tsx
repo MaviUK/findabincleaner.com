@@ -1,273 +1,283 @@
-import React, { useEffect, useMemo, useState } from "react";
+// src/components/AreaSponsorModal.tsx
+import React, { useEffect, useState } from "react";
 
-type Slot = 1;
-
-type Props = {
+interface Props {
   open: boolean;
   onClose: () => void;
-
-  businessId: string;
+  // Caller can pass either businessId (old code) or cleanerId (new code)
+  businessId?: string;
+  cleanerId?: string;
   areaId: string;
-  slot?: Slot;
+  slot: number;
+}
 
-  /** Optional display-only name (fixes build error from caller). */
-  areaName?: string;
+type PreviewReason = "ok" | "no_remaining" | "owned_by_other" | "area_not_found" | string;
 
-  onPreviewGeoJSON?: (gj: any | null) => void;
-  onClearPreview?: () => void;
+interface PreviewResponse {
+  total_km2: number;
+  available_km2: number;
+  sold_out: boolean;
+  reason: PreviewReason;
+  // gj is returned from the RPC but we only use it on the backend, so keep it loose
+  gj?: any;
+}
+
+const reasonMessages: Record<PreviewReason, string> = {
+  ok: "",
+  no_remaining: "No purchasable area left for this slot.",
+  owned_by_other: "This slot is already sponsored by another business.",
+  area_not_found: "We couldn’t find this service area.",
 };
 
-type PreviewState = {
-  loading: boolean;
-  error: string | null;
-  soldOut: boolean;
-  totalKm2: number | null;
-  availableKm2: number | null;
-  priceCents: number | null;
-  ratePerKm2: number | null;
-  reason?: "owned_by_other" | "no_remaining" | "ok";
-  geojson: any | null;
-};
+function formatKm2(value: number | null | undefined): string {
+  if (!Number.isFinite(value ?? NaN)) return "—";
+  return `${(value ?? 0).toFixed(3)} km²`;
+}
 
-const GBP = (n: number | null | undefined) =>
-  typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
-
-const fmtKm2 = (n: number | null | undefined) =>
-  typeof n === "number" && Number.isFinite(n) ? `${n.toFixed(3)} km²` : "—";
-
-const EPS = 1e-9;
-
-export default function AreaSponsorModal({
+const AreaSponsorModal: React.FC<Props> = ({
   open,
   onClose,
   businessId,
+  cleanerId,
   areaId,
-  slot = 1,
-  areaName,
-  onPreviewGeoJSON,
-  onClearPreview,
-}: Props) {
-  const [pv, setPv] = useState<PreviewState>({
-    loading: false,
-    error: null,
-    soldOut: false,
-    totalKm2: null,
-    availableKm2: null,
-    priceCents: null,
-    ratePerKm2: null,
-    geojson: null,
-  });
+  slot,
+}) => {
+  const [preview, setPreview] = useState<PreviewResponse | null>(null);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
-  const monthlyPrice = useMemo(() => {
-    if (pv.priceCents == null) return null;
-    return pv.priceCents / 100;
-  }, [pv.priceCents]);
+  const [submitting, setSubmitting] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
+  // Single “effective” business id so both old and new call sites work
+  const effectiveBusinessId = businessId ?? cleanerId ?? "";
+
+  // Fetch preview whenever the modal opens or the area / slot changes
   useEffect(() => {
+    if (!open) return;
+
     let cancelled = false;
-    const run = async () => {
-      if (!open) return;
-      setPv((s) => ({ ...s, loading: true, error: null }));
+    setLoadingPreview(true);
+    setPreviewError(null);
+    setPreview(null);
 
+    (async () => {
       try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
+        const res = await fetch("/api/sponsored/preview", {
           method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ areaId, slot }),
         });
-        const j = await res.json();
 
-        if (!res.ok || !j?.ok) {
-          const msg = j?.error || j?.message || "Preview failed";
-          throw new Error(msg);
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(text || "Preview failed");
         }
 
-        const totalKm2 =
-          typeof j.total_km2 === "number" && isFinite(j.total_km2)
-            ? j.total_km2
-            : null;
-
-        const availableKm2 = j.sold_out
-          ? 0
-          : typeof j.available_km2 === "number"
-          ? j.available_km2
-          : 0;
-
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: null,
-            soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
-            totalKm2,
-            availableKm2,
-            priceCents:
-              typeof j.price_cents === "number" ? j.price_cents : null,
-            ratePerKm2:
-              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: j.geojson ?? null,
-            reason: j.reason,
-          });
-        }
-        onPreviewGeoJSON?.(j.geojson ?? null);
-      } catch (e: any) {
-        if (!cancelled) {
-          setPv((s) => ({
-            ...s,
-            loading: false,
-            error: e?.message || "Preview failed",
-            soldOut: false,
-            totalKm2: null,
-            availableKm2: null,
-            priceCents: null,
-            ratePerKm2: null,
-            geojson: null,
-          }));
-        }
-        onPreviewGeoJSON?.(null);
+        const data = (await res.json()) as PreviewResponse;
+        if (cancelled) return;
+        setPreview(data);
+      } catch (err: any) {
+        if (cancelled) return;
+        console.error("Preview error", err);
+        setPreviewError(err.message || "Preview failed");
+      } finally {
+        if (!cancelled) setLoadingPreview(false);
       }
-    };
+    })();
 
-    run();
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
-
-  const handleClose = () => {
-    onClearPreview?.();
-    onClose();
-  };
-
-  const [checkingOut, setCheckingOut] = useState(false);
-  const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
-
-  const canBuy =
-    open &&
-    !pv.loading &&
-    !pv.soldOut &&
-    (pv.availableKm2 ?? 0) > EPS &&
-    !checkingOut;
-
-  const startCheckout = async () => {
-    if (!canBuy) return;
-    setCheckingOut(true);
-    setCheckoutErr(null);
-
-    try {
-      const res = await fetch("/.netlify/functions/sponsored-checkout", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ businessId, areaId, slot }),
-      });
-      const j = await res.json();
-
-      if (!res.ok || !j?.ok) {
-        const message =
-          j?.message ||
-          j?.error ||
-          (res.status === 409
-            ? "No purchasable area left for this slot."
-            : "Checkout failed");
-        setCheckoutErr(message);
-        if (res.status === 409) setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
-        setCheckingOut(false);
-        return;
-      }
-
-      const url = j.url as string | undefined;
-      if (url) window.location.assign(url);
-      else {
-        setCheckoutErr("Checkout session missing redirect URL.");
-        setCheckingOut(false);
-      }
-    } catch (e: any) {
-      setCheckoutErr(e?.message || "Checkout failed");
-      setCheckingOut(false);
-    }
-  };
+  }, [open, areaId, slot]);
 
   if (!open) return null;
 
+  const totalKm2 = preview?.total_km2 ?? null;
+  const availableKm2 = preview?.available_km2 ?? null;
+  const soldOutFlag = preview?.sold_out ?? false;
+  const reason: PreviewReason = preview?.reason ?? "ok";
+
+  const hasNoArea =
+    soldOutFlag || (availableKm2 !== null && availableKm2 <= 0) || reason === "no_remaining";
+
+  const canBuy =
+    !loadingPreview &&
+    !hasNoArea &&
+    !previewError &&
+    !!effectiveBusinessId &&
+    availableKm2 !== null &&
+    availableKm2 > 0;
+
+  const topError =
+    previewError ||
+    (reason !== "ok" && reasonMessages[reason]) ||
+    (hasNoArea ? "No purchasable area left for this slot." : null);
+
+  // You can wire this up to a real rate endpoint if you like.
+  const pricePerKm2 = 1; // £1 per km² / month (placeholder)
+  const monthlyPrice =
+    availableKm2 && Number.isFinite(availableKm2) ? availableKm2 * pricePerKm2 : 0;
+
+  const handleBuyNow = async () => {
+    if (!canBuy) return;
+
+    if (!effectiveBusinessId) {
+      setCheckoutError("Missing business ID. Please sign in again.");
+      return;
+    }
+
+    setCheckoutError(null);
+    setSubmitting(true);
+
+    try {
+      const res = await fetch("/api/sponsored/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          areaId,
+          slot,
+          businessId: effectiveBusinessId,
+        }),
+      });
+
+      if (!res.ok) {
+        // 409 means someone else grabbed it between preview and checkout
+        if (res.status === 409) {
+          setCheckoutError("This slot has just been taken by another business.");
+          // Optional: re-fetch preview so the UI updates
+          return;
+        }
+
+        const text = await res.text();
+        throw new Error(text || "Checkout failed");
+      }
+
+      const json = await res.json();
+      if (json && json.url) {
+        window.location.href = json.url;
+      } else {
+        setCheckoutError("Unexpected response from checkout.");
+      }
+    } catch (err: any) {
+      console.error("Checkout error", err);
+      setCheckoutError(err.message || "Checkout failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
-      <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">
-            Sponsor — {areaName ? areaName : "Area"}
-          </div>
-          <button className="btn" onClick={handleClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="w-full max-w-xl rounded-lg bg-white shadow-lg">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b px-6 py-4">
+          <h2 className="text-lg font-semibold">Sponsor — {/** area name shown in parent */}Area</h2>
+          <button
+            type="button"
+            className="text-sm text-gray-500 hover:text-gray-700"
+            onClick={onClose}
+          >
             Close
           </button>
         </div>
 
-        <div className="p-4 space-y-3">
-          <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results. Preview
-            highlights the purchasable sub-region.
+        {/* Info banner */}
+        <div className="border-b bg-green-50 px-6 py-3 text-sm text-green-800">
+          Featured sponsorship makes you first in local search results. Preview highlights the
+          purchasable sub-region.
+        </div>
+
+        {/* Error / reason banner */}
+        {topError && (
+          <div className="border-b bg-red-50 px-6 py-3 text-sm text-red-700">
+            {topError || "Preview failed"}
+          </div>
+        )}
+
+        {/* Body */}
+        <div className="grid gap-4 px-6 py-5 sm:grid-cols-2">
+          {/* Total area */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Total area</div>
+            <div className="mt-1 text-lg font-semibold">
+              {loadingPreview ? "Loading…" : formatKm2(totalKm2)}
+            </div>
           </div>
 
-          {pv.error && (
-            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              {pv.error}
+          {/* Available area */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Available area</div>
+            <div className="mt-1 text-lg font-semibold text-gray-900">
+              {loadingPreview ? "Loading…" : formatKm2(availableKm2)}
             </div>
-          )}
-          {pv.soldOut && (
-            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              No purchasable area left for this slot.
-            </div>
-          )}
-          {checkoutErr && (
-            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              {checkoutErr}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
-            <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
-            <Stat
-              label="Price per km² / month"
-              hint="From server"
-              value={GBP(pv.ratePerKm2 ?? null)}
-            />
-            <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
-            <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-            <Stat label="Coverage" value="100.0% of your polygon" />
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-1">
-            <button className="btn" onClick={handleClose}>
-              Cancel
-            </button>
-            <button
-              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
-              onClick={startCheckout}
-              disabled={!canBuy}
-              title={!canBuy ? "No purchasable area available" : "Buy now"}
-            >
-              {checkingOut ? "Redirecting..." : "Buy now"}
-            </button>
+          {/* Price per km² / month */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Price per km² / month</div>
+            <div className="mt-1 text-lg font-semibold">£{pricePerKm2.toFixed(2)}</div>
+            <div className="mt-1 text-xs text-gray-400">From server</div>
           </div>
+
+          {/* Minimum monthly */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Minimum monthly</div>
+            <div className="mt-1 text-lg font-semibold">£1.00</div>
+            <div className="mt-1 text-xs text-gray-400">Floor price</div>
+          </div>
+
+          {/* Your monthly price */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Your monthly price</div>
+            <div className="mt-1 text-lg font-semibold">
+              {loadingPreview ? "—" : `£${monthlyPrice.toFixed(2)}`}
+            </div>
+          </div>
+
+          {/* Coverage */}
+          <div className="rounded border px-4 py-3">
+            <div className="text-xs uppercase text-gray-500">Coverage</div>
+            <div className="mt-1 text-lg font-semibold">
+              {loadingPreview || !preview
+                ? "—"
+                : hasNoArea
+                ? "0.0% of your polygon"
+                : "100.0% of your polygon"}
+            </div>
+          </div>
+        </div>
+
+        {/* Checkout error */}
+        {checkoutError && (
+          <div className="px-6 pb-2 text-sm text-red-600">{checkoutError}</div>
+        )}
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 border-t px-6 py-4">
+          <button
+            type="button"
+            className="rounded border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+            onClick={onClose}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleBuyNow}
+            disabled={!canBuy || submitting}
+            className={`rounded px-4 py-2 text-sm font-semibold text-white ${
+              !canBuy || submitting
+                ? "cursor-not-allowed bg-gray-400"
+                : "bg-green-600 hover:bg-green-700"
+            }`}
+          >
+            {submitting ? "Processing…" : "Buy now"}
+          </button>
         </div>
       </div>
     </div>
   );
-}
+};
 
-function Stat({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
-  return (
-    <div className="border rounded-lg p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="mt-1 font-semibold">{value}</div>
-      {hint && <div className="text-[10px] text-gray-400">{hint}</div>}
-    </div>
-  );
-}
+export default AreaSponsorModal;
