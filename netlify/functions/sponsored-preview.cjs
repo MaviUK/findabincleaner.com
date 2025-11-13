@@ -1,8 +1,8 @@
-// netlify/functions/sponsored-preview.js
-// Minimal test handler: no imports, no Supabase, no Stripe.
+// netlify/functions/sponsored-preview.cjs
+// Minimal test handler: CommonJS (.cjs) so it works even with "type": "module"
 
 exports.handler = async (event) => {
-  console.log("[sponsored-preview] minimal handler invoked");
+  console.log("[sponsored-preview] minimal CJS handler invoked");
 
   return {
     statusCode: 200,
@@ -11,7 +11,7 @@ exports.handler = async (event) => {
     },
     body: JSON.stringify({
       ok: true,
-      message: "minimal sponsored-preview is alive",
+      message: "minimal sponsored-preview is alive (CJS)",
       method: event.httpMethod,
     }),
   };
