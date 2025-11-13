@@ -771,7 +771,6 @@ export default function ServiceAreaEditor({
           onClose={() => setManageOpen(false)}
           businessId={myBusinessId}
           areaId={manageAreaId}
-          slot={1} // single Featured slot
         />
       )}
     </>
