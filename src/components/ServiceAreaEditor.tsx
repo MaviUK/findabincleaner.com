@@ -759,9 +759,8 @@ export default function ServiceAreaEditor({
           }}
           businessId={myBusinessId}
           areaId={sponsorAreaId}
-          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
-          onPreviewGeoJSON={(multi) => drawPreview(multi)}
-          onClearPreview={() => clearPreview()}
+          onPreviewGeoJSON={drawPreview}
+          onClearPreview={clearPreview}
         />
       )}
 
@@ -770,7 +769,7 @@ export default function ServiceAreaEditor({
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          cleanerId={myBusinessId}
+          businessId={myBusinessId}
           areaId={manageAreaId}
           slot={1} // single Featured slot
         />
