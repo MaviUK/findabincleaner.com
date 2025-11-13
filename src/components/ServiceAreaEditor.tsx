@@ -309,15 +309,15 @@ export default function ServiceAreaEditor({
       setAvailLoading((m) => ({ ...m, [areaId]: true }));
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId: myBusinessId,
-            cleanerId: myBusinessId,
-            areaId,
-            slot: 1, // back-compat; server may ignore
-          }),
-        });
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    businessId: myBusinessId,
+    cleanerId: myBusinessId,
+    areaId,
+    slot: 1,
+  }),
+});
 
         if (!res.ok) {
           setAvail((m) => ({ ...m, [areaId]: undefined }));
