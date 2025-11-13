@@ -771,11 +771,13 @@ export default function ServiceAreaEditor({
       {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
-          open={manageOpen}
-          onClose={() => setManageOpen(false)}
-          cleanerId={myBusinessId}
-          areaId={manageAreaId}
-          slot={1} // single Featured slot
+          {...({
+            open: manageOpen,
+            onClose: () => setManageOpen(false),
+            cleanerId: myBusinessId,
+            areaId: manageAreaId,
+            slot: 1, // single Featured slot
+          } as any)}
         />
       )}
     </>
