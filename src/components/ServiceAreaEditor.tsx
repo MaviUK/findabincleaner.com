@@ -749,7 +749,7 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-      {/* Sponsor modal */}
+          {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
@@ -759,10 +759,12 @@ export default function ServiceAreaEditor({
           }}
           businessId={myBusinessId}
           areaId={sponsorAreaId}
+          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name ?? ""}
           onPreviewGeoJSON={drawPreview}
           onClearPreview={clearPreview}
         />
       )}
+
 
       {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
