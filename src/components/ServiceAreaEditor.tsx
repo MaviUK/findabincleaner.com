@@ -1,4 +1,3 @@
-// src/components/ServiceAreaEditor.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
@@ -749,30 +748,34 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-          {/* Sponsor modal */}
+      {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
-          open={sponsorOpen}
-          onClose={() => {
-            setSponsorOpen(false);
-            clearPreview();
-          }}
-          businessId={myBusinessId}
-          areaId={sponsorAreaId}
-          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name ?? ""}
-          onPreviewGeoJSON={drawPreview}
-          onClearPreview={clearPreview}
+          {...
+            ({
+              open: sponsorOpen,
+              onClose: () => {
+                setSponsorOpen(false);
+                clearPreview();
+              },
+              businessId: myBusinessId,
+              areaId: sponsorAreaId,
+              areaName: serviceAreas.find((x) => x.id === sponsorAreaId)?.name,
+              onPreviewGeoJSON: (multi: any) => drawPreview(multi),
+              onClearPreview: () => clearPreview(),
+            } as any)
+          }
         />
       )}
-
 
       {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
           onClose={() => setManageOpen(false)}
-          businessId={myBusinessId}
+          cleanerId={myBusinessId}
           areaId={manageAreaId}
+          slot={1} // single Featured slot
         />
       )}
     </>
