@@ -1,25 +1,36 @@
 // src/components/AreaSponsorModal.tsx
 import React, { useEffect, useState } from "react";
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-  // Caller can pass either businessId (old code) or cleanerId (new code)
-  businessId?: string;
-  cleanerId?: string;
-  areaId: string;
-  slot: number;
-}
-
-type PreviewReason = "ok" | "no_remaining" | "owned_by_other" | "area_not_found" | string;
+type PreviewReason =
+  | "ok"
+  | "no_remaining"
+  | "owned_by_other"
+  | "area_not_found"
+  | string;
 
 interface PreviewResponse {
   total_km2: number;
   available_km2: number;
   sold_out: boolean;
   reason: PreviewReason;
-  // gj is returned from the RPC but we only use it on the backend, so keep it loose
   gj?: any;
+}
+
+interface Props {
+  open: boolean;
+  onClose: () => void;
+
+  // Caller can pass either businessId (old) or cleanerId (new).
+  businessId?: string;
+  cleanerId?: string;
+
+  areaId: string;
+  slot?: number;
+
+  // Extra props that ServiceAreaEditor already passes
+  areaName?: string;
+  onPreviewGeoJSON?: (multi: any) => void;
+  onClearPreview?: () => void;
 }
 
 const reasonMessages: Record<PreviewReason, string> = {
@@ -41,6 +52,9 @@ const AreaSponsorModal: React.FC<Props> = ({
   cleanerId,
   areaId,
   slot,
+  areaName,
+  onPreviewGeoJSON,
+  onClearPreview,
 }) => {
   const [preview, setPreview] = useState<PreviewResponse | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
@@ -49,10 +63,10 @@ const AreaSponsorModal: React.FC<Props> = ({
   const [submitting, setSubmitting] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
 
-  // Single “effective” business id so both old and new call sites work
+  // Let either ID work
   const effectiveBusinessId = businessId ?? cleanerId ?? "";
 
-  // Fetch preview whenever the modal opens or the area / slot changes
+  // Fetch preview whenever the modal opens / area / slot changes
   useEffect(() => {
     if (!open) return;
 
@@ -60,6 +74,9 @@ const AreaSponsorModal: React.FC<Props> = ({
     setLoadingPreview(true);
     setPreviewError(null);
     setPreview(null);
+
+    // If caller wants to clear any existing highlight, do it up front
+    if (onClearPreview) onClearPreview();
 
     (async () => {
       try {
@@ -76,7 +93,13 @@ const AreaSponsorModal: React.FC<Props> = ({
 
         const data = (await res.json()) as PreviewResponse;
         if (cancelled) return;
+
         setPreview(data);
+
+        // Pass highlighted GeoJSON back to map if caller wants it
+        if (onPreviewGeoJSON && data.gj && data.reason === "ok") {
+          onPreviewGeoJSON(data.gj);
+        }
       } catch (err: any) {
         if (cancelled) return;
         console.error("Preview error", err);
@@ -89,7 +112,14 @@ const AreaSponsorModal: React.FC<Props> = ({
     return () => {
       cancelled = true;
     };
-  }, [open, areaId, slot]);
+  }, [open, areaId, slot, onPreviewGeoJSON, onClearPreview]);
+
+  // Clear highlight when the modal closes
+  useEffect(() => {
+    if (!open && onClearPreview) {
+      onClearPreview();
+    }
+  }, [open, onClearPreview]);
 
   if (!open) return null;
 
@@ -99,7 +129,9 @@ const AreaSponsorModal: React.FC<Props> = ({
   const reason: PreviewReason = preview?.reason ?? "ok";
 
   const hasNoArea =
-    soldOutFlag || (availableKm2 !== null && availableKm2 <= 0) || reason === "no_remaining";
+    soldOutFlag ||
+    (availableKm2 !== null && availableKm2 <= 0) ||
+    reason === "no_remaining";
 
   const canBuy =
     !loadingPreview &&
@@ -114,10 +146,12 @@ const AreaSponsorModal: React.FC<Props> = ({
     (reason !== "ok" && reasonMessages[reason]) ||
     (hasNoArea ? "No purchasable area left for this slot." : null);
 
-  // You can wire this up to a real rate endpoint if you like.
-  const pricePerKm2 = 1; // £1 per km² / month (placeholder)
+  // Temporary rate (you can still wire this to /api/area-rate if you like)
+  const pricePerKm2 = 1; // £1 per km² / month
   const monthlyPrice =
-    availableKm2 && Number.isFinite(availableKm2) ? availableKm2 * pricePerKm2 : 0;
+    availableKm2 && Number.isFinite(availableKm2)
+      ? availableKm2 * pricePerKm2
+      : 0;
 
   const handleBuyNow = async () => {
     if (!canBuy) return;
@@ -142,10 +176,10 @@ const AreaSponsorModal: React.FC<Props> = ({
       });
 
       if (!res.ok) {
-        // 409 means someone else grabbed it between preview and checkout
         if (res.status === 409) {
-          setCheckoutError("This slot has just been taken by another business.");
-          // Optional: re-fetch preview so the UI updates
+          setCheckoutError(
+            "This slot has just been taken by another business.",
+          );
           return;
         }
 
@@ -172,7 +206,9 @@ const AreaSponsorModal: React.FC<Props> = ({
       <div className="w-full max-w-xl rounded-lg bg-white shadow-lg">
         {/* Header */}
         <div className="flex items-center justify-between border-b px-6 py-4">
-          <h2 className="text-lg font-semibold">Sponsor — {/** area name shown in parent */}Area</h2>
+          <h2 className="text-lg font-semibold">
+            Sponsor — {areaName || "Area"}
+          </h2>
           <button
             type="button"
             className="text-sm text-gray-500 hover:text-gray-700"
@@ -184,8 +220,8 @@ const AreaSponsorModal: React.FC<Props> = ({
 
         {/* Info banner */}
         <div className="border-b bg-green-50 px-6 py-3 text-sm text-green-800">
-          Featured sponsorship makes you first in local search results. Preview highlights the
-          purchasable sub-region.
+          Featured sponsorship makes you first in local search results. Preview
+          highlights the purchasable sub-region.
         </div>
 
         {/* Error / reason banner */}
@@ -207,7 +243,9 @@ const AreaSponsorModal: React.FC<Props> = ({
 
           {/* Available area */}
           <div className="rounded border px-4 py-3">
-            <div className="text-xs uppercase text-gray-500">Available area</div>
+            <div className="text-xs uppercase text-gray-500">
+              Available area
+            </div>
             <div className="mt-1 text-lg font-semibold text-gray-900">
               {loadingPreview ? "Loading…" : formatKm2(availableKm2)}
             </div>
@@ -215,21 +253,29 @@ const AreaSponsorModal: React.FC<Props> = ({
 
           {/* Price per km² / month */}
           <div className="rounded border px-4 py-3">
-            <div className="text-xs uppercase text-gray-500">Price per km² / month</div>
-            <div className="mt-1 text-lg font-semibold">£{pricePerKm2.toFixed(2)}</div>
+            <div className="text-xs uppercase text-gray-500">
+              Price per km² / month
+            </div>
+            <div className="mt-1 text-lg font-semibold">
+              £{pricePerKm2.toFixed(2)}
+            </div>
             <div className="mt-1 text-xs text-gray-400">From server</div>
           </div>
 
           {/* Minimum monthly */}
           <div className="rounded border px-4 py-3">
-            <div className="text-xs uppercase text-gray-500">Minimum monthly</div>
+            <div className="text-xs uppercase text-gray-500">
+              Minimum monthly
+            </div>
             <div className="mt-1 text-lg font-semibold">£1.00</div>
             <div className="mt-1 text-xs text-gray-400">Floor price</div>
           </div>
 
           {/* Your monthly price */}
           <div className="rounded border px-4 py-3">
-            <div className="text-xs uppercase text-gray-500">Your monthly price</div>
+            <div className="text-xs uppercase text-gray-500">
+              Your monthly price
+            </div>
             <div className="mt-1 text-lg font-semibold">
               {loadingPreview ? "—" : `£${monthlyPrice.toFixed(2)}`}
             </div>
@@ -250,7 +296,9 @@ const AreaSponsorModal: React.FC<Props> = ({
 
         {/* Checkout error */}
         {checkoutError && (
-          <div className="px-6 pb-2 text-sm text-red-600">{checkoutError}</div>
+          <div className="px-6 pb-2 text-sm text-red-600">
+            {checkoutError}
+          </div>
         )}
 
         {/* Footer */}
