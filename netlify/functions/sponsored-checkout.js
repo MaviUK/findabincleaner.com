@@ -12,11 +12,20 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
+const BLOCKING = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "paused",
+]);
 const EPS = 1e-6;
 
 export default async (req) => {
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (req.method !== "POST") {
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
 
   let body;
   try {
@@ -62,16 +71,32 @@ export default async (req) => {
     }
 
     // 2) Pull remaining area from our preview RPC and enforce epsilon
-    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
+    const { data: previewRow, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] : previewRow || {};
-    const available_km2 = Math.max(0, Number(row?.area_km2 ?? 0) || 0);
+    const row = Array.isArray(previewRow)
+      ? previewRow[0] || {}
+      : previewRow || {};
 
-    if (available_km2 <= EPS) {
+    const rawAvailable =
+      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
+
+    let available_km2 = Number(rawAvailable);
+    if (!Number.isFinite(available_km2)) available_km2 = 0;
+    available_km2 = Math.max(0, available_km2);
+
+    const soldOutFlag =
+      typeof row.sold_out === "boolean"
+        ? row.sold_out
+        : available_km2 <= EPS;
+
+    if (soldOutFlag || available_km2 <= EPS) {
       return json(
         {
           ok: false,
@@ -85,9 +110,15 @@ export default async (req) => {
     // 3) Resolve price (rate * available_km2)
     const rate_per_km2 =
       Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+          process.env.RATE_PER_KM2_PER_MONTH ??
+          0
       ) || 0;
-    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
+
+    const amount_cents = Math.max(
+      1,
+      Math.round(available_km2 * rate_per_km2 * 100)
+    );
 
     // 4) Get (or create) the Stripe customer for this business
     const { data: biz, error: bizErr } = await sb
@@ -111,7 +142,7 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
-    // 5) Create a one-off Checkout Session to start the subscription (or first month)
+    // 5) Create a subscription Checkout Session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
