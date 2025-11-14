@@ -43,7 +43,7 @@ export default async (req) => {
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Hard block: is this featured slot owned by someone else?
+    // 1) Is slot taken by someone else?
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
@@ -70,7 +70,7 @@ export default async (req) => {
       );
     }
 
-    // 2) Pull remaining area from our preview RPC and enforce epsilon
+    // 2) Remaining area from the same RPC
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
@@ -91,12 +91,7 @@ export default async (req) => {
     if (!Number.isFinite(available_km2)) available_km2 = 0;
     available_km2 = Math.max(0, available_km2);
 
-    const soldOutFlag =
-      typeof row.sold_out === "boolean"
-        ? row.sold_out
-        : available_km2 <= EPS;
-
-    if (soldOutFlag || available_km2 <= EPS) {
+    if (available_km2 <= EPS) {
       return json(
         {
           ok: false,
@@ -107,7 +102,7 @@ export default async (req) => {
       );
     }
 
-    // 3) Resolve price (rate * available_km2)
+    // 3) Price
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -120,7 +115,7 @@ export default async (req) => {
       Math.round(available_km2 * rate_per_km2 * 100)
     );
 
-    // 4) Get (or create) the Stripe customer for this business
+    // 4) Get or create Stripe customer
     const { data: biz, error: bizErr } = await sb
       .from("businesses")
       .select("stripe_customer_id, name, email")
@@ -142,7 +137,7 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
-    // 5) Create a subscription Checkout Session
+    // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
@@ -159,7 +154,7 @@ export default async (req) => {
               name: "Featured service area",
               description: "Be shown first in local search for this area.",
             },
-            unit_amount: amount_cents, // monthly
+            unit_amount: amount_cents,
             recurring: { interval: "month" },
           },
           quantity: 1,
