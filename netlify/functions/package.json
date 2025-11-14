@@ -1,9 +1,8 @@
 {
-  "name": "web",
   "private": true,
-  "type": "module",
   "dependencies": {
-    "@supabase/supabase-js": "^2.47.10",
+    "@supabase/supabase-js": "^2.56.0",
+    "@turf/turf": "^7.2.0",
     "stripe": "^14.0.0"
   }
 }
