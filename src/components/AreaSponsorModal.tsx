@@ -1,294 +1,273 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+
+type Slot = 1;
 
 type Props = {
   open: boolean;
   onClose: () => void;
+
   businessId: string;
   areaId: string;
+  slot?: Slot;
 
-  // Optional extras – only used when the caller wants map highlighting
+  /** Optional display-only name (fixes build error from caller). */
   areaName?: string;
-  onPreviewGeoJSON?: (multi: any | null) => void;
+
+  onPreviewGeoJSON?: (gj: any | null) => void;
   onClearPreview?: () => void;
 };
 
 type PreviewState = {
-  total_km2: number;
-  available_km2: number;
-  price_per_km2: number;
-  monthly_price: number;
-  min_monthly: number;
-  coverage_pct: number;
-  sold_out: boolean;
-  reason?: string | null;
+  loading: boolean;
+  error: string | null;
+  soldOut: boolean;
+  totalKm2: number | null;
+  availableKm2: number | null;
+  priceCents: number | null;
+  ratePerKm2: number | null;
+  reason?: "owned_by_other" | "no_remaining" | "ok";
+  geojson: any | null;
 };
+
+const GBP = (n: number | null | undefined) =>
+  typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
 
 const fmtKm2 = (n: number | null | undefined) =>
-  n == null || Number.isNaN(n) ? "—" : `${n.toFixed(3)} km²`;
+  typeof n === "number" && Number.isFinite(n) ? `${n.toFixed(3)} km²` : "—";
 
-const fmtMoney = (n: number | null | undefined) =>
-  n == null || Number.isNaN(n) ? "—" : `£${n.toFixed(2)}`;
+const EPS = 1e-9;
 
-const fmtPercent = (n: number | null | undefined) =>
-  n == null || Number.isNaN(n) ? "—" : `${n.toFixed(1)}%`;
-
-const initialPreview: PreviewState = {
-  total_km2: 0,
-  available_km2: 0,
-  price_per_km2: 0,
-  monthly_price: 0,
-  min_monthly: 0,
-  coverage_pct: 0,
-  sold_out: false,
-  reason: undefined,
-};
-
-const AreaSponsorModal: React.FC<Props> = ({
+export default function AreaSponsorModal({
   open,
   onClose,
   businessId,
   areaId,
+  slot = 1,
   areaName,
   onPreviewGeoJSON,
   onClearPreview,
-}) => {
-  const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<PreviewState>(initialPreview);
-  const [error, setError] = useState<string | null>(null);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+}: Props) {
+  const [pv, setPv] = useState<PreviewState>({
+    loading: false,
+    error: null,
+    soldOut: false,
+    totalKm2: null,
+    availableKm2: null,
+    priceCents: null,
+    ratePerKm2: null,
+    geojson: null,
+  });
 
-  // Load preview whenever modal opens
+  const monthlyPrice = useMemo(() => {
+    if (pv.priceCents == null) return null;
+    return pv.priceCents / 100;
+  }, [pv.priceCents]);
+
   useEffect(() => {
-    if (!open || !areaId || !businessId) return;
-
     let cancelled = false;
-
     const run = async () => {
-      setLoading(true);
-      setError(null);
-      setPreviewError(null);
-      setPreview(initialPreview);
-
-      // Clear any existing highlight on the map if parent provided a callback
-      onClearPreview?.();
+      if (!open) return;
+      setPv((s) => ({ ...s, loading: true, error: null }));
 
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId,
-            cleanerId: businessId, // back-compat with older API
-            areaId,
-            slot: 1,
-          }),
+          body: JSON.stringify({ businessId, areaId, slot }),
         });
+        const j = await res.json();
 
-        if (!res.ok) {
-          throw new Error(`Preview failed (${res.status})`);
+        if (!res.ok || !j?.ok) {
+          const msg = j?.error || j?.message || "Preview failed";
+          throw new Error(msg);
         }
 
-        const json = await res.json();
+        const totalKm2 =
+          typeof j.total_km2 === "number" && isFinite(j.total_km2)
+            ? j.total_km2
+            : null;
 
-        if (!json || json.ok === false) {
-          throw new Error(json?.message || "Preview failed");
+        const availableKm2 = j.sold_out
+          ? 0
+          : typeof j.available_km2 === "number"
+          ? j.available_km2
+          : 0;
+
+        if (!cancelled) {
+          setPv({
+            loading: false,
+            error: null,
+            soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
+            totalKm2,
+            availableKm2,
+            priceCents:
+              typeof j.price_cents === "number" ? j.price_cents : null,
+            ratePerKm2:
+              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+            geojson: j.geojson ?? null,
+            reason: j.reason,
+          });
         }
-
-        // Be tolerant about field names – map what we expect
-        const d = json.preview || json;
-
-        const next: PreviewState = {
-          total_km2:
-            Number(d.total_km2 ?? d.totalKm2 ?? d.total_area_km2 ?? 0) || 0,
-          available_km2:
-            Number(d.available_km2 ?? d.availableKm2 ?? d.available_area_km2 ?? 0) || 0,
-          price_per_km2: Number(d.price_per_km2 ?? d.rate_per_km2 ?? d.pricePerKm2 ?? 0) || 0,
-          monthly_price: Number(d.monthly_price ?? d.price ?? d.monthlyPrice ?? 0) || 0,
-          min_monthly: Number(d.min_monthly ?? d.minimum_monthly ?? d.minMonthly ?? 0) || 0,
-          coverage_pct: Number(d.coverage_pct ?? d.coverage ?? 0) || 0,
-          sold_out: Boolean(d.sold_out || d.soldOut),
-          reason: d.reason ?? null,
-        };
-
-        if (cancelled) return;
-
-        setPreview(next);
-
-        // If server returned a GeoJSON MultiPolygon, ask parent to draw it
-        const gj = d.gj || d.geojson || d.multi;
-        if (gj && onPreviewGeoJSON) {
-          onPreviewGeoJSON(gj);
-        }
+        onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
-        if (cancelled) return;
-        console.error("[AreaSponsorModal] preview error", e);
-        setPreviewError(e?.message || "Preview failed");
-      } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setPv((s) => ({
+            ...s,
+            loading: false,
+            error: e?.message || "Preview failed",
+            soldOut: false,
+            totalKm2: null,
+            availableKm2: null,
+            priceCents: null,
+            ratePerKm2: null,
+            geojson: null,
+          }));
+        }
+        onPreviewGeoJSON?.(null);
       }
     };
 
     run();
-
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, onPreviewGeoJSON, onClearPreview]);
+  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
 
-  const handleBuy = async () => {
-    if (!businessId || !areaId) return;
-    setSubmitting(true);
-    setError(null);
+  const handleClose = () => {
+    onClearPreview?.();
+    onClose();
+  };
+
+  const [checkingOut, setCheckingOut] = useState(false);
+  const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
+
+  const canBuy =
+    open &&
+    !pv.loading &&
+    !pv.soldOut &&
+    (pv.availableKm2 ?? 0) > EPS &&
+    !checkingOut;
+
+  const startCheckout = async () => {
+    if (!canBuy) return;
+    setCheckingOut(true);
+    setCheckoutErr(null);
 
     try {
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          businessId,
-          cleanerId: businessId,
-          areaId,
-          slot: 1,
-        }),
+        body: JSON.stringify({ businessId, areaId, slot }),
       });
+      const j = await res.json();
 
-      if (!res.ok) {
-        throw new Error(`Checkout failed (${res.status})`);
+      if (!res.ok || !j?.ok) {
+        const message =
+          j?.message ||
+          j?.error ||
+          (res.status === 409
+            ? "No purchasable area left for this slot."
+            : "Checkout failed");
+        setCheckoutErr(message);
+        if (res.status === 409) setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+        setCheckingOut(false);
+        return;
       }
 
-      const json = await res.json();
-
-      if (!json || json.ok === false) {
-        throw new Error(json?.message || "Checkout failed");
-      }
-
-      const url: string | undefined = json.url || json.checkout_url;
-      if (url) {
-        window.location.href = url;
-      } else {
-        throw new Error("No checkout URL returned");
+      const url = j.url as string | undefined;
+      if (url) window.location.assign(url);
+      else {
+        setCheckoutErr("Checkout session missing redirect URL.");
+        setCheckingOut(false);
       }
     } catch (e: any) {
-      console.error("[AreaSponsorModal] checkout error", e);
-      setError(e?.message || "Checkout failed");
-    } finally {
-      setSubmitting(false);
+      setCheckoutErr(e?.message || "Checkout failed");
+      setCheckingOut(false);
     }
   };
 
   if (!open) return null;
 
-  const soldOut = preview.sold_out || preview.available_km2 <= 0;
-  const bannerText = soldOut
-    ? "No purchasable area left for this slot."
-    : "Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub-region.";
-
-  const bannerClass = soldOut
-    ? "bg-red-50 border border-red-200 text-red-700"
-    : "bg-emerald-50 border border-emerald-200 text-emerald-700";
-
-  const areaTitle = areaName || "Service Area";
-
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-lg shadow-xl max-w-xl w-full mx-4">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
+      <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h2 className="font-semibold text-lg">Sponsor — {areaTitle}</h2>
-          <button
-            type="button"
-            className="text-gray-500 hover:text-gray-700 text-sm"
-            onClick={onClose}
-          >
+          <div className="font-semibold">
+            Sponsor — {areaName ? areaName : "Area"}
+          </div>
+          <button className="btn" onClick={handleClose}>
             Close
           </button>
         </div>
 
-        <div className="px-4 py-3 space-y-3">
-          <div className={`text-sm rounded-md px-3 py-2 ${bannerClass}`}>
-            {bannerText}
+        <div className="p-4 space-y-3">
+          <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
+            Featured sponsorship makes you first in local search results. Preview
+            highlights the purchasable sub-region.
           </div>
 
-          {previewError && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
-              Preview failed: {previewError}
+          {pv.error && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              {pv.error}
+            </div>
+          )}
+          {pv.soldOut && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              No purchasable area left for this slot.
+            </div>
+          )}
+          {checkoutErr && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              {checkoutErr}
             </div>
           )}
 
-          {error && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
-              {error}
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Total area</div>
-              <div className="font-semibold">{fmtKm2(preview.total_km2)}</div>
-            </div>
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Available area</div>
-              <div className="font-semibold">{fmtKm2(preview.available_km2)}</div>
-            </div>
-
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Price per km² / month</div>
-              <div className="font-semibold">{fmtMoney(preview.price_per_km2)}</div>
-              <div className="text-[11px] text-gray-400">From server</div>
-            </div>
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Minimum monthly</div>
-              <div className="font-semibold">{fmtMoney(preview.min_monthly)}</div>
-              <div className="text-[11px] text-gray-400">Floor price</div>
-            </div>
-
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Your monthly price</div>
-              <div className="font-semibold">{fmtMoney(preview.monthly_price)}</div>
-            </div>
-            <div className="border rounded-md px-3 py-2">
-              <div className="text-xs text-gray-500">Coverage</div>
-              <div className="font-semibold">
-                {fmtPercent(preview.coverage_pct)} of your polygon
-              </div>
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
+            <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
+            <Stat
+              label="Price per km² / month"
+              hint="From server"
+              value={GBP(pv.ratePerKm2 ?? null)}
+            />
+            <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
+            <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
+            <Stat label="Coverage" value="100.0% of your polygon" />
           </div>
 
-          {soldOut && (
-            <div className="text-xs text-red-600">
-              {preview.reason === "owned_by_other"
-                ? "Another business already sponsors the purchasable region for this slot."
-                : preview.reason === "no_remaining"
-                ? "There is no remaining purchasable region for this slot."
-                : "No purchasable area left for this slot."}
-            </div>
-          )}
-        </div>
-
-        <div className="px-4 py-3 border-t flex items-center justify-between">
-          <button
-            type="button"
-            className="btn text-sm"
-            onClick={onClose}
-            disabled={submitting}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            className={`btn text-sm ${
-              soldOut || previewError ? "opacity-50 cursor-not-allowed" : ""
-            }`}
-            onClick={handleBuy}
-            disabled={soldOut || previewError != null || submitting || loading}
-            title={soldOut ? "No purchasable area available" : "Start checkout"}
-          >
-            {submitting ? "Starting checkout…" : "Buy now"}
-          </button>
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <button className="btn" onClick={handleClose}>
+              Cancel
+            </button>
+            <button
+              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
+              onClick={startCheckout}
+              disabled={!canBuy}
+              title={!canBuy ? "No purchasable area available" : "Buy now"}
+            >
+              {checkingOut ? "Redirecting..." : "Buy now"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
-};
+}
 
-export default AreaSponsorModal;
+function Stat({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="border rounded-lg p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+      {hint && <div className="text-[10px] text-gray-400">{hint}</div>}
+    </div>
+  );
+}

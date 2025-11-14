@@ -1,112 +1,106 @@
-// netlify/functions/sponsored-preview.js
-
 import { createClient } from "@supabase/supabase-js";
+import area from "@turf/area";
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseServiceRole = process.env.SUPABASE_SERVICE_ROLE;
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-if (!supabaseUrl || !supabaseServiceRole) {
-  console.warn(
-    "[sponsored-preview] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE environment variables."
-  );
-}
+// HTTP helper
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
-const supabaseAdmin = createClient(supabaseUrl, supabaseServiceRole, {
-  auth: { persistSession: false },
-});
+// statuses that block a slot
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid", "incomplete", "paused"]);
 
-export const handler = async (event) => {
-  // Simple GET ping for sanity checks
-  if (event.httpMethod === "GET") {
-    return {
-      statusCode: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ok: true,
-        message: "sponsored-preview is alive",
-        method: "GET",
-      }),
-    };
+// sane epsilon for float comparisons
+const EPS = 1e-6;
+
+export default async (req) => {
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400);
   }
 
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ok: false, message: "Method not allowed" }),
-    };
-  }
+  const areaId = (body.areaId || body.area_id || "").trim();
+  const slot = Number(body.slot || 1);
+  const businessId = (body.businessId || body.cleanerId || "").trim();
+
+  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400); // single “featured” slot
+  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
 
   try {
-    const body = JSON.parse(event.body || "{}");
-    const areaId = body.areaId;
-    const slot = Number(body.slot) || 1;
+    // 1) Is the slot already owned by someone else?
+    const { data: takenRows, error: takenErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("business_id, status")
+      .eq("area_id", areaId)
+      .eq("slot", slot);
 
-    if (!areaId) {
-      return {
-        statusCode: 400,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ok: false, message: "Missing areaId" }),
-      };
-    }
+    if (takenErr) throw takenErr;
 
-    // Call your Postgres helper: area_remaining_preview(p_area_id uuid, p_slot int)
-    const { data, error } = await supabaseAdmin.rpc("area_remaining_preview", {
+    // keep only *blocking* rows
+    const blocking = (takenRows || []).filter(
+      (r) => BLOCKING.has(String(r.status || "").toLowerCase())
+    );
+
+    const ownedByOther =
+      (blocking?.length || 0) > 0 &&
+      String(blocking[0].business_id) !== String(businessId);
+
+    // 2) Ask DB for remaining purchasable geometry (may be zero if fully occupied)
+    //    This RPC returns: [{ area_km2, gj }] or a single row; handle both.
+    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_slot: slot,
     });
+    if (prevErr) throw prevErr;
 
-    if (error) {
-      console.error("[sponsored-preview] Supabase RPC error:", error);
-      return {
-        statusCode: 500,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ok: false,
-          message: "Failed to compute preview",
-          error: error.message || String(error),
-        }),
-      };
+    const row = Array.isArray(previewRow) ? previewRow[0] : previewRow || {};
+    let remaining_km2 = Number(row?.area_km2 ?? 0) || 0;
+    const geojson = row?.gj ?? null;
+
+    // 3) Also compute the *total* area of the saved service area, for the modal’s “Total area”
+    let total_km2 = null;
+    const { data: sa, error: saErr } = await sb
+      .from("service_areas")
+      .select("gj")
+      .eq("id", areaId)
+      .maybeSingle();
+    if (!saErr && sa?.gj) {
+      try {
+        const m2 = area(sa.gj);
+        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+      } catch { /* ignore */ }
     }
 
-    const row = Array.isArray(data) ? data[0] : data;
+    // 4) Slot already owned by someone else → force sold-out, zero availability
+    const sold_out = ownedByOther || remaining_km2 <= EPS;
+    if (ownedByOther) remaining_km2 = 0;
 
-    if (!row) {
-      return {
-        statusCode: 404,
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          ok: false,
-          message: "No preview row returned from area_remaining_preview",
-        }),
-      };
-    }
+    // 5) Rate & price
+    const rate_per_km2 =
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0
+      ) || 0;
+    const price_cents = Math.round(Math.max(remaining_km2, 0) * rate_per_km2 * 100);
 
-    // Normalise the shape the frontend expects
-    const result = {
+    return json({
       ok: true,
-      total_km2: row.total_km2 ?? 0,
-      available_km2: row.available_km2 ?? 0,
-      sold_out: !!row.sold_out,
-      reason: row.reason ?? null,
-      gj: row.gj ?? null,
-    };
-
-    return {
-      statusCode: 200,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(result),
-    };
-  } catch (err) {
-    console.error("[sponsored-preview] Unhandled error:", err);
-    return {
-      statusCode: 500,
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ok: false,
-        message: "Unexpected error in sponsored-preview",
-        error: err && err.message ? err.message : String(err),
-      }),
-    };
+      sold_out,
+      available_km2: Math.max(0, remaining_km2),
+      total_km2,
+      rate_per_km2,
+      price_cents,
+      geojson,
+      reason: ownedByOther ? "owned_by_other" : remaining_km2 <= EPS ? "no_remaining" : "ok",
+    });
+  } catch (e) {
+    return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };

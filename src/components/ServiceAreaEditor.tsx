@@ -1,3 +1,4 @@
+// src/components/ServiceAreaEditor.tsx
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GoogleMap, Polygon, DrawingManager, useJsApiLoader } from "@react-google-maps/api";
 import { supabase } from "../lib/supabase";
@@ -309,15 +310,15 @@ export default function ServiceAreaEditor({
       setAvailLoading((m) => ({ ...m, [areaId]: true }));
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
-  method: "POST",
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify({
-    businessId: myBusinessId,
-    cleanerId: myBusinessId,
-    areaId,
-    slot: 1,
-  }),
-});
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            businessId: myBusinessId,
+            cleanerId: myBusinessId,
+            areaId,
+            slot: 1, // back-compat; server may ignore
+          }),
+        });
 
         if (!res.ok) {
           setAvail((m) => ({ ...m, [areaId]: undefined }));
@@ -751,33 +752,27 @@ export default function ServiceAreaEditor({
       {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
-          {...
-            ({
-              open: sponsorOpen,
-              onClose: () => {
-                setSponsorOpen(false);
-                clearPreview();
-              },
-              businessId: myBusinessId,
-              areaId: sponsorAreaId,
-              areaName: serviceAreas.find((x) => x.id === sponsorAreaId)?.name,
-              onPreviewGeoJSON: (multi: any) => drawPreview(multi),
-              onClearPreview: () => clearPreview(),
-            } as any)
-          }
+          open={sponsorOpen}
+          onClose={() => {
+            setSponsorOpen(false);
+            clearPreview();
+          }}
+          businessId={myBusinessId}
+          areaId={sponsorAreaId}
+          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
+          onPreviewGeoJSON={(multi) => drawPreview(multi)}
+          onClearPreview={() => clearPreview()}
         />
       )}
 
       {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
-          {...({
-            open: manageOpen,
-            onClose: () => setManageOpen(false),
-            cleanerId: myBusinessId,
-            areaId: manageAreaId,
-            slot: 1, // single Featured slot
-          } as any)}
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          cleanerId={myBusinessId}
+          areaId={manageAreaId}
+          slot={1} // single Featured slot
         />
       )}
     </>
