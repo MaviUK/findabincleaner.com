@@ -87,17 +87,18 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        const availableKm2 = j.sold_out
-          ? 0
-          : typeof j.available_km2 === "number"
-          ? j.available_km2
-          : 0;
+        // 🔹 Trust the numeric field only, don’t zero it based on sold_out
+        const availableKm2 =
+          typeof j.available_km2 === "number" && isFinite(j.available_km2)
+            ? j.available_km2
+            : 0;
 
         if (!cancelled) {
           setPv({
             loading: false,
             error: null,
-            soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
+            // 🔹 soldOut is derived purely from remaining area
+            soldOut: (availableKm2 ?? 0) <= EPS,
             totalKm2,
             availableKm2,
             priceCents:
@@ -141,10 +142,10 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
+  // 🔹 Don’t gate on pv.soldOut; it’s already encoded in availableKm2
   const canBuy =
     open &&
     !pv.loading &&
-    !pv.soldOut &&
     (pv.availableKm2 ?? 0) > EPS &&
     !checkingOut;
 
@@ -169,7 +170,8 @@ export default function AreaSponsorModal({
             ? "No purchasable area left for this slot."
             : "Checkout failed");
         setCheckoutErr(message);
-        if (res.status === 409) setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+        if (res.status === 409)
+          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
         setCheckingOut(false);
         return;
       }
@@ -202,8 +204,8 @@ export default function AreaSponsorModal({
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results. Preview
-            highlights the purchasable sub-region.
+            Featured sponsorship makes you first in local search results.
+            Preview highlights the purchasable sub-region.
           </div>
 
           {pv.error && (
@@ -240,7 +242,9 @@ export default function AreaSponsorModal({
               Cancel
             </button>
             <button
-              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
+              className={`btn ${
+                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
+              }`}
               onClick={startCheckout}
               disabled={!canBuy}
               title={!canBuy ? "No purchasable area available" : "Buy now"}
