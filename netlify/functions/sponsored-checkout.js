@@ -43,10 +43,10 @@ export default async (req) => {
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Check existing subscriptions
+    // 1) Is this slot already taken by ANY active subscription?
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id, status")
+      .select("status")
       .eq("area_id", areaId)
       .eq("slot", slot);
 
@@ -56,23 +56,7 @@ export default async (req) => {
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
 
-    const ownerRow = blocking[0] || null;
-    const ownedByMe =
-      ownerRow && String(ownerRow.business_id) === String(businessId);
-    const ownedByOther = ownerRow && !ownedByMe;
-
-    if (ownedByMe) {
-      return json(
-        {
-          ok: false,
-          code: "already_owned",
-          message: "You already have a featured sponsorship for this area.",
-        },
-        409
-      );
-    }
-
-    if (ownedByOther) {
+    if (blocking.length > 0) {
       return json(
         {
           ok: false,
@@ -128,9 +112,9 @@ export default async (req) => {
       Math.round(available_km2 * rate_per_km2 * 100)
     );
 
-    // 4) Get or create Stripe customer
+    // 4) Get or create Stripe customer from CLEANERS table
     const { data: biz, error: bizErr } = await sb
-      .from("businesses")
+      .from("cleaners")
       .select("stripe_customer_id, name, email")
       .eq("id", businessId)
       .maybeSingle();
@@ -145,7 +129,7 @@ export default async (req) => {
       stripeCustomerId = customer.id;
 
       await sb
-        .from("businesses")
+        .from("cleaners")
         .update({ stripe_customer_id: stripeCustomerId })
         .eq("id", businessId);
     }
