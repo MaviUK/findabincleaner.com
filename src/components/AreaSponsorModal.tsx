@@ -65,6 +65,7 @@ export default function AreaSponsorModal({
 
   useEffect(() => {
     let cancelled = false;
+
     const run = async () => {
       if (!open) return;
       setPv((s) => ({ ...s, loading: true, error: null }));
@@ -87,7 +88,7 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        // 🔹 Trust the numeric field only, don’t zero it based on sold_out
+        // ✅ Trust the number; don’t force 0 when j.sold_out is true
         const availableKm2 =
           typeof j.available_km2 === "number" && isFinite(j.available_km2)
             ? j.available_km2
@@ -97,7 +98,7 @@ export default function AreaSponsorModal({
           setPv({
             loading: false,
             error: null,
-            // 🔹 soldOut is derived purely from remaining area
+            // ✅ soldOut comes only from remaining area
             soldOut: (availableKm2 ?? 0) <= EPS,
             totalKm2,
             availableKm2,
@@ -142,7 +143,7 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // 🔹 Don’t gate on pv.soldOut; it’s already encoded in availableKm2
+  // ✅ Don’t gate on pv.soldOut: it’s already encoded in availableKm2
   const canBuy =
     open &&
     !pv.loading &&
