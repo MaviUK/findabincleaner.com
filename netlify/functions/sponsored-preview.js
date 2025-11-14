@@ -10,7 +10,6 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// statuses that block a slot
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -20,7 +19,6 @@ const BLOCKING = new Set([
   "paused",
 ]);
 
-// sane epsilon for float comparisons
 const EPS = 1e-6;
 
 export default async (req) => {
@@ -40,12 +38,11 @@ export default async (req) => {
   const businessId = (body.businessId || body.cleanerId || "").trim();
 
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  // single “featured” slot
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
 
   try {
-    // 1) Is the slot already owned by someone else?
+    // 1) Is this slot already owned by someone else?
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
@@ -54,7 +51,6 @@ export default async (req) => {
 
     if (takenErr) throw takenErr;
 
-    // keep only *blocking* rows
     const blocking = (takenRows || []).filter((r) =>
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
@@ -63,7 +59,7 @@ export default async (req) => {
       (blocking?.length || 0) > 0 &&
       String(blocking[0].business_id) !== String(businessId);
 
-    // 2) Ask DB for remaining purchasable geometry
+    // 2) Remaining area from RPC
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
@@ -77,7 +73,6 @@ export default async (req) => {
       ? previewRow[0] || {}
       : previewRow || {};
 
-    // Support new shape (available_km2) and any older names
     const remainingField =
       row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
 
@@ -86,7 +81,7 @@ export default async (req) => {
 
     const geojson = row.gj ?? row.geojson ?? null;
 
-    // 3) Compute total area of the whole polygon for the “Total area” card
+    // 3) Total area of whole polygon (for “Total area” card)
     let total_km2 = null;
     const { data: sa, error: saErr } = await sb
       .from("service_areas")
@@ -98,23 +93,21 @@ export default async (req) => {
         const m2 = area(sa.gj);
         if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
       } catch {
-        // ignore turf errors
+        // ignore
       }
     }
 
-    // 4) Decide sold_out
-    let sold_out =
-      typeof row.sold_out === "boolean"
-        ? row.sold_out
-        : remaining_km2 <= EPS;
-
-    // If another business already owns this slot, it's always sold out
+    // 4) Derive sold_out purely from remaining_km2 + ownedByOther
+    let sold_out;
     if (ownedByOther) {
       sold_out = true;
       remaining_km2 = 0;
+    } else if (remaining_km2 > EPS) {
+      sold_out = false;
+    } else {
+      sold_out = true;
     }
 
-    // 5) Rate & price
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -126,15 +119,10 @@ export default async (req) => {
       Math.max(remaining_km2, 0) * rate_per_km2 * 100
     );
 
-    // 6) Reason message
-    let reason = row.reason;
-    if (ownedByOther) {
-      reason = "owned_by_other";
-    } else if (remaining_km2 <= EPS) {
-      reason = "no_remaining";
-    } else if (!reason) {
-      reason = "ok";
-    }
+    let reason;
+    if (ownedByOther) reason = "owned_by_other";
+    else if (remaining_km2 <= EPS) reason = "no_remaining";
+    else reason = "ok";
 
     return json({
       ok: true,
