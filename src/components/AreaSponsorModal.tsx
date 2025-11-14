@@ -10,7 +10,7 @@ type Props = {
   areaId: string;
   slot?: Slot;
 
-  /** Optional display-only name (fixes build error from caller). */
+  /** Optional display-only name */
   areaName?: string;
 
   onPreviewGeoJSON?: (gj: any | null) => void;
@@ -88,7 +88,6 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        // ✅ Trust the number; don’t force 0 when j.sold_out is true
         const availableKm2 =
           typeof j.available_km2 === "number" && isFinite(j.available_km2)
             ? j.available_km2
@@ -98,7 +97,6 @@ export default function AreaSponsorModal({
           setPv({
             loading: false,
             error: null,
-            // ✅ soldOut comes only from remaining area
             soldOut: (availableKm2 ?? 0) <= EPS,
             totalKm2,
             availableKm2,
@@ -133,7 +131,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
+  }, [open, businessId, areaId, slot]); // <- note: no onPreviewGeoJSON here
 
   const handleClose = () => {
     onClearPreview?.();
@@ -143,14 +141,6 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  console.log("Sponsor modal state", {
-    loading: pv.loading,
-    soldOut: pv.soldOut,
-    availableKm2: pv.availableKm2,
-    checkingOut,
-  });
-
-  // ✅ Don’t gate on pv.soldOut: it’s already encoded in availableKm2
   const canBuy =
     open &&
     !pv.loading &&
