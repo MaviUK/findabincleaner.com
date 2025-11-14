@@ -114,12 +114,22 @@ export default function AreaSponsorModal({
         if (Array.isArray(raw)) {
           row = raw[0];
         } else if (raw && typeof raw === "object") {
-          if ("data" in raw) {
-            const d = (raw as any).data;
-            row = Array.isArray(d) ? d[0] : d;
-          } else if ("0" in raw && typeof (raw as any)["0"] === "object") {
-            row = (raw as any)["0"];
-          }
+         // Our Sponsored Preview returns: { "0": { ... } }
+let row: any = null;
+
+// 1) If shape is { "0": { ... } }
+if (raw && typeof raw === "object" && raw["0"]) {
+  row = raw["0"];
+
+// 2) If API ever returns an array in the future
+} else if (Array.isArray(raw)) {
+  row = raw[0];
+
+// 3) Fallback
+} else {
+  row = raw;
+}
+
         }
 
         if (!row || typeof row !== "object") {
