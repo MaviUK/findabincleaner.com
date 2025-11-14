@@ -43,7 +43,7 @@ export default async (req) => {
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken by someone else?
+    // 1) Check existing subscriptions
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
@@ -55,9 +55,22 @@ export default async (req) => {
     const blocking = (takenRows || []).filter((r) =>
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
-    const ownedByOther =
-      (blocking?.length || 0) > 0 &&
-      String(blocking[0].business_id) !== String(businessId);
+
+    const ownerRow = blocking[0] || null;
+    const ownedByMe =
+      ownerRow && String(ownerRow.business_id) === String(businessId);
+    const ownedByOther = ownerRow && !ownedByMe;
+
+    if (ownedByMe) {
+      return json(
+        {
+          ok: false,
+          code: "already_owned",
+          message: "You already have a featured sponsorship for this area.",
+        },
+        409
+      );
+    }
 
     if (ownedByOther) {
       return json(
@@ -70,7 +83,7 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area from the same RPC
+    // 2) No blocking subscription → check remaining area
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
