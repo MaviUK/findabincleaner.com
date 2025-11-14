@@ -115,17 +115,15 @@ export default async (req) => {
     // 4) Get or create Stripe customer from CLEANERS table
     const { data: biz, error: bizErr } = await sb
       .from("cleaners")
-      .select("stripe_customer_id, name, email")
+      .select("stripe_customer_id")
       .eq("id", businessId)
       .maybeSingle();
     if (bizErr) throw bizErr;
 
     let stripeCustomerId = biz?.stripe_customer_id || null;
     if (!stripeCustomerId) {
-      const customer = await stripe.customers.create({
-        name: biz?.name || "Customer",
-        email: biz?.email || undefined,
-      });
+      // no name/email columns needed – create a bare customer
+      const customer = await stripe.customers.create({});
       stripeCustomerId = customer.id;
 
       await sb
