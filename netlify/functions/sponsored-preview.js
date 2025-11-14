@@ -3,7 +3,6 @@ import area from "@turf/area";
 
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
-// HTTP helper
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -42,7 +41,7 @@ export default async (req) => {
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
 
   try {
-    // 1) Is this slot already owned by someone else?
+    // 1) Check subscriptions for this area + slot
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status")
@@ -55,11 +54,44 @@ export default async (req) => {
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
 
-    const ownedByOther =
-      (blocking?.length || 0) > 0 &&
-      String(blocking[0].business_id) !== String(businessId);
+    const ownerRow = blocking[0] || null;
+    const ownedByMe =
+      ownerRow && String(ownerRow.business_id) === String(businessId);
+    const ownedByOther = ownerRow && !ownedByMe;
 
-    // 2) Remaining area from RPC
+    // 2) Compute total area for the modal card
+    let total_km2 = null;
+    let serviceGeo = null;
+    const { data: sa, error: saErr } = await sb
+      .from("service_areas")
+      .select("gj")
+      .eq("id", areaId)
+      .maybeSingle();
+    if (!saErr && sa?.gj) {
+      serviceGeo = sa.gj;
+      try {
+        const m2 = area(sa.gj);
+        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+      } catch {
+        // ignore
+      }
+    }
+
+    // 3) If anyone already owns this slot, treat as sold out for preview
+    if (ownedByMe || ownedByOther) {
+      return json({
+        ok: true,
+        sold_out: true,
+        available_km2: 0,
+        total_km2,
+        rate_per_km2: 0,
+        price_cents: 0,
+        geojson: null, // or serviceGeo if you want to shade whole polygon
+        reason: ownedByMe ? "already_owned" : "owned_by_other",
+      });
+    }
+
+    // 4) No existing blocking subscription → ask DB how much area is free
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
@@ -81,32 +113,7 @@ export default async (req) => {
 
     const geojson = row.gj ?? row.geojson ?? null;
 
-    // 3) Total area for the modal card
-    let total_km2 = null;
-    const { data: sa, error: saErr } = await sb
-      .from("service_areas")
-      .select("gj")
-      .eq("id", areaId)
-      .maybeSingle();
-    if (!saErr && sa?.gj) {
-      try {
-        const m2 = area(sa.gj);
-        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-      } catch {
-        // ignore turf errors
-      }
-    }
-
-    // 4) Derive sold_out from remaining_km2 + ownedByOther
-    let sold_out;
-    if (ownedByOther) {
-      sold_out = true;
-      remaining_km2 = 0;
-    } else if (remaining_km2 > EPS) {
-      sold_out = false;
-    } else {
-      sold_out = true;
-    }
+    const sold_out = remaining_km2 <= EPS;
 
     const rate_per_km2 =
       Number(
@@ -119,10 +126,7 @@ export default async (req) => {
       Math.max(remaining_km2, 0) * rate_per_km2 * 100
     );
 
-    let reason;
-    if (ownedByOther) reason = "owned_by_other";
-    else if (remaining_km2 <= EPS) reason = "no_remaining";
-    else reason = "ok";
+    const reason = sold_out ? "no_remaining" : "ok";
 
     return json({
       ok: true,
