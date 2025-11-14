@@ -56,14 +56,19 @@ export default async (req) => {
     // 2) Ask DB for remaining purchasable geometry (may be zero if fully occupied)
     //    This RPC returns: [{ area_km2, gj }] or a single row; handle both.
     const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
-    if (prevErr) throw prevErr;
+  p_area_id: areaId,
+  p_slot: slot,
+});
+if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] : previewRow || {};
-    let remaining_km2 = Number(row?.area_km2 ?? 0) || 0;
-    const geojson = row?.gj ?? null;
+const row = Array.isArray(previewRow) ? (previewRow[0] || {}) : (previewRow || {});
+
+// Support the current function shape (available_km2) and older area_km2 just in case
+const remainingField =
+  row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
+
+let remaining_km2 = Number(remainingField) || 0;
+const geojson = row.gj ?? row.geojson ?? null;
 
     // 3) Also compute the *total* area of the saved service area, for the modal’s “Total area”
     let total_km2 = null;
