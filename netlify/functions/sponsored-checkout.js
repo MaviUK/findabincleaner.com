@@ -121,8 +121,8 @@ export default async (req) => {
     if (bizErr) throw bizErr;
 
     let stripeCustomerId = biz?.stripe_customer_id || null;
+
     if (!stripeCustomerId) {
-      // no name/email columns needed – create a bare customer
       const customer = await stripe.customers.create({});
       stripeCustomerId = customer.id;
 
@@ -132,32 +132,55 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
-    // 5) Subscription checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      metadata: {
-        business_id: businessId,
-        area_id: areaId,
-        slot: String(slot),
-      },
-      line_items: [
-        {
-          price_data: {
-            currency: "gbp",
-            product_data: {
-              name: "Featured service area",
-              description: "Be shown first in local search for this area.",
-            },
-            unit_amount: amount_cents,
-            recurring: { interval: "month" },
-          },
-          quantity: 1,
+    const createSession = (customerId) =>
+      stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer: customerId,
+        metadata: {
+          business_id: businessId,
+          area_id: areaId,
+          slot: String(slot),
         },
-      ],
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
-    });
+        line_items: [
+          {
+            price_data: {
+              currency: "gbp",
+              product_data: {
+                name: "Featured service area",
+                description: "Be shown first in local search for this area.",
+              },
+              unit_amount: amount_cents,
+              recurring: { interval: "month" },
+            },
+            quantity: 1,
+          },
+        ],
+        success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
+        cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      });
+
+    let session;
+    try {
+      // 5) Try with existing customer ID
+      session = await createSession(stripeCustomerId);
+    } catch (e) {
+      // If Stripe says “no such customer”, create a fresh one and retry once
+      const code = e?.raw?.code;
+      const param = e?.raw?.param;
+      if (code === "resource_missing" && param === "customer") {
+        const customer = await stripe.customers.create({});
+        stripeCustomerId = customer.id;
+
+        await sb
+          .from("cleaners")
+          .update({ stripe_customer_id: stripeCustomerId })
+          .eq("id", businessId);
+
+        session = await createSession(stripeCustomerId);
+      } else {
+        throw e;
+      }
+    }
 
     return json({ ok: true, url: session.url }, 200);
   } catch (e) {
