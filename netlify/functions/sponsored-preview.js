@@ -9,6 +9,7 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+// which subscription statuses count as “slot is taken”
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -34,17 +35,35 @@ export default async (req) => {
 
   const areaId = (body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot || 1);
-  const businessId = (body.businessId || body.cleanerId || "").trim();
+  const businessId = (body.businessId || body.cleanerId || "").trim(); // still required by caller, but we don't actually need it for locking
 
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
 
   try {
-    // 1) Check subscriptions for this area + slot
+    // 1) Total area for the modal card
+    let total_km2 = null;
+    const { data: sa, error: saErr } = await sb
+      .from("service_areas")
+      .select("gj")
+      .eq("id", areaId)
+      .maybeSingle();
+    if (saErr) throw saErr;
+
+    if (sa?.gj) {
+      try {
+        const m2 = area(sa.gj);
+        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+      } catch {
+        // ignore turf errors
+      }
+    }
+
+    // 2) Is this slot already taken by ANY active subscription?
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id, status")
+      .select("status")
       .eq("area_id", areaId)
       .eq("slot", slot);
 
@@ -54,31 +73,8 @@ export default async (req) => {
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
 
-    const ownerRow = blocking[0] || null;
-    const ownedByMe =
-      ownerRow && String(ownerRow.business_id) === String(businessId);
-    const ownedByOther = ownerRow && !ownedByMe;
-
-    // 2) Compute total area for the modal card
-    let total_km2 = null;
-    let serviceGeo = null;
-    const { data: sa, error: saErr } = await sb
-      .from("service_areas")
-      .select("gj")
-      .eq("id", areaId)
-      .maybeSingle();
-    if (!saErr && sa?.gj) {
-      serviceGeo = sa.gj;
-      try {
-        const m2 = area(sa.gj);
-        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-      } catch {
-        // ignore
-      }
-    }
-
-    // 3) If anyone already owns this slot, treat as sold out for preview
-    if (ownedByMe || ownedByOther) {
+    if (blocking.length > 0) {
+      // Slot is already owned – nothing left to buy
       return json({
         ok: true,
         sold_out: true,
@@ -86,12 +82,12 @@ export default async (req) => {
         total_km2,
         rate_per_km2: 0,
         price_cents: 0,
-        geojson: null, // or serviceGeo if you want to shade whole polygon
-        reason: ownedByMe ? "already_owned" : "owned_by_other",
+        geojson: null,
+        reason: "slot_taken",
       });
     }
 
-    // 4) No existing blocking subscription → ask DB how much area is free
+    // 3) No blocking subscription → ask DB what area is still available
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
