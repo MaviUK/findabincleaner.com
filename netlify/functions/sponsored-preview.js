@@ -81,7 +81,7 @@ export default async (req) => {
 
     const geojson = row.gj ?? row.geojson ?? null;
 
-    // 3) Total area of whole polygon (for “Total area” card)
+    // 3) Total area for the modal card
     let total_km2 = null;
     const { data: sa, error: saErr } = await sb
       .from("service_areas")
@@ -93,11 +93,11 @@ export default async (req) => {
         const m2 = area(sa.gj);
         if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
       } catch {
-        // ignore
+        // ignore turf errors
       }
     }
 
-    // 4) Derive sold_out purely from remaining_km2 + ownedByOther
+    // 4) Derive sold_out from remaining_km2 + ownedByOther
     let sold_out;
     if (ownedByOther) {
       sold_out = true;
