@@ -143,6 +143,13 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
+  console.log("Sponsor modal state", {
+    loading: pv.loading,
+    soldOut: pv.soldOut,
+    availableKm2: pv.availableKm2,
+    checkingOut,
+  });
+
   // ✅ Don’t gate on pv.soldOut: it’s already encoded in availableKm2
   const canBuy =
     open &&
