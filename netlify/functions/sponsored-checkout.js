@@ -1,19 +1,19 @@
-// netlify/functions/sponsored-checkout.ts
+// netlify/functions/sponsored-checkout.js
 
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
 const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE!
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
 );
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
 // Helper to send JSON responses
-const json = (body: any, status = 200) =>
+const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -32,12 +32,12 @@ const BLOCKING = new Set([
 // Small epsilon for float comparisons
 const EPS = 1e-6;
 
-export default async (req: Request) => {
+export default async (req) => {
   if (req.method !== "POST") {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
-  let body: any;
+  let body;
   try {
     body = await req.json();
   } catch {
@@ -134,7 +134,6 @@ export default async (req: Request) => {
     //
     // 4) Look up (or create) the Stripe customer based on the cleaner
     //
-    // NOTE: we only rely on fields we’re confident exist: stripe_customer_id, email.
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
       .select("stripe_customer_id, email")
@@ -143,11 +142,10 @@ export default async (req: Request) => {
 
     if (cleanerErr) throw cleanerErr;
 
-    let stripeCustomerId = cleaner?.stripe_customer_id as string | null;
+    let stripeCustomerId = cleaner?.stripe_customer_id || null;
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
-        // name is optional; email is enough for now
         email: cleaner?.email || undefined,
       });
 
@@ -162,11 +160,6 @@ export default async (req: Request) => {
     //
     // 5) (NEW) Save / update a pending sponsored_subscriptions row with area + price
     //
-    // We do not yet know the stripe_subscription_id (that comes from Stripe
-    // after checkout completes), so we store status='pending' and fill the
-    // subscription id in the webhook.
-    //
-    // First see if a row already exists for this business + area + slot
     const { data: existingSub, error: existingErr } = await sb
       .from("sponsored_subscriptions")
       .select("id")
@@ -178,7 +171,6 @@ export default async (req: Request) => {
     if (existingErr) throw existingErr;
 
     if (existingSub) {
-      // update existing stub
       const { error: upErr } = await sb
         .from("sponsored_subscriptions")
         .update({
@@ -191,7 +183,6 @@ export default async (req: Request) => {
 
       if (upErr) throw upErr;
     } else {
-      // insert new stub row
       const { error: insErr } = await sb
         .from("sponsored_subscriptions")
         .insert({
@@ -237,7 +228,7 @@ export default async (req: Request) => {
     });
 
     return json({ ok: true, url: session.url }, 200);
-  } catch (e: any) {
+  } catch (e) {
     console.error("sponsored-checkout error:", e);
     return json(
       { ok: false, error: e?.message || "Server error in sponsored-checkout" },
