@@ -10,7 +10,7 @@ type Props = {
   areaId: string;
   slot?: Slot;
 
-  /** Optional display-only name */
+  /** Optional display-only name (fixes build error from caller). */
   areaName?: string;
 
   onPreviewGeoJSON?: (gj: any | null) => void;
@@ -63,9 +63,31 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
+  // NEW: what % of this polygon will actually be sponsored?
+  const coveragePct = useMemo(() => {
+    if (
+      pv.totalKm2 == null ||
+      pv.totalKm2 <= 0 ||
+      pv.availableKm2 == null ||
+      pv.availableKm2 < 0
+    ) {
+      return null;
+    }
+    const pct = (pv.availableKm2 / pv.totalKm2) * 100;
+    // Clamp between 0 and 100 just in case
+    return Math.max(0, Math.min(100, pct));
+  }, [pv.totalKm2, pv.availableKm2]);
+
+  const coverageLabel = useMemo(() => {
+    if (pv.soldOut || (pv.availableKm2 ?? 0) <= EPS) {
+      return "0.0% of your polygon";
+    }
+    if (coveragePct == null) return "—";
+    return `${coveragePct.toFixed(1)}% of your polygon`;
+  }, [pv.soldOut, pv.availableKm2, coveragePct]);
+
   useEffect(() => {
     let cancelled = false;
-
     const run = async () => {
       if (!open) return;
       setPv((s) => ({ ...s, loading: true, error: null }));
@@ -88,16 +110,17 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        const availableKm2 =
-          typeof j.available_km2 === "number" && isFinite(j.available_km2)
-            ? j.available_km2
-            : 0;
+        const availableKm2 = j.sold_out
+          ? 0
+          : typeof j.available_km2 === "number"
+          ? j.available_km2
+          : 0;
 
         if (!cancelled) {
           setPv({
             loading: false,
             error: null,
-            soldOut: (availableKm2 ?? 0) <= EPS,
+            soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
             totalKm2,
             availableKm2,
             priceCents:
@@ -131,7 +154,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot]); // <- note: no onPreviewGeoJSON here
+  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -144,6 +167,7 @@ export default function AreaSponsorModal({
   const canBuy =
     open &&
     !pv.loading &&
+    !pv.soldOut &&
     (pv.availableKm2 ?? 0) > EPS &&
     !checkingOut;
 
@@ -232,7 +256,8 @@ export default function AreaSponsorModal({
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-            <Stat label="Coverage" value="100.0% of your polygon" />
+            {/* UPDATED: dynamic coverage */}
+            <Stat label="Coverage" value={coverageLabel} />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1">
