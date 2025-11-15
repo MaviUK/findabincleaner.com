@@ -9,16 +9,6 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
-// which subscription statuses count as “slot is taken”
-const BLOCKING = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "paused",
-]);
-
 const EPS = 1e-6;
 
 export default async (req) => {
@@ -35,82 +25,65 @@ export default async (req) => {
 
   const areaId = (body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot || 1);
-  const businessId = (body.businessId || body.cleanerId || "").trim(); // still required by caller, but we don't actually need it for locking
+  const businessId = (body.businessId || body.cleanerId || "").trim();
 
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
+  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400); // only featured slot
 
   try {
-    // 1) Total area for the modal card
-    let total_km2 = null;
+    // 1) Load the saved service area geometry for "total area"
     const { data: sa, error: saErr } = await sb
       .from("service_areas")
       .select("gj")
       .eq("id", areaId)
       .maybeSingle();
+
     if (saErr) throw saErr;
+    if (!sa || !sa.gj) {
+      return json({ ok: false, error: "Service area geometry missing" }, 404);
+    }
 
-    if (sa?.gj) {
+    let total_km2 = 0;
+    try {
+      const m2 = area(sa.gj);
+      if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+    } catch {
+      total_km2 = 0;
+    }
+
+    // 2) Ask Supabase which part of this area is still available,
+    //    excluding anything already owned by this cleaner but
+    //    respecting sponsorships from OTHER cleaners.
+    const { data: avData, error: avErr } = await sb.rpc("get_area_availability", {
+      _area_id: areaId,
+      _slot: slot,
+      _exclude_cleaner: businessId,
+    });
+    if (avErr) throw avErr;
+
+    const avRow = Array.isArray(avData) ? avData[0] || {} : avData || {};
+
+    const availableGeom =
+      avRow.available ??
+      avRow.available_gj ??
+      avRow.available_geojson ??
+      avRow.final_geojson ??
+      null;
+
+    let available_km2 = 0;
+    if (availableGeom && typeof availableGeom === "object") {
       try {
-        const m2 = area(sa.gj);
-        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+        const m2 = area(availableGeom);
+        if (Number.isFinite(m2)) available_km2 = m2 / 1_000_000;
       } catch {
-        // ignore turf errors
+        available_km2 = 0;
       }
     }
 
-    // 2) Is this slot already taken by ANY active subscription?
-    const { data: takenRows, error: takenErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("status")
-      .eq("area_id", areaId)
-      .eq("slot", slot);
+    const sold_out = available_km2 <= EPS;
 
-    if (takenErr) throw takenErr;
-
-    const blocking = (takenRows || []).filter((r) =>
-      BLOCKING.has(String(r.status || "").toLowerCase())
-    );
-
-    if (blocking.length > 0) {
-      // Slot is already owned – nothing left to buy
-      return json({
-        ok: true,
-        sold_out: true,
-        available_km2: 0,
-        total_km2,
-        rate_per_km2: 0,
-        price_cents: 0,
-        geojson: null,
-        reason: "slot_taken",
-      });
-    }
-
-    // 3) No blocking subscription → ask DB what area is still available
-    const { data: previewRow, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_slot: slot,
-      }
-    );
-    if (prevErr) throw prevErr;
-
-    const row = Array.isArray(previewRow)
-      ? previewRow[0] || {}
-      : previewRow || {};
-
-    const remainingField =
-      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
-
-    let remaining_km2 = Number(remainingField);
-    if (!Number.isFinite(remaining_km2)) remaining_km2 = 0;
-
-    const geojson = row.gj ?? row.geojson ?? null;
-
-    const sold_out = remaining_km2 <= EPS;
-
+    // 3) Pricing
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -118,23 +91,22 @@ export default async (req) => {
           0
       ) || 0;
 
-    const price_cents = Math.round(
-      Math.max(remaining_km2, 0) * rate_per_km2 * 100
-    );
-
-    const reason = sold_out ? "no_remaining" : "ok";
+    const price_cents = sold_out
+      ? 0
+      : Math.round(Math.max(available_km2, 0) * rate_per_km2 * 100);
 
     return json({
       ok: true,
       sold_out,
-      available_km2: Math.max(0, remaining_km2),
+      available_km2: Math.max(0, available_km2),
       total_km2,
       rate_per_km2,
       price_cents,
-      geojson,
-      reason,
+      geojson: availableGeom, // highlight purchasable sub-region
+      reason: sold_out ? "no_remaining" : "ok",
     });
   } catch (e) {
+    console.error("[sponsored-preview] error:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
