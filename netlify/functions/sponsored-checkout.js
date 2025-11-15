@@ -1,7 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
@@ -40,13 +44,15 @@ export default async (req) => {
 
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
+  if (![1].includes(slot)) {
+    return json({ ok: false, error: "Invalid slot" }, 400);
+  }
 
   try {
-    // 1) Is this slot already taken by ANY active subscription?
+    // 1) Hard block: is this featured slot owned by ANYONE?
     const { data: takenRows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("status")
+      .select("business_id, status")
       .eq("area_id", areaId)
       .eq("slot", slot);
 
@@ -57,17 +63,20 @@ export default async (req) => {
     );
 
     if (blocking.length > 0) {
+      const ownerId = String(blocking[0].business_id || "");
+      const ownedByMe = ownerId && ownerId === businessId;
+
       return json(
         {
           ok: false,
-          code: "slot_taken",
+          code: ownedByMe ? "already_subscribed" : "slot_taken",
           message: "No purchasable area left for this slot.",
         },
         409
       );
     }
 
-    // 2) No blocking subscription → check remaining area
+    // 2) Pull remaining area from our preview RPC
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
@@ -99,7 +108,7 @@ export default async (req) => {
       );
     }
 
-    // 3) Price
+    // 3) Price (rate * available_km2)
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -112,12 +121,13 @@ export default async (req) => {
       Math.round(available_km2 * rate_per_km2 * 100)
     );
 
-    // 4) Get or create Stripe customer from CLEANERS table
+    // 4) Get (or create) the Stripe customer for this cleaner
     const { data: biz, error: bizErr } = await sb
       .from("cleaners")
       .select("stripe_customer_id")
       .eq("id", businessId)
       .maybeSingle();
+
     if (bizErr) throw bizErr;
 
     let stripeCustomerId = biz?.stripe_customer_id || null;
@@ -132,6 +142,7 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
+    // helper to build checkout session
     const createSession = (customerId) =>
       stripe.checkout.sessions.create({
         mode: "subscription",
@@ -147,7 +158,8 @@ export default async (req) => {
               currency: "gbp",
               product_data: {
                 name: "Featured service area",
-                description: "Be shown first in local search for this area.",
+                description:
+                  "Be shown first in local search results for this area.",
               },
               unit_amount: amount_cents,
               recurring: { interval: "month" },
@@ -161,10 +173,9 @@ export default async (req) => {
 
     let session;
     try {
-      // 5) Try with existing customer ID
       session = await createSession(stripeCustomerId);
     } catch (e) {
-      // If Stripe says “no such customer”, create a fresh one and retry once
+      // If the stored Stripe customer is stale, recreate and retry once
       const code = e?.raw?.code;
       const param = e?.raw?.param;
       if (code === "resource_missing" && param === "customer") {
