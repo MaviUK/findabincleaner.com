@@ -10,7 +10,6 @@ type Props = {
   areaId: string;
   slot?: Slot;
 
-  /** Optional display-only name (fixes build error from caller). */
   areaName?: string;
 
   onPreviewGeoJSON?: (gj: any | null) => void;
@@ -25,8 +24,8 @@ type PreviewState = {
   availableKm2: number | null;
   priceCents: number | null;
   ratePerKm2: number | null;
-  reason?: "owned_by_other" | "no_remaining" | "ok";
   geojson: any | null;
+  reason?: string;
 };
 
 const GBP = (n: number | null | undefined) =>
@@ -63,29 +62,6 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // NEW: what % of this polygon will actually be sponsored?
-  const coveragePct = useMemo(() => {
-    if (
-      pv.totalKm2 == null ||
-      pv.totalKm2 <= 0 ||
-      pv.availableKm2 == null ||
-      pv.availableKm2 < 0
-    ) {
-      return null;
-    }
-    const pct = (pv.availableKm2 / pv.totalKm2) * 100;
-    // Clamp between 0 and 100 just in case
-    return Math.max(0, Math.min(100, pct));
-  }, [pv.totalKm2, pv.availableKm2]);
-
-  const coverageLabel = useMemo(() => {
-    if (pv.soldOut || (pv.availableKm2 ?? 0) <= EPS) {
-      return "0.0% of your polygon";
-    }
-    if (coveragePct == null) return "—";
-    return `${coveragePct.toFixed(1)}% of your polygon`;
-  }, [pv.soldOut, pv.availableKm2, coveragePct]);
-
   useEffect(() => {
     let cancelled = false;
     const run = async () => {
@@ -98,53 +74,42 @@ export default function AreaSponsorModal({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ businessId, areaId, slot }),
         });
+
         const j = await res.json();
 
         if (!res.ok || !j?.ok) {
-          const msg = j?.error || j?.message || "Preview failed";
-          throw new Error(msg);
+          throw new Error(j?.error || j?.message || "Preview failed");
         }
 
         const totalKm2 =
-  typeof j.total_km2 === "number" && isFinite(j.total_km2)
-    ? j.total_km2
-    : null;
+          typeof j.total_km2 === "number" ? j.total_km2 : null;
 
-const availableKm2 =
-  typeof j.available_km2 === "number" && isFinite(j.available_km2)
-    ? j.available_km2
-    : 0;
+        const availableKm2 =
+          typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-if (!cancelled) {
-  // Decide soldOut purely from remaining area
-  const soldOut = availableKm2 <= EPS;
+        if (!cancelled) {
+          // IMPORTANT: soldOut ONLY depends on remaining area.
+          const soldOut = availableKm2 <= EPS;
 
-  setPv({
-    loading: false,
-    error: null,
-    soldOut,
-    totalKm2,
-    availableKm2,
-    priceCents:
-      typeof j.price_cents === "number" && isFinite(j.price_cents)
-        ? j.price_cents
-        : null,
-    ratePerKm2:
-      typeof j.rate_per_km2 === "number" && isFinite(j.rate_per_km2)
-        ? j.rate_per_km2
-        : null,
-    geojson: j.geojson ?? null,
-    reason: j.reason,
-  });
-}
-onPreviewGeoJSON?.(j.geojson ?? null);
-
+          setPv({
+            loading: false,
+            error: null,
+            soldOut,
+            totalKm2,
+            availableKm2,
+            priceCents:
+              typeof j.price_cents === "number" ? j.price_cents : null,
+            ratePerKm2:
+              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+            geojson: j.geojson ?? null,
+            reason: j.reason,
+          });
+        }
 
         onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
         if (!cancelled) {
-          setPv((s) => ({
-            ...s,
+          setPv({
             loading: false,
             error: e?.message || "Preview failed",
             soldOut: false,
@@ -153,7 +118,7 @@ onPreviewGeoJSON?.(j.geojson ?? null);
             priceCents: null,
             ratePerKm2: null,
             geojson: null,
-          }));
+          });
         }
         onPreviewGeoJSON?.(null);
       }
@@ -191,6 +156,7 @@ onPreviewGeoJSON?.(j.geojson ?? null);
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ businessId, areaId, slot }),
       });
+
       const j = await res.json();
 
       if (!res.ok || !j?.ok) {
@@ -200,19 +166,19 @@ onPreviewGeoJSON?.(j.geojson ?? null);
           (res.status === 409
             ? "No purchasable area left for this slot."
             : "Checkout failed");
+
         setCheckoutErr(message);
-        if (res.status === 409)
+
+        if (res.status === 409) {
           setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+        }
+
         setCheckingOut(false);
         return;
       }
 
-      const url = j.url as string | undefined;
-      if (url) window.location.assign(url);
-      else {
-        setCheckoutErr("Checkout session missing redirect URL.");
-        setCheckingOut(false);
-      }
+      const url = j.url as string;
+      window.location.assign(url);
     } catch (e: any) {
       setCheckoutErr(e?.message || "Checkout failed");
       setCheckingOut(false);
@@ -221,12 +187,19 @@ onPreviewGeoJSON?.(j.geojson ?? null);
 
   if (!open) return null;
 
+  // Coverage %
+  let coverageLabel = "—";
+  if (pv.totalKm2 && pv.totalKm2 > EPS) {
+    const pct = ((pv.totalKm2 - (pv.availableKm2 ?? 0)) / pv.totalKm2) * 100;
+    coverageLabel = `${pct.toFixed(1)}% of your polygon`;
+  }
+
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
       <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
           <div className="font-semibold">
-            Sponsor — {areaName ? areaName : "Area"}
+            Sponsor — {areaName || "Area"}
           </div>
           <button className="btn" onClick={handleClose}>
             Close
@@ -244,14 +217,16 @@ onPreviewGeoJSON?.(j.geojson ?? null);
               {pv.error}
             </div>
           )}
-          {pv.soldOut && (
-            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              No purchasable area left for this slot.
-            </div>
-          )}
+
           {checkoutErr && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
               {checkoutErr}
+            </div>
+          )}
+
+          {pv.soldOut && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              No purchasable area left for this slot.
             </div>
           )}
 
@@ -265,7 +240,6 @@ onPreviewGeoJSON?.(j.geojson ?? null);
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-            {/* UPDATED: dynamic coverage */}
             <Stat label="Coverage" value={coverageLabel} />
           </div>
 
@@ -273,10 +247,9 @@ onPreviewGeoJSON?.(j.geojson ?? null);
             <button className="btn" onClick={handleClose}>
               Cancel
             </button>
+
             <button
-              className={`btn ${
-                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
-              }`}
+              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
               onClick={startCheckout}
               disabled={!canBuy}
               title={!canBuy ? "No purchasable area available" : "Buy now"}
