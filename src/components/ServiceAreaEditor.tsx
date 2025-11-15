@@ -764,19 +764,23 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-      {/* Sponsor modal */}
-      {sponsorOpen && sponsorAreaId && (
-       <AreaSponsorModal
-  open={true}
-  onClose={...}
-  cleanerId={someId}       // ✅ rename businessId → cleanerId
-  areaId={someAreaId}
-  areaName={someAreaName}
-  onPreviewGeoJSON={multi => ...}
-  onClearPreview={() => ...}
-/>
+     {showSponsorModal && activeCleaner && activeArea && (
+  <AreaSponsorModal
+    open={showSponsorModal}
+    onClose={() => setShowSponsorModal(false)}
+    cleanerId={activeCleaner.id}       // 👈 pass cleanerId, not businessId
+    areaId={activeArea.id}
+    areaName={activeArea.name}
+    onPreviewGeoJSON={(multi) => {
+      // whatever you previously did here, or leave empty
+      setSponsorPreviewGeoJSON(multi);
+    }}
+    onClearPreview={() => {
+      setSponsorPreviewGeoJSON(null);
+    }}
+  />
+)}
 
-      )}
 
       {/* Manage modal (back-compat) */}
       {manageOpen && manageAreaId && (
