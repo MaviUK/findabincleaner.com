@@ -26,7 +26,9 @@ type PreviewState = {
   ratePerKm2: number | null;
   geojson: any | null;
   reason?: string;
+  hasExisting: boolean;  // 👈 add this line
 };
+
 
 const GBP = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
@@ -47,15 +49,17 @@ export default function AreaSponsorModal({
   onClearPreview,
 }: Props) {
   const [pv, setPv] = useState<PreviewState>({
-    loading: false,
-    error: null,
-    soldOut: false,
-    totalKm2: null,
-    availableKm2: null,
-    priceCents: null,
-    ratePerKm2: null,
-    geojson: null,
-  });
+  loading: false,
+  error: null,
+  soldOut: false,
+  totalKm2: null,
+  availableKm2: null,
+  priceCents: null,
+  ratePerKm2: null,
+  geojson: null,
+  hasExisting: false,   // 👈 add this
+});
+
 
   const monthlyPrice = useMemo(() => {
     if (pv.priceCents == null) return null;
@@ -94,18 +98,18 @@ export default function AreaSponsorModal({
           const soldOut = availableKm2 <= EPS;
 
           setPv({
-            loading: false,
-            error: null,
-            soldOut,
-            totalKm2,
-            availableKm2,
-            priceCents:
-              typeof j.price_cents === "number" ? j.price_cents : null,
-            ratePerKm2:
-              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: j.geojson ?? null,
-            reason: j.reason,
-          });
+  loading: false,
+  error: e?.message || "Preview failed",
+  soldOut: false,
+  totalKm2: null,
+  availableKm2: null,
+  priceCents: null,
+  ratePerKm2: null,
+  geojson: null,
+  reason: undefined,      // optional
+  hasExisting: false,     // 👈 add this
+});
+
         }
 
         onPreviewGeoJSON?.(j.geojson ?? null);
