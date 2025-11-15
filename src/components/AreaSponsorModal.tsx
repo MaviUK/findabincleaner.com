@@ -110,27 +110,28 @@ export default function AreaSponsorModal({
             ? j.total_km2
             : null;
 
-        const availableKm2 = j.sold_out
-          ? 0
-          : typeof j.available_km2 === "number"
-          ? j.available_km2
-          : 0;
+        const availableKm2 =
+  typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: null,
-            soldOut: !!j.sold_out || (availableKm2 ?? 0) <= EPS,
-            totalKm2,
-            availableKm2,
-            priceCents:
-              typeof j.price_cents === "number" ? j.price_cents : null,
-            ratePerKm2:
-              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: j.geojson ?? null,
-            reason: j.reason,
-          });
-        }
+if (!cancelled) {
+  // Decide "sold out" purely based on availableKm2
+  const soldOut = (availableKm2 ?? 0) <= EPS;
+
+  setPv({
+    loading: false,
+    error: null,
+    soldOut,
+    totalKm2,
+    availableKm2,
+    priceCents:
+      typeof j.price_cents === "number" ? j.price_cents : null,
+    ratePerKm2:
+      typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+    geojson: j.geojson ?? null,
+    reason: j.reason,
+  });
+}
+
         onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
         if (!cancelled) {
