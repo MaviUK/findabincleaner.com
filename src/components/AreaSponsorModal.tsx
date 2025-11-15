@@ -6,7 +6,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
 
-  businessId: string;
+  cleanerId: string; // caller passes cleanerId
   areaId: string;
   slot?: Slot;
 
@@ -22,13 +22,12 @@ type PreviewState = {
   soldOut: boolean;
   totalKm2: number | null;
   availableKm2: number | null;
-  priceCents: number | null;
+  priceCents: number | null; // new monthly price (after expansion or first purchase)
   ratePerKm2: number | null;
   geojson: any | null;
   reason?: string;
-  hasExisting: boolean;  // 👈 add this line
+  hasExisting: boolean; // whether this cleaner already has a sponsorship for this area+slot
 };
-
 
 const GBP = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
@@ -41,7 +40,7 @@ const EPS = 1e-9;
 export default function AreaSponsorModal({
   open,
   onClose,
-  businessId,
+  cleanerId,
   areaId,
   slot = 1,
   areaName,
@@ -49,24 +48,22 @@ export default function AreaSponsorModal({
   onClearPreview,
 }: Props) {
   const [pv, setPv] = useState<PreviewState>({
-  loading: false,
-  error: null,
-  soldOut: false,
-  totalKm2: null,
-  availableKm2: null,
-  priceCents: null,
-  ratePerKm2: null,
-  geojson: null,
-  hasExisting: false,   // 👈 add this
-});
-
+    loading: false,
+    error: null,
+    soldOut: false,
+    totalKm2: null,
+    availableKm2: null,
+    priceCents: null,
+    ratePerKm2: null,
+    geojson: null,
+    hasExisting: false,
+  });
 
   const monthlyPrice = useMemo(() => {
     if (pv.priceCents == null) return null;
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // 🔥 Only depends on stable inputs, not onPreviewGeoJSON
   useEffect(() => {
     let cancelled = false;
 
@@ -76,11 +73,19 @@ export default function AreaSponsorModal({
       setPv((s) => ({ ...s, loading: true, error: null }));
 
       try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
-        });
+        // Use the new upgrade-preview endpoint for both new + existing sponsors
+        const res = await fetch(
+          "/.netlify/functions/sponsored-upgrade-preview",
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              businessId: cleanerId, // backend accepts businessId or cleanerId
+              areaId,
+              slot,
+            }),
+          }
+        );
 
         const j = await res.json();
 
@@ -94,22 +99,35 @@ export default function AreaSponsorModal({
         const availableKm2 =
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
+        const newPriceCents =
+          typeof j.new_price_cents === "number" ? j.new_price_cents : null;
+
+        // Approximate rate per km² if we have new_total_area_km2 + new_price_cents
+        let ratePerKm2: number | null = null;
+        if (
+          typeof j.new_total_area_km2 === "number" &&
+          j.new_total_area_km2 > EPS &&
+          typeof newPriceCents === "number"
+        ) {
+          ratePerKm2 = (newPriceCents / 100) / j.new_total_area_km2;
+        }
+
         if (!cancelled) {
-          const soldOut = availableKm2 <= EPS;
+          const soldOut =
+            j.sold_out === true || (availableKm2 ?? 0) <= EPS;
 
           setPv({
-  loading: false,
-  error: e?.message || "Preview failed",
-  soldOut: false,
-  totalKm2: null,
-  availableKm2: null,
-  priceCents: null,
-  ratePerKm2: null,
-  geojson: null,
-  reason: undefined,      // optional
-  hasExisting: false,     // 👈 add this
-});
-
+            loading: false,
+            error: null,
+            soldOut,
+            totalKm2,
+            availableKm2,
+            priceCents: newPriceCents,
+            ratePerKm2,
+            geojson: j.geojson ?? null,
+            reason: j.reason,
+            hasExisting: !!j.has_existing,
+          });
         }
 
         onPreviewGeoJSON?.(j.geojson ?? null);
@@ -124,6 +142,8 @@ export default function AreaSponsorModal({
             priceCents: null,
             ratePerKm2: null,
             geojson: null,
+            reason: undefined,
+            hasExisting: false,
           });
         }
         onPreviewGeoJSON?.(null);
@@ -134,7 +154,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
+  }, [open, cleanerId, areaId, slot, onPreviewGeoJSON]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -144,96 +164,88 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // ✅ Has purchasable area?
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
 
-  // ✅ Don’t block on pv.loading anymore – just require some area & not mid checkout
-  const canBuy =
-    open &&
-    hasArea &&
-    !checkingOut;
+  // Can buy/upgrade if we have some area and we're not currently busy
+  const canBuy = open && hasArea && !checkingOut;
 
   const startCheckout = async () => {
-  if (!canBuy) return;
-  setCheckingOut(true);
-  setCheckoutErr(null);
+    if (!canBuy) return;
+    setCheckingOut(true);
+    setCheckoutErr(null);
 
-  try {
-    // Decide which endpoint to hit:
-    // - First-time sponsorship → go through Stripe Checkout
-    // - Existing sponsorship   → use upgrade endpoint (no redirect, change next period)
-    const endpoint = pv.hasExisting
-      ? "/.netlify/functions/sponsored-upgrade"
-      : "/.netlify/functions/sponsored-checkout";
+    try {
+      const endpoint = pv.hasExisting
+        ? "/.netlify/functions/sponsored-upgrade"
+        : "/.netlify/functions/sponsored-checkout";
 
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ businessId, areaId, slot }),
-    });
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId: cleanerId, // backend deals with mapping to cleaners table
+          areaId,
+          slot,
+        }),
+      });
 
-    const j = await res.json();
+      const j = await res.json();
 
-    if (!res.ok || !j?.ok) {
-      const message =
-        j?.message ||
-        j?.error ||
-        (res.status === 409
-          ? "No purchasable area left for this slot."
-          : pv.hasExisting
-          ? "Upgrade failed"
-          : "Checkout failed");
+      if (!res.ok || !j?.ok) {
+        const message =
+          j?.message ||
+          j?.error ||
+          (res.status === 409
+            ? "No purchasable area left for this slot."
+            : pv.hasExisting
+            ? "Upgrade failed"
+            : "Checkout failed");
 
-      setCheckoutErr(message);
+        setCheckoutErr(message);
 
-      if (res.status === 409) {
-        setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
-      }
+        if (res.status === 409) {
+          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+        }
 
-      setCheckingOut(false);
-      return;
-    }
-
-    // If this is a NEW sponsorship, Stripe Checkout will redirect
-    if (!pv.hasExisting) {
-      const url = j.url as string | undefined;
-      if (url) {
-        window.location.assign(url);
+        setCheckingOut(false);
         return;
       }
-      setCheckoutErr("Checkout session missing redirect URL.");
+
+      if (!pv.hasExisting) {
+        // First-time sponsorship → Stripe Checkout redirect
+        const url = j.url as string | undefined;
+        if (url) {
+          window.location.assign(url);
+          return;
+        }
+        setCheckoutErr("Checkout session missing redirect URL.");
+        setCheckingOut(false);
+        return;
+      }
+
+      // Upgrade: no redirect – subscription updated server-side for next billing period
+      setCheckoutErr(null);
       setCheckingOut(false);
-      return;
+      onClose();
+    } catch (e: any) {
+      setCheckoutErr(
+        e?.message || (pv.hasExisting ? "Upgrade failed" : "Checkout failed")
+      );
+      setCheckingOut(false);
     }
-
-    // If this is an UPGRADE, no redirect – just success.
-    // New price will apply from next billing date.
-    setCheckoutErr(null);
-    setCheckingOut(false);
-    onClose();
-    // (Optional: you might show a toast in your app here.)
-  } catch (e: any) {
-    setCheckoutErr(
-      e?.message || (pv.hasExisting ? "Upgrade failed" : "Checkout failed")
-    );
-    setCheckingOut(false);
-  }
-};
-
+  };
 
   if (!open) return null;
 
-  // Button labels depend on whether this is an upgrade or a first-time purchase
-const actionLabel = pv.hasExisting ? "Confirm upgrade" : "Buy now";
-const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
-
-
-  // ✅ Coverage = % of polygon YOU will be sponsoring (available / total)
+  // Coverage = % of your polygon that is still available to sponsor
   let coverageLabel = "—";
   if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
     const pct = (pv.availableKm2 / pv.totalKm2) * 100;
     coverageLabel = `${pct.toFixed(1)}% of your polygon`;
   }
+
+  const actionLabel = pv.hasExisting ? "Confirm upgrade" : "Buy now";
+  const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
@@ -276,11 +288,15 @@ const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
             <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
             <Stat
               label="Price per km² / month"
-              hint="From server"
+              hint="Approximate from preview"
               value={GBP(pv.ratePerKm2 ?? null)}
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
-            <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
+            <Stat
+              label="Your monthly price"
+              hint={pv.hasExisting ? "After expansion" : undefined}
+              value={GBP(monthlyPrice)}
+            />
             <Stat label="Coverage" value={coverageLabel} />
           </div>
 
@@ -289,16 +305,17 @@ const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
               Cancel
             </button>
             <button
-  className={`btn ${
-    canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
-  }`}
-  onClick={startCheckout}
-  disabled={!canBuy}
-  title={!canBuy ? "No purchasable area available" : actionLabel}
->
-  {checkingOut ? loadingLabel : actionLabel}
-</button>
-
+              className={`btn ${
+                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
+              }`}
+              onClick={startCheckout}
+              disabled={!canBuy}
+              title={
+                !canBuy ? "No purchasable area available" : actionLabel
+              }
+            >
+              {checkingOut ? loadingLabel : actionLabel}
+            </button>
           </div>
         </div>
       </div>
