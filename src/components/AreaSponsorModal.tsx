@@ -150,44 +150,72 @@ export default function AreaSponsorModal({
     !checkingOut;
 
   const startCheckout = async () => {
-    if (!canBuy) return;
-    setCheckingOut(true);
-    setCheckoutErr(null);
+  if (!canBuy) return;
+  setCheckingOut(true);
+  setCheckoutErr(null);
 
-    try {
-      const res = await fetch("/.netlify/functions/sponsored-checkout", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ businessId, areaId, slot }),
-      });
+  try {
+    // Decide which endpoint to hit:
+    // - First-time sponsorship → go through Stripe Checkout
+    // - Existing sponsorship   → use upgrade endpoint (no redirect, change next period)
+    const endpoint = pv.hasExisting
+      ? "/.netlify/functions/sponsored-upgrade"
+      : "/.netlify/functions/sponsored-checkout";
 
-      const j = await res.json();
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ businessId, areaId, slot }),
+    });
 
-      if (!res.ok || !j?.ok) {
-        const message =
-          j?.message ||
-          j?.error ||
-          (res.status === 409
-            ? "No purchasable area left for this slot."
-            : "Checkout failed");
+    const j = await res.json();
 
-        setCheckoutErr(message);
+    if (!res.ok || !j?.ok) {
+      const message =
+        j?.message ||
+        j?.error ||
+        (res.status === 409
+          ? "No purchasable area left for this slot."
+          : pv.hasExisting
+          ? "Upgrade failed"
+          : "Checkout failed");
 
-        if (res.status === 409) {
-          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
-        }
+      setCheckoutErr(message);
 
-        setCheckingOut(false);
-        return;
+      if (res.status === 409) {
+        setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
       }
 
-      const url = j.url as string;
-      window.location.assign(url);
-    } catch (e: any) {
-      setCheckoutErr(e?.message || "Checkout failed");
       setCheckingOut(false);
+      return;
     }
-  };
+
+    // If this is a NEW sponsorship, Stripe Checkout will redirect
+    if (!pv.hasExisting) {
+      const url = j.url as string | undefined;
+      if (url) {
+        window.location.assign(url);
+        return;
+      }
+      setCheckoutErr("Checkout session missing redirect URL.");
+      setCheckingOut(false);
+      return;
+    }
+
+    // If this is an UPGRADE, no redirect – just success.
+    // New price will apply from next billing date.
+    setCheckoutErr(null);
+    setCheckingOut(false);
+    onClose();
+    // (Optional: you might show a toast in your app here.)
+  } catch (e: any) {
+    setCheckoutErr(
+      e?.message || (pv.hasExisting ? "Upgrade failed" : "Checkout failed")
+    );
+    setCheckingOut(false);
+  }
+};
+
 
   if (!open) return null;
 
