@@ -106,16 +106,18 @@ export default function AreaSponsorModal({
         }
 
         const totalKm2 =
-          typeof j.total_km2 === "number" && isFinite(j.total_km2)
-            ? j.total_km2
-            : null;
+  typeof j.total_km2 === "number" && isFinite(j.total_km2)
+    ? j.total_km2
+    : null;
 
-        const availableKm2 =
-  typeof j.available_km2 === "number" ? j.available_km2 : 0;
+const availableKm2 =
+  typeof j.available_km2 === "number" && isFinite(j.available_km2)
+    ? j.available_km2
+    : 0;
 
 if (!cancelled) {
-  // Decide "sold out" purely based on availableKm2
-  const soldOut = (availableKm2 ?? 0) <= EPS;
+  // Decide soldOut purely from remaining area
+  const soldOut = availableKm2 <= EPS;
 
   setPv({
     loading: false,
@@ -124,13 +126,19 @@ if (!cancelled) {
     totalKm2,
     availableKm2,
     priceCents:
-      typeof j.price_cents === "number" ? j.price_cents : null,
+      typeof j.price_cents === "number" && isFinite(j.price_cents)
+        ? j.price_cents
+        : null,
     ratePerKm2:
-      typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+      typeof j.rate_per_km2 === "number" && isFinite(j.rate_per_km2)
+        ? j.rate_per_km2
+        : null,
     geojson: j.geojson ?? null,
     reason: j.reason,
   });
 }
+onPreviewGeoJSON?.(j.geojson ?? null);
+
 
         onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
