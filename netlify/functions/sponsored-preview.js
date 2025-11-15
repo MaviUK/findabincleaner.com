@@ -1,7 +1,9 @@
 import { createClient } from "@supabase/supabase-js";
-import area from "@turf/area";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -9,6 +11,7 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+// small epsilon so we treat tiny leftovers as zero
 const EPS = 1e-6;
 
 export default async (req) => {
@@ -29,61 +32,44 @@ export default async (req) => {
 
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400); // only featured slot
+  if (![1].includes(slot)) {
+    // only one featured slot for now
+    return json({ ok: false, error: "Invalid slot" }, 400);
+  }
 
   try {
-    // 1) Load the saved service area geometry for "total area"
-    const { data: sa, error: saErr } = await sb
-      .from("service_areas")
-      .select("gj")
-      .eq("id", areaId)
-      .maybeSingle();
-
-    if (saErr) throw saErr;
-    if (!sa || !sa.gj) {
-      return json({ ok: false, error: "Service area geometry missing" }, 404);
-    }
-
-    let total_km2 = 0;
-    try {
-      const m2 = area(sa.gj);
-      if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
-    } catch {
-      total_km2 = 0;
-    }
-
-    // 2) Ask Supabase which part of this area is still available,
-    //    excluding anything already owned by this cleaner but
-    //    respecting sponsorships from OTHER cleaners.
-    const { data: avData, error: avErr } = await sb.rpc("get_area_availability", {
-      _area_id: areaId,
-      _slot: slot,
-      _exclude_cleaner: businessId,
-    });
-    if (avErr) throw avErr;
-
-    const avRow = Array.isArray(avData) ? avData[0] || {} : avData || {};
-
-    const availableGeom =
-      avRow.available ??
-      avRow.available_gj ??
-      avRow.available_geojson ??
-      avRow.final_geojson ??
-      null;
-
-    let available_km2 = 0;
-    if (availableGeom && typeof availableGeom === "object") {
-      try {
-        const m2 = area(availableGeom);
-        if (Number.isFinite(m2)) available_km2 = m2 / 1_000_000;
-      } catch {
-        available_km2 = 0;
+    // 1) Ask Postgres how much of THIS area is still purchasable,
+    //    after subtracting all existing sponsorships for this slot
+    //    (regardless of which business owns them).
+    const { data: previewData, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
       }
-    }
+    );
+    if (prevErr) throw prevErr;
 
-    const sold_out = available_km2 <= EPS;
+    const row = Array.isArray(previewData)
+      ? previewData[0] || {}
+      : previewData || {};
 
-    // 3) Pricing
+    // These are the columns you saw in the SQL editor:
+    // total_km2, available_km2, sold_out, reason, gj
+    let total_km2 = Number(row.total_km2 ?? 0) || 0;
+    let available_km2 = Number(row.available_km2 ?? 0) || 0;
+    const sold_out_flag = Boolean(row.sold_out);
+    const reason_raw = row.reason || null;
+    const gj = row.gj ?? null;
+
+    if (!Number.isFinite(total_km2)) total_km2 = 0;
+    if (!Number.isFinite(available_km2)) available_km2 = 0;
+
+    // Normalise sold_out: either DB says sold_out, or available is effectively zero
+    const sold_out = sold_out_flag || available_km2 <= EPS;
+    if (sold_out) available_km2 = 0;
+
+    // 2) Pricing
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -99,11 +85,11 @@ export default async (req) => {
       ok: true,
       sold_out,
       available_km2: Math.max(0, available_km2),
-      total_km2,
+      total_km2: Math.max(0, total_km2),
       rate_per_km2,
       price_cents,
-      geojson: availableGeom, // highlight purchasable sub-region
-      reason: sold_out ? "no_remaining" : "ok",
+      geojson: gj,
+      reason: sold_out ? reason_raw || "no_remaining" : "ok",
     });
   } catch (e) {
     console.error("[sponsored-preview] error:", e);
