@@ -6,7 +6,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
 
-  businessId: string;
+  cleanerId: string;   // 👈 matches how you call it from ServiceAreaEditor
   areaId: string;
   slot?: Slot;
 
@@ -15,6 +15,7 @@ type Props = {
   onPreviewGeoJSON?: (gj: any | null) => void;
   onClearPreview?: () => void;
 };
+
 
 type PreviewState = {
   loading: boolean;
@@ -40,13 +41,14 @@ const EPS = 1e-9;
 export default function AreaSponsorModal({
   open,
   onClose,
-  businessId,
+  cleanerId,
   areaId,
   slot = 1,
   areaName,
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
+  const businessId = cleanerId; // alias for clarity below
   const [pv, setPv] = useState<PreviewState>({
     loading: false,
     error: null,
@@ -150,7 +152,7 @@ export default function AreaSponsorModal({
       cancelled = true;
     };
     // only re-run when these stable inputs change
-  }, [open, businessId, areaId, slot]);
+  }, [open, cleanerId, areaId, slot]);
 
   const handleClose = () => {
     onClearPreview?.();
