@@ -62,6 +62,7 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
+  // 🔥 Only depends on stable inputs, not onPreviewGeoJSON
   useEffect(() => {
     let cancelled = false;
 
@@ -90,7 +91,6 @@ export default function AreaSponsorModal({
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
         if (!cancelled) {
-          // consider it "sold out" ONLY if there is effectively no remaining area
           const soldOut = availableKm2 <= EPS;
 
           setPv({
@@ -140,12 +140,12 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // 👉 Key change: canBuy only cares that there IS some purchasable area.
+  // ✅ Has purchasable area?
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
 
+  // ✅ Don’t block on pv.loading anymore – just require some area & not mid checkout
   const canBuy =
     open &&
-    !pv.loading &&
     hasArea &&
     !checkingOut;
 
@@ -191,7 +191,7 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  // 👉 Coverage = % of your polygon that YOU would be sponsoring (available / total).
+  // ✅ Coverage = % of polygon YOU will be sponsoring (available / total)
   let coverageLabel = "—";
   if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
     const pct = (pv.availableKm2 / pv.totalKm2) * 100;
