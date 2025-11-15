@@ -764,15 +764,14 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-     {showSponsorModal && activeCleaner && activeArea && (
+  {showSponsorModal && activeCleaner && activeArea && (
   <AreaSponsorModal
     open={showSponsorModal}
     onClose={() => setShowSponsorModal(false)}
-    cleanerId={activeCleaner.id}       // 👈 pass cleanerId, not businessId
+    cleanerId={activeCleaner.id}
     areaId={activeArea.id}
     areaName={activeArea.name}
     onPreviewGeoJSON={(multi) => {
-      // whatever you previously did here, or leave empty
       setSponsorPreviewGeoJSON(multi);
     }}
     onClearPreview={() => {
