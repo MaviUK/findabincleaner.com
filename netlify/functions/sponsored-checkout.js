@@ -1,8 +1,11 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
-import area from "@turf/area";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
@@ -33,38 +36,31 @@ export default async (req) => {
 
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
+  if (![1].includes(slot)) {
+    return json({ ok: false, error: "Invalid slot" }, 400);
+  }
 
   try {
-    // 1) Compute *currently* available area, excluding this cleaner’s own
-    //    sponsorships but respecting everyone else's.
-    const { data: avData, error: avErr } = await sb.rpc("get_area_availability", {
-      _area_id: areaId,
-      _slot: slot,
-      _exclude_cleaner: businessId,
-    });
-    if (avErr) throw avErr;
-
-    const avRow = Array.isArray(avData) ? avData[0] || {} : avData || {};
-
-    const availableGeom =
-      avRow.available ??
-      avRow.available_gj ??
-      avRow.available_geojson ??
-      avRow.final_geojson ??
-      null;
-
-    let available_km2 = 0;
-    if (availableGeom && typeof availableGeom === "object") {
-      try {
-        const m2 = area(availableGeom);
-        if (Number.isFinite(m2)) available_km2 = m2 / 1_000_000;
-      } catch {
-        available_km2 = 0;
+    // 1) Recompute remaining area for this service area + slot
+    const { data: previewData, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
       }
-    }
+    );
+    if (prevErr) throw prevErr;
 
-    if (available_km2 <= EPS) {
+    const row = Array.isArray(previewData)
+      ? previewData[0] || {}
+      : previewData || {};
+
+    let available_km2 = Number(row.available_km2 ?? 0) || 0;
+    const sold_out_flag = Boolean(row.sold_out);
+
+    if (!Number.isFinite(available_km2)) available_km2 = 0;
+
+    if (sold_out_flag || available_km2 <= EPS) {
       return json(
         {
           ok: false,
@@ -75,7 +71,7 @@ export default async (req) => {
       );
     }
 
-    // 2) Get price from env
+    // 2) Pricing
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -91,7 +87,7 @@ export default async (req) => {
     // 3) Load cleaner and ensure Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
-      .select("id, stripe_customer_id, business_name, name, email")
+      .select("id, stripe_customer_id, business_name, email")
       .eq("id", businessId)
       .maybeSingle();
 
@@ -101,7 +97,7 @@ export default async (req) => {
     }
 
     let stripeCustomerId = cleaner.stripe_customer_id || null;
-    const customerName = cleaner.business_name || cleaner.name || "Customer";
+    const customerName = cleaner.business_name || "Customer";
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
@@ -116,32 +112,58 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
-    // 4) Create Stripe Checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      metadata: {
-        business_id: businessId,
-        area_id: areaId,
-        slot: String(slot),
-      },
-      line_items: [
-        {
-          price_data: {
-            currency: "gbp",
-            product_data: {
-              name: "Featured service area",
-              description: "Be shown first in local search for this area.",
-            },
-            unit_amount: amount_cents,
-            recurring: { interval: "month" },
-          },
-          quantity: 1,
+    const createSession = (customerId) =>
+      stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer: customerId,
+        metadata: {
+          business_id: businessId,
+          area_id: areaId,
+          slot: String(slot),
         },
-      ],
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
-    });
+        line_items: [
+          {
+            price_data: {
+              currency: "gbp",
+              product_data: {
+                name: "Featured service area",
+                description:
+                  "Be shown first in local search results for this area.",
+              },
+              unit_amount: amount_cents,
+              recurring: { interval: "month" },
+            },
+            quantity: 1,
+          },
+        ],
+        success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
+        cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      });
+
+    let session;
+    try {
+      session = await createSession(stripeCustomerId);
+    } catch (e) {
+      // if stored customer is stale, recreate and retry once
+      const code = e?.raw?.code;
+      const param = e?.raw?.param;
+      if (code === "resource_missing" && param === "customer") {
+        const customer = await stripe.customers.create({
+          name: customerName,
+          email: cleaner.email || undefined,
+        });
+        stripeCustomerId = customer.id;
+
+        await sb
+          .from("cleaners")
+          .update({ stripe_customer_id: stripeCustomerId })
+          .eq("id", businessId);
+
+        session = await createSession(stripeCustomerId);
+      } else {
+        throw e;
+      }
+    }
 
     return json({ ok: true, url: session.url }, 200);
   } catch (e) {
