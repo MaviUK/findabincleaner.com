@@ -64,8 +64,10 @@ export default function AreaSponsorModal({
 
   useEffect(() => {
     let cancelled = false;
+
     const run = async () => {
       if (!open) return;
+
       setPv((s) => ({ ...s, loading: true, error: null }));
 
       try {
@@ -88,7 +90,7 @@ export default function AreaSponsorModal({
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
         if (!cancelled) {
-          // IMPORTANT: soldOut ONLY depends on remaining area.
+          // consider it "sold out" ONLY if there is effectively no remaining area
           const soldOut = availableKm2 <= EPS;
 
           setPv({
@@ -138,11 +140,13 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
+  // 👉 Key change: canBuy only cares that there IS some purchasable area.
+  const hasArea = (pv.availableKm2 ?? 0) > EPS;
+
   const canBuy =
     open &&
     !pv.loading &&
-    !pv.soldOut &&
-    (pv.availableKm2 ?? 0) > EPS &&
+    hasArea &&
     !checkingOut;
 
   const startCheckout = async () => {
@@ -187,10 +191,10 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  // Coverage %
+  // 👉 Coverage = % of your polygon that YOU would be sponsoring (available / total).
   let coverageLabel = "—";
-  if (pv.totalKm2 && pv.totalKm2 > EPS) {
-    const pct = ((pv.totalKm2 - (pv.availableKm2 ?? 0)) / pv.totalKm2) * 100;
+  if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
+    const pct = (pv.availableKm2 / pv.totalKm2) * 100;
     coverageLabel = `${pct.toFixed(1)}% of your polygon`;
   }
 
@@ -224,7 +228,7 @@ export default function AreaSponsorModal({
             </div>
           )}
 
-          {pv.soldOut && (
+          {pv.soldOut && !hasArea && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
               No purchasable area left for this slot.
             </div>
@@ -247,12 +251,15 @@ export default function AreaSponsorModal({
             <button className="btn" onClick={handleClose}>
               Cancel
             </button>
-
             <button
-              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
+              className={`btn ${
+                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
+              }`}
               onClick={startCheckout}
               disabled={!canBuy}
-              title={!canBuy ? "No purchasable area available" : "Buy now"}
+              title={
+                !canBuy ? "No purchasable area available" : "Buy now"
+              }
             >
               {checkingOut ? "Redirecting..." : "Buy now"}
             </button>
