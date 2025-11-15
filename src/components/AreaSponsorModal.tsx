@@ -219,6 +219,11 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
+  // Button labels depend on whether this is an upgrade or a first-time purchase
+const actionLabel = pv.hasExisting ? "Confirm upgrade" : "Buy now";
+const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
+
+
   // ✅ Coverage = % of polygon YOU will be sponsoring (available / total)
   let coverageLabel = "—";
   if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
@@ -280,17 +285,16 @@ export default function AreaSponsorModal({
               Cancel
             </button>
             <button
-              className={`btn ${
-                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
-              }`}
-              onClick={startCheckout}
-              disabled={!canBuy}
-              title={
-                !canBuy ? "No purchasable area available" : "Buy now"
-              }
-            >
-              {checkingOut ? "Redirecting..." : "Buy now"}
-            </button>
+  className={`btn ${
+    canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
+  }`}
+  onClick={startCheckout}
+  disabled={!canBuy}
+  title={!canBuy ? "No purchasable area available" : actionLabel}
+>
+  {checkingOut ? loadingLabel : actionLabel}
+</button>
+
           </div>
         </div>
       </div>
