@@ -305,40 +305,55 @@ export default function ServiceAreaEditor({
 
   // ------- Availability by geometry (is there anything left to buy?) -------
   const computeAvailabilityForArea = useCallback(
-    async (areaId: string) => {
-      if (!areaId || !myBusinessId) return;
-      setAvailLoading((m) => ({ ...m, [areaId]: true }));
-      try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId: myBusinessId,
-            cleanerId: myBusinessId,
-            areaId,
-            slot: 1, // back-compat; server may ignore
-          }),
-        });
+  async (areaId: string) => {
+    if (!areaId || !myBusinessId) return;
+    setAvailLoading((m) => ({ ...m, [areaId]: true }));
+    try {
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId: myBusinessId,
+          cleanerId: myBusinessId,
+          areaId,
+          slot: 1, // single Featured slot
+        }),
+      });
 
-        if (!res.ok) {
-          setAvail((m) => ({ ...m, [areaId]: undefined }));
-          return;
-        }
-
-        const j = await res.json();
-        if (!j || !j.ok) {
-          setAvail((m) => ({ ...m, [areaId]: undefined }));
-          return;
-        }
-
-        const km2 = Number(j.area_km2);
-        setAvail((m) => ({ ...m, [areaId]: Number.isFinite(km2) ? km2 > 0 : undefined }));
-      } finally {
-        setAvailLoading((m) => ({ ...m, [areaId]: false }));
+      if (!res.ok) {
+        setAvail((m) => ({ ...m, [areaId]: undefined }));
+        return;
       }
-    },
-    [myBusinessId]
-  );
+
+      const j = await res.json();
+      if (!j || !j.ok) {
+        setAvail((m) => ({ ...m, [areaId]: undefined }));
+        return;
+      }
+
+      // Use remaining area from the preview. If sold_out is true or
+      // there is effectively zero remaining area, mark this area as unavailable.
+      const rawKm2 =
+        j.available_km2 ??
+        j.area_km2 ??
+        j.remaining_km2 ??
+        0;
+
+      const km2 = Number(rawKm2);
+      const soldOut = Boolean(j.sold_out);
+      const hasRemaining =
+        !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
+
+      // avail[areaId] === true  → there IS purchasable area
+      // avail[areaId] === false → NO purchasable area (slot taken / sold out)
+      setAvail((m) => ({ ...m, [areaId]: hasRemaining }));
+    } finally {
+      setAvailLoading((m) => ({ ...m, [areaId]: false }));
+    }
+  },
+  [myBusinessId]
+);
+
 
   useEffect(() => {
     serviceAreas.forEach((a) => {
