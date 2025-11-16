@@ -250,7 +250,8 @@ export default function ServiceAreaEditor({
   }, [fetchAreas, myBusinessId]);
 
   // ------- Sponsorship occupancy (single-slot) -------
-  const fetchSponsorship = useCallback(async (areaIds: string[]) => {
+  const fetchSponsorship = useCallback(
+  async (areaIds: string[]) => {
     if (!areaIds.length) return;
     try {
       const res = await fetch("/.netlify/functions/area-sponsorship", {
@@ -287,16 +288,47 @@ export default function ServiceAreaEditor({
           };
         }
 
-        map[a.area_id] = { area_id: a.area_id, slot, paint: a.paint };
+        // decide paint based on whether slot is taken and who owns it
+        let paint: SponsorshipState["paint"] | undefined;
+
+        const isTakenAndActive =
+          slot.taken && isBlockingStatus(slot.status) && !!slot.owner_business_id;
+
+        if (isTakenAndActive) {
+          const isMine = slot.owner_business_id === myBusinessId;
+
+          if (isMine) {
+            // ✅ sponsored area belonging to the logged-in business
+            paint = {
+              tier: 2,
+              fill: "rgba(34, 197, 94, 0.35)", // green-ish
+              stroke: "#16a34a",
+            };
+          } else {
+            // 🔴 sponsored area belonging to another business
+            paint = {
+              tier: 1,
+              fill: "rgba(248, 113, 113, 0.30)", // red-ish
+              stroke: "#ef4444",
+            };
+          }
+        }
+
+        map[a.area_id] = { area_id: a.area_id, slot, paint };
       }
 
-      if (import.meta.env.DEV) console.debug("[ServiceAreaEditor] sponsorship map:", map);
+      if (import.meta.env.DEV) {
+        console.debug("[ServiceAreaEditor] sponsorship map:", map);
+      }
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
-  }, []);
+  },
+  [myBusinessId]
+);
+
 
   useEffect(() => {
     const ids = serviceAreas.map((a) => a.id);
