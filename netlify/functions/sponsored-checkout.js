@@ -1,39 +1,133 @@
-import { createClient } from '@supabase/supabase-js';
-import Stripe from 'stripe';
+// netlify/functions/sponsored-checkout.js
+import { createClient } from "@supabase/supabase-js";
+import Stripe from "stripe";
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
-export const handler = async (event) => {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+
+export default async (req) => {
+  if (req.method !== "POST") {
+    return json({ ok: false, error: "Method not allowed" }, 405);
+  }
+
   try {
-    const body = JSON.parse(event.body || "{}");
-    const { businessId, areaId, monthlyPrice } = body;
+    const body = await req.json().catch(() => ({}));
 
-    if (!businessId || !areaId || !monthlyPrice) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: "Missing parameters" }),
-      };
+    const {
+      businessId,
+      areaId,
+      slot = 1,
+      priceCents, // passed from the modal
+      // cleanerId is also sent but we don't actually need it here
+    } = body;
+
+    if (!businessId || !areaId || priceCents == null) {
+      return json(
+        { ok: false, error: "Missing businessId, areaId or priceCents" },
+        400
+      );
     }
 
-    const supabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_SERVICE_KEY
-    );
-
-    //
-    // 1. Load the business (now stored in `profiles`, not `businesses`)
-    //
-    const { data: business, error: businessErr } = await supabase
+    // 1) Load business profile from `profiles` (this replaced `businesses`)
+    const { data: profile, error: profileErr } = await sb
       .from("profiles")
-      .select("*")
+      .select("id, email, stripe_customer_id")
       .eq("id", businessId)
-      .single();
+      .maybeSingle();
 
-    if (businessErr || !business) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({
+    if (profileErr || !profile) {
+      return json(
+        {
+          ok: false,
           error: "Business profile not found",
-          details: businessErr?.message
-        }),
-      };
+          details: profileErr?.message ?? null,
+        },
+        400
+      );
+    }
+
+    // 2) Ensure Stripe customer
+    let stripeCustomerId = profile.stripe_customer_id ?? null;
+
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        email: profile.email || undefined,
+        metadata: {
+          supabase_business_id: profile.id,
+        },
+      });
+
+      stripeCustomerId = customer.id;
+
+      // Persist customer id on the profile
+      await sb
+        .from("profiles")
+        .update({ stripe_customer_id: stripeCustomerId })
+        .eq("id", profile.id);
+    }
+
+    // 3) Normalise price (in pence)
+    const unitAmount =
+      typeof priceCents === "number"
+        ? Math.round(priceCents)
+        : Math.round(Number(priceCents) || 0);
+
+    if (!unitAmount || unitAmount <= 0) {
+      return json(
+        { ok: false, error: "Invalid price for checkout session" },
+        400
+      );
+    }
+
+    // 4) Create Stripe Checkout session for a subscription
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: stripeCustomerId,
+      line_items: [
+        {
+          price_data: {
+            currency: "gbp",
+            unit_amount: unitAmount,
+            recurring: { interval: "month" },
+            product_data: {
+              name: "Featured area sponsorship",
+              metadata: {
+                supabase_business_id: profile.id,
+                supabase_area_id: areaId,
+                slot: String(slot),
+              },
+            },
+          },
+          quantity: 1,
+        },
+      ],
+      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
+      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      metadata: {
+        business_id: profile.id,
+        area_id: areaId,
+        slot: String(slot),
+      },
+    });
+
+    return json({ ok: true, url: session.url }, 200);
+  } catch (e) {
+    console.error("sponsored-checkout error:", e);
+    return json(
+      { ok: false, error: e?.message || "Server error in checkout" },
+      500
+    );
+  }
+};
