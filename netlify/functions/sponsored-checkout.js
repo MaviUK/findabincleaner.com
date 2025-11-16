@@ -64,11 +64,11 @@ export default async (req) => {
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
-        email: profile.email || undefined,
-        metadata: {
-          supabase_business_id: profile.id,
-        },
-      });
+  metadata: {
+    supabase_business_id: profile.id,
+  },
+});
+
 
       stripeCustomerId = customer.id;
 
