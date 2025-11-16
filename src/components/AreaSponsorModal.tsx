@@ -60,11 +60,13 @@ export default function AreaSponsorModal({
     geojson: null,
   });
 
+  // Derived monthly price from preview
   const monthlyPrice = useMemo(() => {
     if (pv.priceCents == null) return null;
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
+  // Fetch sponsored preview when modal opens
   useEffect(() => {
     let cancelled = false;
 
@@ -144,7 +146,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot]); // <- note: no onPreviewGeoJSON here
+  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -166,14 +168,17 @@ export default function AreaSponsorModal({
     setCheckoutErr(null);
 
     try {
-      body: JSON.stringify({
-  businessId,
-  areaId,
-  slot,
-  // derive from the calculated monthlyPrice in this component
-  priceCents: Math.round((monthlyPrice ?? 0) * 100),
-}),
-
+      const res = await fetch("/.netlify/functions/sponsored-checkout", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId,
+          areaId,
+          slot,
+          // derive cents from the monthly price we show in the UI
+          priceCents: Math.round((monthlyPrice ?? 0) * 100),
+        }),
+      });
 
       if (!res.ok) {
         let message = `Checkout failed (${res.status})`;
@@ -203,8 +208,9 @@ export default function AreaSponsorModal({
 
       const j = await res.json();
       const url = j.url as string | undefined;
-      if (url) window.location.assign(url);
-      else {
+      if (url) {
+        window.location.assign(url);
+      } else {
         setCheckoutErr("Checkout session missing redirect URL.");
         setCheckingOut(false);
       }
@@ -314,3 +320,4 @@ function Stat({
     </div>
   );
 }
+
