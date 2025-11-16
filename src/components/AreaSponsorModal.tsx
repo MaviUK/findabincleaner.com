@@ -21,15 +21,17 @@ type PreviewState = {
   loading: boolean;
   error: string | null;
   soldOut: boolean;
+
   totalKm2: number | null;
   availableKm2: number | null;
   priceCents: number | null;
   ratePerKm2: number | null;
-  reason?: "owned_by_other" | "no_remaining" | "ok";
   geojson: any | null;
+
+  reason?: string | null;
 };
 
-const GBP = (n: number | null | undefined) =>
+const GBP = (n: number | null) =>
   typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
 
 const fmtKm2 = (n: number | null | undefined) =>
@@ -74,20 +76,31 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
+          body: JSON.stringify({
+            businessId,
+            cleanerId: businessId,
+            areaId,
+            slot,
+          }),
         });
-        const j = await res.json();
 
-        if (!res.ok || !j?.ok) {
-          const msg = j?.error || j?.message || "Preview failed";
-          throw new Error(msg);
+        if (!res.ok) {
+          let message = `Preview failed (${res.status})`;
+          try {
+            const j = await res.json();
+            if (typeof j?.error === "string") message = j.error;
+          } catch {
+            // ignore
+          }
+          throw new Error(message);
         }
+
+        const j = await res.json();
 
         const totalKm2 =
           typeof j.total_km2 === "number" && isFinite(j.total_km2)
             ? j.total_km2
             : null;
-
         const availableKm2 =
           typeof j.available_km2 === "number" && isFinite(j.available_km2)
             ? j.available_km2
@@ -156,24 +169,42 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ businessId, areaId, slot }),
+        body: JSON.stringify({
+          businessId,
+          cleanerId: businessId,
+          areaId,
+          slot,
+          priceCents: pv.priceCents,
+        }),
       });
-      const j = await res.json();
 
-      if (!res.ok || !j?.ok) {
-        const message =
-          j?.message ||
-          j?.error ||
-          (res.status === 409
+      if (!res.ok) {
+        let message = `Checkout failed (${res.status})`;
+        try {
+          const j = await res.json();
+          if (typeof j?.error === "string") message = j.error;
+          if (res.status === 409 && j?.reason) {
+            message =
+              typeof j.reason === "string"
+                ? j.reason
+                : "No purchasable area left for this slot.";
+          }
+        } catch {
+          // ignore
+        }
+
+        setCheckoutErr(
+          res.status === 409
             ? "No purchasable area left for this slot."
-            : "Checkout failed");
-        setCheckoutErr(message);
+            : "Checkout failed"
+        );
         if (res.status === 409)
           setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
         setCheckingOut(false);
         return;
       }
 
+      const j = await res.json();
       const url = j.url as string | undefined;
       if (url) window.location.assign(url);
       else {
@@ -195,7 +226,8 @@ export default function AreaSponsorModal({
           <div className="font-semibold">
             Sponsor — {areaName ? areaName : "Area"}
           </div>
-          <button className="btn" onClick={handleClose}>
+
+          <button className="btn btn-sm" onClick={handleClose}>
             Close
           </button>
         </div>
@@ -232,7 +264,19 @@ export default function AreaSponsorModal({
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-            <Stat label="Coverage" value="100.0% of your polygon" />
+            <Stat
+              label="Coverage"
+              value={
+                pv.totalKm2 == null ||
+                pv.availableKm2 == null ||
+                pv.totalKm2 <= 0
+                  ? "—"
+                  : `${(
+                      (pv.availableKm2 / pv.totalKm2) *
+                      100
+                    ).toFixed(1)}% of your polygon`
+              }
+            />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1">
