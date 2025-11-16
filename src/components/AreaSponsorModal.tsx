@@ -166,17 +166,14 @@ export default function AreaSponsorModal({
     setCheckoutErr(null);
 
     try {
-      const res = await fetch("/.netlify/functions/sponsored-checkout", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          businessId,
-          cleanerId: businessId,
-          areaId,
-          slot,
-          priceCents: pv.priceCents,
-        }),
-      });
+      body: JSON.stringify({
+  businessId,
+  areaId,
+  slot,
+  // derive from the calculated monthlyPrice in this component
+  priceCents: Math.round((monthlyPrice ?? 0) * 100),
+}),
+
 
       if (!res.ok) {
         let message = `Checkout failed (${res.status})`;
