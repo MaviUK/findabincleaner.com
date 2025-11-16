@@ -1,17 +1,24 @@
 import { createClient } from "@supabase/supabase-js";
+import area from "@turf/area";
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
+// HTTP helper
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
 
-// small epsilon so we treat tiny leftovers as zero
+const BLOCKING = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "paused",
+]);
+
 const EPS = 1e-6;
 
 export default async (req) => {
@@ -31,17 +38,29 @@ export default async (req) => {
   const businessId = (body.businessId || body.cleanerId || "").trim();
 
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
-  if (![1].includes(slot)) {
-    // only one featured slot for now
-    return json({ ok: false, error: "Invalid slot" }, 400);
-  }
 
   try {
-    // 1) Ask Postgres how much of THIS area is still purchasable,
-    //    after subtracting all existing sponsorships for this slot
-    //    (regardless of which business owns them).
-    const { data: previewData, error: prevErr } = await sb.rpc(
+    // 1) Is this slot already owned by someone else?
+    const { data: takenRows, error: takenErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("business_id, status")
+      .eq("area_id", areaId)
+      .eq("slot", slot);
+
+    if (takenErr) throw takenErr;
+
+    const blocking = (takenRows || []).filter((r) =>
+      BLOCKING.has(String(r.status || "").toLowerCase())
+    );
+
+    const ownedByOther =
+      (blocking?.length || 0) > 0 &&
+      String(blocking[0].business_id) !== String(businessId);
+
+    // 2) Remaining area from RPC
+    const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
         p_area_id: areaId,
@@ -50,26 +69,45 @@ export default async (req) => {
     );
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewData)
-      ? previewData[0] || {}
-      : previewData || {};
+    const row = Array.isArray(previewRow)
+      ? previewRow[0] || {}
+      : previewRow || {};
 
-    // These are the columns you saw in the SQL editor:
-    // total_km2, available_km2, sold_out, reason, gj
-    let total_km2 = Number(row.total_km2 ?? 0) || 0;
-    let available_km2 = Number(row.available_km2 ?? 0) || 0;
-    const sold_out_flag = Boolean(row.sold_out);
-    const reason_raw = row.reason || null;
-    const gj = row.gj ?? null;
+    const remainingField =
+      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
 
-    if (!Number.isFinite(total_km2)) total_km2 = 0;
-    if (!Number.isFinite(available_km2)) available_km2 = 0;
+    let remaining_km2 = Number(remainingField);
+    if (!Number.isFinite(remaining_km2)) remaining_km2 = 0;
 
-    // Normalise sold_out: either DB says sold_out, or available is effectively zero
-    const sold_out = sold_out_flag || available_km2 <= EPS;
-    if (sold_out) available_km2 = 0;
+    const geojson = row.gj ?? row.geojson ?? null;
 
-    // 2) Pricing
+    // 3) Total area for the modal card
+    let total_km2 = null;
+    const { data: sa, error: saErr } = await sb
+      .from("service_areas")
+      .select("gj")
+      .eq("id", areaId)
+      .maybeSingle();
+    if (!saErr && sa?.gj) {
+      try {
+        const m2 = area(sa.gj);
+        if (Number.isFinite(m2)) total_km2 = m2 / 1_000_000;
+      } catch {
+        // ignore turf errors
+      }
+    }
+
+    // 4) Derive sold_out from remaining_km2 + ownedByOther
+    let sold_out;
+    if (ownedByOther) {
+      sold_out = true;
+      remaining_km2 = 0;
+    } else if (remaining_km2 > EPS) {
+      sold_out = false;
+    } else {
+      sold_out = true;
+    }
+
     const rate_per_km2 =
       Number(
         process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
@@ -77,22 +115,26 @@ export default async (req) => {
           0
       ) || 0;
 
-    const price_cents = sold_out
-      ? 0
-      : Math.round(Math.max(available_km2, 0) * rate_per_km2 * 100);
+    const price_cents = Math.round(
+      Math.max(remaining_km2, 0) * rate_per_km2 * 100
+    );
+
+    let reason;
+    if (ownedByOther) reason = "owned_by_other";
+    else if (remaining_km2 <= EPS) reason = "no_remaining";
+    else reason = "ok";
 
     return json({
       ok: true,
       sold_out,
-      available_km2: Math.max(0, available_km2),
-      total_km2: Math.max(0, total_km2),
+      available_km2: Math.max(0, remaining_km2),
+      total_km2,
       rate_per_km2,
       price_cents,
-      geojson: gj,
-      reason: sold_out ? reason_raw || "no_remaining" : "ok",
+      geojson,
+      reason,
     });
   } catch (e) {
-    console.error("[sponsored-preview] error:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };

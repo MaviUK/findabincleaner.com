@@ -316,7 +316,7 @@ export default function ServiceAreaEditor({
             businessId: myBusinessId,
             cleanerId: myBusinessId,
             areaId,
-            slot: 1, // single Featured slot
+            slot: 1, // back-compat; server may ignore
           }),
         });
 
@@ -331,22 +331,8 @@ export default function ServiceAreaEditor({
           return;
         }
 
-        // Use remaining area from the preview. If sold_out is true or
-        // there is effectively zero remaining area, mark this area as unavailable.
-        const rawKm2 =
-          j.available_km2 ??
-          j.area_km2 ??
-          j.remaining_km2 ??
-          0;
-
-        const km2 = Number(rawKm2);
-        const soldOut = Boolean(j.sold_out);
-        const hasRemaining =
-          !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
-
-        // avail[areaId] === true  → there IS purchasable area
-        // avail[areaId] === false → NO purchasable area (slot taken / sold out)
-        setAvail((m) => ({ ...m, [areaId]: hasRemaining }));
+        const km2 = Number(j.area_km2);
+        setAvail((m) => ({ ...m, [areaId]: Number.isFinite(km2) ? km2 > 0 : undefined }));
       } finally {
         setAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
@@ -771,11 +757,11 @@ export default function ServiceAreaEditor({
             setSponsorOpen(false);
             clearPreview();
           }}
-          cleanerId={myBusinessId}
+          businessId={myBusinessId}
           areaId={sponsorAreaId}
-          areaName={serviceAreas.find((a) => a.id === sponsorAreaId)?.name}
-          onPreviewGeoJSON={drawPreview}
-          onClearPreview={clearPreview}
+          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
+          onPreviewGeoJSON={(multi) => drawPreview(multi)}
+          onClearPreview={() => clearPreview()}
         />
       )}
 
