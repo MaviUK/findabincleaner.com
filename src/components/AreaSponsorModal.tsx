@@ -74,18 +74,15 @@ export default function AreaSponsorModal({
 
       try {
         // Use the new upgrade-preview endpoint for both new + existing sponsors
-        const res = await fetch(
-          "/.netlify/functions/sponsored-upgrade-preview",
-          {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({
-              businessId: cleanerId, // backend accepts businessId or cleanerId
-              areaId,
-              slot,
-            }),
-          }
-        );
+        const res = await fetch("/.netlify/functions/sponsored-upgrade-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            businessId: cleanerId, // backend accepts businessId or cleanerId
+            areaId,
+            slot,
+          }),
+        });
 
         const j = await res.json();
 
@@ -93,8 +90,7 @@ export default function AreaSponsorModal({
           throw new Error(j?.error || j?.message || "Preview failed");
         }
 
-        const totalKm2 =
-          typeof j.total_km2 === "number" ? j.total_km2 : null;
+        const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
 
         const availableKm2 =
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
@@ -113,8 +109,7 @@ export default function AreaSponsorModal({
         }
 
         if (!cancelled) {
-          const soldOut =
-            j.sold_out === true || (availableKm2 ?? 0) <= EPS;
+          const soldOut = j.sold_out === true || (availableKm2 ?? 0) <= EPS;
 
           setPv({
             loading: false,
@@ -237,23 +232,32 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  // Coverage = % of your polygon that is still available to sponsor
+  // Coverage label & hint:
+  // - For NEW sponsorship: "X% of your polygon" = portion you'll sponsor
+  // - For UPGRADE: "X% extra of your polygon" = additional coverage available
   let coverageLabel = "—";
+  let coverageHint: string | undefined;
+
   if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
     const pct = (pv.availableKm2 / pv.totalKm2) * 100;
-    coverageLabel = `${pct.toFixed(1)}% of your polygon`;
+    if (pv.hasExisting) {
+      coverageLabel = `${pct.toFixed(1)}% extra of your polygon`;
+      coverageHint = "Additional coverage you can still sponsor";
+    } else {
+      coverageLabel = `${pct.toFixed(1)}% of your polygon`;
+      coverageHint = "Portion of this area you'll sponsor";
+    }
   }
 
   const actionLabel = pv.hasExisting ? "Confirm upgrade" : "Buy now";
   const loadingLabel = pv.hasExisting ? "Updating..." : "Redirecting...";
+  const priceLabel = pv.hasExisting ? "Your new monthly price" : "Your monthly price";
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
       <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">
-            Sponsor — {areaName || "Area"}
-          </div>
+          <div className="font-semibold">Sponsor — {areaName || "Area"}</div>
           <button className="btn" onClick={handleClose}>
             Close
           </button>
@@ -261,8 +265,8 @@ export default function AreaSponsorModal({
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results.
-            Preview highlights the purchasable sub-region.
+            Featured sponsorship makes you first in local search results. Preview highlights the
+            purchasable sub-region.
           </div>
 
           {pv.error && (
@@ -293,11 +297,11 @@ export default function AreaSponsorModal({
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat
-              label="Your monthly price"
-              hint={pv.hasExisting ? "After expansion" : undefined}
+              label={priceLabel}
+              hint={pv.hasExisting ? "After expansion (next billing period)" : undefined}
               value={GBP(monthlyPrice)}
             />
-            <Stat label="Coverage" value={coverageLabel} />
+            <Stat label="Coverage" value={coverageLabel} hint={coverageHint} />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1">
@@ -305,14 +309,10 @@ export default function AreaSponsorModal({
               Cancel
             </button>
             <button
-              className={`btn ${
-                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
-              }`}
+              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
               onClick={startCheckout}
               disabled={!canBuy}
-              title={
-                !canBuy ? "No purchasable area available" : actionLabel
-              }
+              title={!canBuy ? "No purchasable area available" : actionLabel}
             >
               {checkingOut ? loadingLabel : actionLabel}
             </button>
