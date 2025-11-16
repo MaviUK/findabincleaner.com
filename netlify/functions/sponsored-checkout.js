@@ -13,7 +13,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
-    status,
+    status,const { data: profile, error:
     headers: { "content-type": "application/json" },
   });
 
@@ -42,10 +42,11 @@ export default async (req) => {
 
     // 1) Load business profile from `profiles` (this replaced `businesses`)
     const { data: profile, error: profileErr } = await sb
-      .from("profiles")
-      .select("id, email, stripe_customer_id")
-      .eq("id", businessId)
-      .maybeSingle();
+  .from("profiles")
+  .select("id, stripe_customer_id") // no email column on profiles
+  .eq("id", businessId)
+  .maybeSingle();
+
 
     if (profileErr || !profile) {
       return json(
