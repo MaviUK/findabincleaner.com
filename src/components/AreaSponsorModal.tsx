@@ -156,6 +156,7 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
+  // canBuy = there is some available area and we're not loading / redirecting
   const canBuy =
     open &&
     !pv.loading &&
@@ -320,4 +321,3 @@ function Stat({
     </div>
   );
 }
-
