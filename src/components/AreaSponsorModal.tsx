@@ -10,7 +10,7 @@ type Props = {
   areaId: string;
   slot?: Slot;
 
-  /** Optional display-only name */
+  /** Optional display-only name (fixes build error from caller). */
   areaName?: string;
 
   onPreviewGeoJSON?: (gj: any | null) => void;
@@ -21,17 +21,15 @@ type PreviewState = {
   loading: boolean;
   error: string | null;
   soldOut: boolean;
-
   totalKm2: number | null;
   availableKm2: number | null;
   priceCents: number | null;
   ratePerKm2: number | null;
+  reason?: "owned_by_other" | "no_remaining" | "ok";
   geojson: any | null;
-
-  reason?: string | null;
 };
 
-const GBP = (n: number | null) =>
+const GBP = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
 
 const fmtKm2 = (n: number | null | undefined) =>
@@ -60,16 +58,36 @@ export default function AreaSponsorModal({
     geojson: null,
   });
 
-  // Derived monthly price from preview
   const monthlyPrice = useMemo(() => {
     if (pv.priceCents == null) return null;
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // Fetch sponsored preview when modal opens
+  // NEW: what % of this polygon will actually be sponsored?
+  const coveragePct = useMemo(() => {
+    if (
+      pv.totalKm2 == null ||
+      pv.totalKm2 <= 0 ||
+      pv.availableKm2 == null ||
+      pv.availableKm2 < 0
+    ) {
+      return null;
+    }
+    const pct = (pv.availableKm2 / pv.totalKm2) * 100;
+    // Clamp between 0 and 100 just in case
+    return Math.max(0, Math.min(100, pct));
+  }, [pv.totalKm2, pv.availableKm2]);
+
+  const coverageLabel = useMemo(() => {
+    if (pv.soldOut || (pv.availableKm2 ?? 0) <= EPS) {
+      return "0.0% of your polygon";
+    }
+    if (coveragePct == null) return "—";
+    return `${coveragePct.toFixed(1)}% of your polygon`;
+  }, [pv.soldOut, pv.availableKm2, coveragePct]);
+
   useEffect(() => {
     let cancelled = false;
-
     const run = async () => {
       if (!open) return;
       setPv((s) => ({ ...s, loading: true, error: null }));
@@ -78,51 +96,42 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId,
-            cleanerId: businessId,
-            areaId,
-            slot,
-          }),
+          body: JSON.stringify({ businessId, areaId, slot }),
         });
-
-        if (!res.ok) {
-          let message = `Preview failed (${res.status})`;
-          try {
-            const j = await res.json();
-            if (typeof j?.error === "string") message = j.error;
-          } catch {
-            // ignore
-          }
-          throw new Error(message);
-        }
-
         const j = await res.json();
+
+        if (!res.ok || !j?.ok) {
+          const msg = j?.error || j?.message || "Preview failed";
+          throw new Error(msg);
+        }
 
         const totalKm2 =
           typeof j.total_km2 === "number" && isFinite(j.total_km2)
             ? j.total_km2
             : null;
-        const availableKm2 =
-          typeof j.available_km2 === "number" && isFinite(j.available_km2)
-            ? j.available_km2
-            : 0;
 
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: null,
-            soldOut: (availableKm2 ?? 0) <= EPS,
-            totalKm2,
-            availableKm2,
-            priceCents:
-              typeof j.price_cents === "number" ? j.price_cents : null,
-            ratePerKm2:
-              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: j.geojson ?? null,
-            reason: j.reason,
-          });
-        }
+        const availableKm2 =
+  typeof j.available_km2 === "number" ? j.available_km2 : 0;
+
+if (!cancelled) {
+  // Decide "sold out" purely based on availableKm2
+  const soldOut = (availableKm2 ?? 0) <= EPS;
+
+  setPv({
+    loading: false,
+    error: null,
+    soldOut,
+    totalKm2,
+    availableKm2,
+    priceCents:
+      typeof j.price_cents === "number" ? j.price_cents : null,
+    ratePerKm2:
+      typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+    geojson: j.geojson ?? null,
+    reason: j.reason,
+  });
+}
+
         onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
         if (!cancelled) {
@@ -156,10 +165,10 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // canBuy = there is some available area and we're not loading / redirecting
   const canBuy =
     open &&
     !pv.loading &&
+    !pv.soldOut &&
     (pv.availableKm2 ?? 0) > EPS &&
     !checkingOut;
 
@@ -172,46 +181,27 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          businessId,
-          areaId,
-          slot,
-          // derive cents from the monthly price we show in the UI
-          priceCents: Math.round((monthlyPrice ?? 0) * 100),
-        }),
+        body: JSON.stringify({ businessId, areaId, slot }),
       });
+      const j = await res.json();
 
-      if (!res.ok) {
-        let message = `Checkout failed (${res.status})`;
-        try {
-          const j = await res.json();
-          if (typeof j?.error === "string") message = j.error;
-          if (res.status === 409 && j?.reason) {
-            message =
-              typeof j.reason === "string"
-                ? j.reason
-                : "No purchasable area left for this slot.";
-          }
-        } catch {
-          // ignore
-        }
-
-        setCheckoutErr(
-          res.status === 409
+      if (!res.ok || !j?.ok) {
+        const message =
+          j?.message ||
+          j?.error ||
+          (res.status === 409
             ? "No purchasable area left for this slot."
-            : "Checkout failed"
-        );
+            : "Checkout failed");
+        setCheckoutErr(message);
         if (res.status === 409)
           setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
         setCheckingOut(false);
         return;
       }
 
-      const j = await res.json();
       const url = j.url as string | undefined;
-      if (url) {
-        window.location.assign(url);
-      } else {
+      if (url) window.location.assign(url);
+      else {
         setCheckoutErr("Checkout session missing redirect URL.");
         setCheckingOut(false);
       }
@@ -230,8 +220,7 @@ export default function AreaSponsorModal({
           <div className="font-semibold">
             Sponsor — {areaName ? areaName : "Area"}
           </div>
-
-          <button className="btn btn-sm" onClick={handleClose}>
+          <button className="btn" onClick={handleClose}>
             Close
           </button>
         </div>
@@ -268,19 +257,8 @@ export default function AreaSponsorModal({
             />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-            <Stat
-              label="Coverage"
-              value={
-                pv.totalKm2 == null ||
-                pv.availableKm2 == null ||
-                pv.totalKm2 <= 0
-                  ? "—"
-                  : `${(
-                      (pv.availableKm2 / pv.totalKm2) *
-                      100
-                    ).toFixed(1)}% of your polygon`
-              }
-            />
+            {/* UPDATED: dynamic coverage */}
+            <Stat label="Coverage" value={coverageLabel} />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-1">

@@ -1,4 +1,3 @@
-// netlify/functions/sponsored-checkout.js
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
@@ -17,112 +16,158 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json" },
   });
 
+const EPS = 1e-6;
+
 export default async (req) => {
   if (req.method !== "POST") {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
+  let body;
   try {
-    const body = await req.json().catch(() => ({}));
+    body = await req.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON" }, 400);
+  }
 
-    const { businessId, areaId, slot = 1, priceCents } = body;
+  const businessId = (body.businessId || body.cleanerId || "").trim();
+  const areaId = (body.areaId || body.area_id || "").trim();
+  const slot = Number(body.slot || 1);
 
-    if (!businessId || !areaId || priceCents == null) {
-      return json(
-        { ok: false, error: "Missing businessId, areaId or priceCents" },
-        400
-      );
-    }
+  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
+  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (![1].includes(slot)) {
+    return json({ ok: false, error: "Invalid slot" }, 400);
+  }
 
-    // 1. Load business profile from `profiles` (no email column used)
-    const { data: profile, error: profileErr } = await sb
-      .from("profiles")
-      .select("id, stripe_customer_id")
-      .eq("id", businessId)
-      .maybeSingle();
+  try {
+    // 1) Recompute remaining area for this service area + slot
+    const { data: previewData, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
+    if (prevErr) throw prevErr;
 
-    if (profileErr) {
-      console.error("profileErr:", profileErr);
-    }
+    const row = Array.isArray(previewData)
+      ? previewData[0] || {}
+      : previewData || {};
 
-    if (!profile) {
+    let available_km2 = Number(row.available_km2 ?? 0) || 0;
+    const sold_out_flag = Boolean(row.sold_out);
+
+    if (!Number.isFinite(available_km2)) available_km2 = 0;
+
+    if (sold_out_flag || available_km2 <= EPS) {
       return json(
         {
           ok: false,
-          error: "Business profile not found",
+          code: "no_remaining",
+          message: "No purchasable area left for this slot.",
         },
-        400
+        409
       );
     }
 
-    // 2. Ensure Stripe customer
-    let stripeCustomerId = profile.stripe_customer_id ?? null;
+    // 2) Pricing
+    const rate_per_km2 =
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+          process.env.RATE_PER_KM2_PER_MONTH ??
+          0
+      ) || 0;
+
+    const amount_cents = Math.max(
+      1,
+      Math.round(Math.max(available_km2, 0) * rate_per_km2 * 100)
+    );
+
+    // 3) Load cleaner and ensure Stripe customer
+    const { data: cleaner, error: cleanerErr } = await sb
+      .from("cleaners")
+      .select("id, stripe_customer_id, business_name, email")
+      .eq("id", businessId)
+      .maybeSingle();
+
+    if (cleanerErr) throw cleanerErr;
+    if (!cleaner) {
+      return json({ ok: false, error: "Cleaner not found" }, 404);
+    }
+
+    let stripeCustomerId = cleaner.stripe_customer_id || null;
+    const customerName = cleaner.business_name || "Customer";
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
-        metadata: {
-          supabase_business_id: profile.id,
-        },
+        name: customerName,
+        email: cleaner.email || undefined,
       });
-
       stripeCustomerId = customer.id;
 
       await sb
-        .from("profiles")
+        .from("cleaners")
         .update({ stripe_customer_id: stripeCustomerId })
-        .eq("id", profile.id);
+        .eq("id", businessId);
     }
 
-    // 3. Normalise price (in pence)
-    const unitAmount =
-      typeof priceCents === "number"
-        ? Math.round(priceCents)
-        : Math.round(Number(priceCents) || 0);
-
-    if (!unitAmount || unitAmount <= 0) {
-      return json(
-        { ok: false, error: "Invalid price for checkout session" },
-        400
-      );
-    }
-
-    // 4. Create Stripe Checkout session for a subscription
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      line_items: [
-        {
-          price_data: {
-            currency: "gbp",
-            unit_amount: unitAmount,
-            recurring: { interval: "month" },
-            product_data: {
-              name: "Featured area sponsorship",
-              metadata: {
-                supabase_business_id: profile.id,
-                supabase_area_id: areaId,
-                slot: String(slot),
-              },
-            },
-          },
-          quantity: 1,
+    const createSession = (customerId) =>
+      stripe.checkout.sessions.create({
+        mode: "subscription",
+        customer: customerId,
+        metadata: {
+          business_id: businessId,
+          area_id: areaId,
+          slot: String(slot),
         },
-      ],
-      success_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`,
-      metadata: {
-        business_id: profile.id,
-        area_id: areaId,
-        slot: String(slot),
-      },
-    });
+        line_items: [
+          {
+            price_data: {
+              currency: "gbp",
+              product_data: {
+                name: "Featured service area",
+                description:
+                  "Be shown first in local search results for this area.",
+              },
+              unit_amount: amount_cents,
+              recurring: { interval: "month" },
+            },
+            quantity: 1,
+          },
+        ],
+        success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
+        cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      });
+
+    let session;
+    try {
+      session = await createSession(stripeCustomerId);
+    } catch (e) {
+      // if stored customer is stale, recreate and retry once
+      const code = e?.raw?.code;
+      const param = e?.raw?.param;
+      if (code === "resource_missing" && param === "customer") {
+        const customer = await stripe.customers.create({
+          name: customerName,
+          email: cleaner.email || undefined,
+        });
+        stripeCustomerId = customer.id;
+
+        await sb
+          .from("cleaners")
+          .update({ stripe_customer_id: stripeCustomerId })
+          .eq("id", businessId);
+
+        session = await createSession(stripeCustomerId);
+      } else {
+        throw e;
+      }
+    }
 
     return json({ ok: true, url: session.url }, 200);
   } catch (e) {
-    console.error("sponsored-checkout error:", e);
-    return json(
-      { ok: false, error: e?.message || "Server error in checkout" },
-      500
-    );
+    console.error("[sponsored-checkout] error:", e);
+    return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
