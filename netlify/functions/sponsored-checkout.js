@@ -13,7 +13,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
-    status,const { data: profile, error:
+    status,
     headers: { "content-type": "application/json" },
   });
 
@@ -25,13 +25,7 @@ export default async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
 
-    const {
-      businessId,
-      areaId,
-      slot = 1,
-      priceCents, // passed from the modal
-      // cleanerId is also sent but we don't actually need it here
-    } = body;
+    const { businessId, areaId, slot = 1, priceCents } = body;
 
     if (!businessId || !areaId || priceCents == null) {
       return json(
@@ -40,46 +34,46 @@ export default async (req) => {
       );
     }
 
-    // 1) Load business profile from `profiles` (this replaced `businesses`)
+    // 1. Load business profile from `profiles` (no email column used)
     const { data: profile, error: profileErr } = await sb
-  .from("profiles")
-  .select("id, stripe_customer_id") // no email column on profiles
-  .eq("id", businessId)
-  .maybeSingle();
+      .from("profiles")
+      .select("id, stripe_customer_id")
+      .eq("id", businessId)
+      .maybeSingle();
 
+    if (profileErr) {
+      console.error("profileErr:", profileErr);
+    }
 
-    if (profileErr || !profile) {
+    if (!profile) {
       return json(
         {
           ok: false,
           error: "Business profile not found",
-          details: profileErr?.message ?? null,
         },
         400
       );
     }
 
-    // 2) Ensure Stripe customer
+    // 2. Ensure Stripe customer
     let stripeCustomerId = profile.stripe_customer_id ?? null;
 
     if (!stripeCustomerId) {
       const customer = await stripe.customers.create({
-  metadata: {
-    supabase_business_id: profile.id,
-  },
-});
-
+        metadata: {
+          supabase_business_id: profile.id,
+        },
+      });
 
       stripeCustomerId = customer.id;
 
-      // Persist customer id on the profile
       await sb
         .from("profiles")
         .update({ stripe_customer_id: stripeCustomerId })
         .eq("id", profile.id);
     }
 
-    // 3) Normalise price (in pence)
+    // 3. Normalise price (in pence)
     const unitAmount =
       typeof priceCents === "number"
         ? Math.round(priceCents)
@@ -92,7 +86,7 @@ export default async (req) => {
       );
     }
 
-    // 4) Create Stripe Checkout session for a subscription
+    // 4. Create Stripe Checkout session for a subscription
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
@@ -114,8 +108,8 @@ export default async (req) => {
           quantity: 1,
         },
       ],
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      success_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=success`,
+      cancel_url: `${process.env.PUBLIC_SITE_URL}/#/dashboard?checkout=cancel`,
       metadata: {
         business_id: profile.id,
         area_id: areaId,
