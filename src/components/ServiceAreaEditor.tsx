@@ -269,13 +269,14 @@ const OWNED_BY_ME_PAINT = {
   tier: 3,
   fill: "rgba(34, 197, 94, 0.45)", // green
   stroke: "#16a34a",
-};
+} as const;
 
 const OWNED_BY_OTHER_PAINT = {
   tier: 2,
   fill: "rgba(239, 68, 68, 0.30)", // red
   stroke: "#dc2626",
-};
+} as const;
+
 
 // Helper: treat these statuses as "owned/blocked" (same rule you use elsewhere)
 function isOwnedSlot(slot: SingleSlotState | null) {
