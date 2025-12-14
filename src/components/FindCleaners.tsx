@@ -9,6 +9,10 @@ import {
 } from "../lib/analytics";
 
 export type FindCleanersProps = {
+  /**
+   * Includes lat/lng so parents (ResultsList → CleanerCard) can attribute clicks
+   * even when a result doesn’t carry area_id.
+   */
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -31,8 +35,11 @@ type MatchIn = {
   rating_count?: number | null;
   distance_m?: number | null;
   distance_meters?: number | null;
+  // Some installs return these directly from the RPC:
   area_id?: string | null;
   area_name?: string | null;
+
+  // optional: if your RPC returns it, we just ignore it here unless you want to use it
   is_covering_sponsor?: boolean | null;
 };
 
@@ -50,6 +57,8 @@ export type MatchOut = {
   distance_m: number | null;
   area_id: string | null;
   area_name?: string | null;
+
+  // optional: keep if you want to show a badge later
   is_covering_sponsor?: boolean;
 };
 
@@ -59,9 +68,12 @@ function toArray(v: unknown): string[] {
   if (typeof v === "string") {
     try {
       const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed;
+      if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -82,8 +94,10 @@ function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
   let digits = phone.replace(/[^\d]/g, "");
   if (!digits) return null;
-  if (!phone.startsWith("+") && digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`;
+  if (phone.trim().startsWith("+")) {
+    digits = phone.replace(/[^\d]/g, "");
+  } else if (digits.startsWith("0")) {
+    digits = `44${digits.slice(1)}`; // UK
   }
   return `https://wa.me/${digits}`;
 }
@@ -108,36 +122,52 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode
+      // 1) Geocode postcode -> lat/lng (postcodes.io)
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
-      if (!res.ok) throw new Error("Postcode lookup failed");
-      const json = await res.json();
-      if (!json.result) return setError("Postcode not found.");
+      if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
+      const data = await res.json();
+      if (data.status !== 200 || !data.result) {
+        setError("Postcode not found.");
+        return;
+      }
 
-      const lat = Number(json.result.latitude);
-      const lng = Number(json.result.longitude);
-      const town =
-        json.result.post_town ||
-        json.result.admin_district ||
-        json.result.region ||
+      const lat: number = Number(data.result.latitude);
+      const lng: number = Number(data.result.longitude);
+      const town: string =
+        data.result.post_town ||
+        data.result.admin_district ||
+        data.result.parliamentary_constituency ||
+        data.result.region ||
         "";
 
       setLocality(town);
 
-      // 2) Sponsored-first RPC
-      const { data, error: rpcErr } = await supabase.rpc(
-        "search_cleaners_by_location",
-        { p_lat: lat, p_lng: lng, p_limit: 50 }
-      );
+      // 2) Use the NEW RPC that already returns:
+      //    - covering sponsored first
+      //    - the rest random each time
+      let list: MatchIn[] = [];
+      {
+        const { data: rows, error: rpcErr } = await supabase.rpc(
+          "search_cleaners_by_location",
+          {
+            p_lat: lat,
+            p_lng: lng,
+            p_limit: 50,
+          }
+        );
 
-      if (rpcErr) {
-        setError(rpcErr.message);
-        return;
+        if (rpcErr) {
+          setError(rpcErr.message);
+          return;
+        }
+
+        list = (rows || []) as MatchIn[];
       }
 
-      const normalized: MatchOut[] = (data || []).map((m: MatchIn) => ({
+      // 3) Normalize to your UI type
+      const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
         logo_url: m.logo_url ?? null,
@@ -149,13 +179,14 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         rating_avg: m.rating_avg ?? null,
         rating_count: m.rating_count ?? null,
         distance_m:
-          m.distance_meters ?? m.distance_m ?? null,
-        area_id: m.area_id ?? null,
-        area_name: m.area_name ?? null,
-        is_covering_sponsor: Boolean(m.is_covering_sponsor),
+          (m.distance_meters as number | null | undefined) ??
+          (m.distance_m ?? null),
+        area_id: (m as any).area_id ?? null,
+        area_name: (m as any).area_name ?? null,
+        is_covering_sponsor: Boolean((m as any).is_covering_sponsor),
       }));
 
-      // 3) Analytics
+      // 4) Record impressions (prefer area_id; else point-based so DB resolves area)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
@@ -179,26 +210,49 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                 })
           )
         );
-      } catch {}
+      } catch (e) {
+        console.warn("recordEvent(impression) error", e);
+      }
 
+      // 5) Update UI / bubble up — INCLUDING lat/lng
       if (!onSearchComplete) setResults(normalized);
       onSearchComplete?.(normalized, pc, town, lat, lng);
+
+      // 6) (Optional) Debug helper for inline list
+      (window as any).__nbg_clickLogger = (
+        r: MatchOut,
+        ev: "click_website" | "click_phone" | "click_message"
+      ) => {
+        const sessionId = getOrCreateSessionId();
+        return r.area_id
+          ? recordEventBeacon({
+              cleanerId: r.cleaner_id,
+              areaId: r.area_id,
+              event: ev,
+              sessionId,
+            })
+          : recordEventFromPointBeacon({
+              cleanerId: r.cleaner_id,
+              lat,
+              lng,
+              event: ev,
+              sessionId,
+            });
+      };
     } catch (e: any) {
-      setError(e.message || "Something went wrong.");
+      console.error("FindCleaners lookup error:", e);
+      setError(e?.message || "Something went wrong.");
     } finally {
       setLoading(false);
     }
   }
-
-  const sponsored = results.filter((r) => r.is_covering_sponsor);
-  const others = results.filter((r) => !r.is_covering_sponsor);
 
   return (
     <div className="space-y-4">
       <form className="flex gap-2" onSubmit={lookup}>
         <input
           className="border rounded px-3 py-2 w-full"
-          placeholder="Enter postcode"
+          placeholder="Enter postcode (e.g., BT20 5NF)"
           value={postcode}
           onChange={(e) => setPostcode(e.target.value)}
         />
@@ -217,77 +271,134 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         </div>
       )}
 
+      {/* Inline list (dev path only) */}
       {!onSearchComplete && (
-        <>
-          {/* Sponsored – full width */}
-          <div className="space-y-3">
-            {sponsored.map((r) => (
-              <CleanerCard key={r.cleaner_id} r={r} large />
-            ))}
-          </div>
+        <ul className="space-y-2">
+          {results.map((r) => {
+            const tel = toTelHref(r.phone);
+            const wa = toWhatsAppHref(r.phone);
 
-          {/* Others – two column grid */}
-          {others.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-4">
-              {others.map((r) => (
-                <CleanerCard key={r.cleaner_id} r={r} />
-              ))}
-            </div>
+            return (
+              <li
+                key={r.cleaner_id}
+                className="p-4 rounded-xl border flex items-center justify-between gap-4"
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {r.logo_url ? (
+                    <img
+                      src={r.logo_url}
+                      alt={`${r.business_name ?? "Cleaner"} logo`}
+                      className="h-10 w-10 rounded bg-white object-contain border"
+                    />
+                  ) : (
+                    <div className="h-10 w-10 rounded bg-gray-200 border" />
+                  )}
+
+                  <div className="min-w-0">
+                    <div className="font-medium truncate">
+                      {r.business_name ?? "Cleaner"}
+                      {/* Optional badge if you want it visible */}
+                      {r.is_covering_sponsor ? (
+                        <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          Sponsored
+                        </span>
+                      ) : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
+                      {r.website && (
+                        <a
+                          href={r.website}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_website"
+                            );
+                            setTimeout(() => {
+                              window.open(
+                                r.website!,
+                                "_blank",
+                                "noopener,noreferrer"
+                              );
+                            }, 10);
+                          }}
+                        >
+                          Website
+                        </a>
+                      )}
+
+                      {tel && (
+                        <a
+                          href={tel}
+                          className="underline"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_phone"
+                            );
+                            setTimeout(() => {
+                              window.location.href = tel;
+                            }, 10);
+                          }}
+                        >
+                          Call
+                        </a>
+                      )}
+
+                      {wa && (
+                        <a
+                          href={wa}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            (window as any).__nbg_clickLogger?.(
+                              r,
+                              "click_message"
+                            );
+                            setTimeout(() => {
+                              window.open(
+                                wa,
+                                "_blank",
+                                "noopener,noreferrer"
+                              );
+                            }, 10);
+                          }}
+                        >
+                          WhatsApp
+                        </a>
+                      )}
+                    </div>
+
+                    {r.area_id && (
+                      <div className="text-xs text-gray-500 mt-1">
+                        Matched area: {r.area_id}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="text-sm text-gray-700 whitespace-nowrap">
+                  {formatDistance(r.distance_m)}
+                </div>
+              </li>
+            );
+          })}
+
+          {!loading && !error && results.length === 0 && (
+            <li className="text-gray-500">
+              No cleaners found near {postcode.trim().toUpperCase()}
+              {locality ? `, in ${locality}` : ""}.
+            </li>
           )}
-        </>
+        </ul>
       )}
-    </div>
-  );
-}
-
-/* ---------------------------- */
-/* Cleaner Card Component */
-/* ---------------------------- */
-
-function CleanerCard({
-  r,
-  large = false,
-}: {
-  r: MatchOut;
-  large?: boolean;
-}) {
-  const tel = toTelHref(r.phone);
-  const wa = toWhatsAppHref(r.phone);
-
-  return (
-    <div
-      className={`border rounded-xl p-4 flex justify-between gap-4 ${
-        large ? "bg-emerald-50 border-emerald-300" : "bg-white"
-      }`}
-    >
-      <div className="min-w-0">
-        <div className="font-semibold truncate">
-          {r.business_name ?? "Cleaner"}
-          {large && (
-            <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-emerald-600 text-white">
-              Sponsored
-            </span>
-          )}
-        </div>
-
-        <div className="flex flex-wrap gap-3 text-sm text-gray-600 mt-1">
-          {r.website && (
-            <a href={r.website} target="_blank" rel="noreferrer" className="underline">
-              Website
-            </a>
-          )}
-          {tel && <a href={tel} className="underline">Call</a>}
-          {wa && (
-            <a href={wa} target="_blank" rel="noreferrer" className="underline">
-              WhatsApp
-            </a>
-          )}
-        </div>
-      </div>
-
-      <div className="text-sm text-gray-700 whitespace-nowrap">
-        {formatDistance(r.distance_m)}
-      </div>
     </div>
   );
 }
