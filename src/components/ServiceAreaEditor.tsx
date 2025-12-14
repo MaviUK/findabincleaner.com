@@ -262,6 +262,24 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
+function geoMultiPolygonAreaKm2(gj: any): number {
+  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
+
+  let totalM2 = 0;
+  for (const poly of gj.coordinates as number[][][][]) {
+    for (let ringIndex = 0; ringIndex < poly.length; ringIndex++) {
+      const ring = poly[ringIndex];
+      const path = ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng));
+      const ringM2 = google.maps.geometry.spherical.computeArea(path);
+      totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
+    }
+  }
+  return Math.max(0, totalM2) / 1_000_000;
+}
+
+
+  
+
 // ------- Sponsorship occupancy (single-slot) -------
 
 // Paint rules
