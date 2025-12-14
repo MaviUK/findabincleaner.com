@@ -262,9 +262,37 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-  // ------- Sponsorship occupancy (single-slot) -------
-  const fetchSponsorship = useCallback(async (areaIds: string[]) => {
+// ------- Sponsorship occupancy (single-slot) -------
+
+// Paint rules
+const OWNED_BY_ME_PAINT = {
+  tier: 3,
+  fill: "rgba(34, 197, 94, 0.45)", // green
+  stroke: "#16a34a",
+};
+
+const OWNED_BY_OTHER_PAINT = {
+  tier: 2,
+  fill: "rgba(239, 68, 68, 0.30)", // red
+  stroke: "#dc2626",
+};
+
+// Helper: treat these statuses as "owned/blocked" (same rule you use elsewhere)
+function isOwnedSlot(slot: SingleSlotState | null) {
+  return !!slot && slot.taken && isBlockingStatus(slot.status);
+}
+
+// Helper: ALWAYS return owned paint if owned, otherwise undefined (let other UI states handle it)
+function ownedPaintFor(slot: SingleSlotState | null, myBusinessId: string | null | undefined) {
+  if (!isOwnedSlot(slot)) return undefined;
+  const isMine = !!myBusinessId && slot?.owner_business_id === myBusinessId;
+  return isMine ? OWNED_BY_ME_PAINT : OWNED_BY_OTHER_PAINT;
+}
+
+const fetchSponsorship = useCallback(
+  async (areaIds: string[]) => {
     if (!areaIds.length) return;
+
     try {
       const res = await fetch("/.netlify/functions/area-sponsorship", {
         method: "POST",
@@ -300,21 +328,30 @@ export default function ServiceAreaEditor({
           };
         }
 
-        map[a.area_id] = { area_id: a.area_id, slot, paint: a.paint };
+        // ✅ IMPORTANT: We DO NOT trust backend paint for ownership display.
+        // Ownership is a persisted fact: if owned -> always show owned colour.
+        const paint = ownedPaintFor(slot, myBusinessId);
+
+        map[a.area_id] = { area_id: a.area_id, slot, paint };
       }
 
-      if (import.meta.env.DEV) console.debug("[ServiceAreaEditor] sponsorship map:", map);
+      if (import.meta.env.DEV) {
+        console.debug("[ServiceAreaEditor] sponsorship map:", map);
+      }
       setSponsorship(map);
     } catch (e) {
       console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
       setSponsorship({});
     }
-  }, []);
+  },
+  [myBusinessId]
+);
 
-  useEffect(() => {
-    const ids = serviceAreas.map((a) => a.id);
-    fetchSponsorship(ids);
-  }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
+useEffect(() => {
+  const ids = serviceAreas.map((a) => a.id);
+  fetchSponsorship(ids);
+}, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
+
 
   // ------- Availability by geometry (is there anything left to buy?) -------
   const computeAvailabilityForArea = useCallback(
