@@ -7,19 +7,6 @@ import AreaManageModal from "./AreaManageModal";
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
-const OWNED_PAINT = {
-  fill: "rgba(34, 197, 94, 0.45)",   // green
-  stroke: "#16a34a",
-  tier: 3,
-};
-
-const OTHER_OWNED_PAINT = {
-  fill: "rgba(239, 68, 68, 0.35)",   // red
-  stroke: "#dc2626",
-  tier: 2,
-};
-
-
 export interface ServiceAreaRow {
   id: string;
   business_id: string;
@@ -181,6 +168,22 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   return [];
 }
 
+/** area size helper for sorting (km²) */
+function geoMultiPolygonAreaKm2(gj: any): number {
+  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
+
+  let totalM2 = 0;
+  for (const poly of gj.coordinates as number[][][][]) {
+    for (let ringIndex = 0; ringIndex < poly.length; ringIndex++) {
+      const ring = poly[ringIndex];
+      const path = ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng));
+      const ringM2 = google.maps.geometry.spherical.computeArea(path);
+      totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
+    }
+  }
+  return Math.max(0, totalM2) / 1_000_000;
+}
+
 type Props = {
   businessId?: string;
   cleanerId?: string;
@@ -247,7 +250,9 @@ export default function ServiceAreaEditor({
     setLoading(true);
     setError(null);
     try {
-      const { data, error } = await supabase.rpc("list_service_areas", { p_cleaner_id: myBusinessId });
+      const { data, error } = await supabase.rpc("list_service_areas", {
+        p_cleaner_id: myBusinessId,
+      });
       if (error) throw error;
       setServiceAreas(data || []);
     } catch (e: any) {
@@ -262,167 +267,128 @@ export default function ServiceAreaEditor({
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
-function geoMultiPolygonAreaKm2(gj: any): number {
-  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
+  // ------- Sponsorship occupancy (single-slot) -------
 
-  let totalM2 = 0;
-  for (const poly of gj.coordinates as number[][][][]) {
-    for (let ringIndex = 0; ringIndex < poly.length; ringIndex++) {
-      const ring = poly[ringIndex];
-      const path = ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng));
-      const ringM2 = google.maps.geometry.spherical.computeArea(path);
-      totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
-    }
+  const OWNED_BY_ME_PAINT = {
+    tier: 3,
+    fill: "rgba(34, 197, 94, 0.45)",
+    stroke: "#16a34a",
+  } as const;
+
+  const OWNED_BY_OTHER_PAINT = {
+    tier: 2,
+    fill: "rgba(239, 68, 68, 0.30)",
+    stroke: "#dc2626",
+  } as const;
+
+  function isOwnedSlot(slot: SingleSlotState | null) {
+    return !!slot && slot.taken && isBlockingStatus(slot.status);
   }
-  return Math.max(0, totalM2) / 1_000_000;
-}
 
+  function ownedPaintFor(slot: SingleSlotState | null, bizId: string) {
+    if (!isOwnedSlot(slot)) return undefined;
+    const isMine = slot?.owner_business_id === bizId;
+    return isMine ? OWNED_BY_ME_PAINT : OWNED_BY_OTHER_PAINT;
+  }
 
-  
+  const fetchSponsorship = useCallback(
+    async (areaIds: string[]) => {
+      if (!areaIds.length) return;
 
-// ------- Sponsorship occupancy (single-slot) -------
+      try {
+        const res = await fetch("/.netlify/functions/area-sponsorship", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ areaIds }),
+        });
+        if (!res.ok) throw new Error(`sponsorship ${res.status}`);
 
-// Paint rules
-const OWNED_BY_ME_PAINT = {
-  tier: 3,
-  fill: "rgba(34, 197, 94, 0.45)", // green
-  stroke: "#16a34a",
-} as const;
+        const raw: { areas: Array<any> } = await res.json();
 
-const OWNED_BY_OTHER_PAINT = {
-  tier: 2,
-  fill: "rgba(239, 68, 68, 0.30)", // red
-  stroke: "#dc2626",
-} as const;
+        const map: SponsorshipMap = {};
+        for (const a of raw.areas || []) {
+          // accept either simple shape or legacy slots[] (pick slot=1)
+          let slot: SingleSlotState | null = null;
 
+          if (Array.isArray(a.slots)) {
+            const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
+            if (s1) {
+              slot = {
+                taken: Boolean(s1.taken),
+                status: s1.status ?? null,
+                owner_business_id:
+                  s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
+              };
+            }
+          }
 
-// Helper: treat these statuses as "owned/blocked" (same rule you use elsewhere)
-function isOwnedSlot(slot: SingleSlotState | null) {
-  return !!slot && slot.taken && isBlockingStatus(slot.status);
-}
-
-// Helper: ALWAYS return owned paint if owned, otherwise undefined (let other UI states handle it)
-function ownedPaintFor(slot: SingleSlotState | null, myBusinessId: string | null | undefined) {
-  if (!isOwnedSlot(slot)) return undefined;
-  const isMine = !!myBusinessId && slot?.owner_business_id === myBusinessId;
-  return isMine ? OWNED_BY_ME_PAINT : OWNED_BY_OTHER_PAINT;
-}
-
-const fetchSponsorship = useCallback(
-  async (areaIds: string[]) => {
-    if (!areaIds.length) return;
-
-    try {
-      const res = await fetch("/.netlify/functions/area-sponsorship", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ areaIds }),
-      });
-      if (!res.ok) throw new Error(`sponsorship ${res.status}`);
-
-      const raw: { areas: Array<any> } = await res.json();
-
-      const map: SponsorshipMap = {};
-      for (const a of raw.areas || []) {
-        // accept either simple shape or legacy slots[] (pick slot=1)
-        let slot: SingleSlotState | null = null;
-
-        if (Array.isArray(a.slots)) {
-          const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
-          if (s1) {
+          if (!slot) {
             slot = {
-              taken: Boolean(s1.taken),
-              status: s1.status ?? null,
-              owner_business_id:
-                s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
+              taken: Boolean(a.taken),
+              status: a.status ?? null,
+              owner_business_id: a.owner_business_id ?? a.business_id ?? null,
             };
           }
+
+          const paint = ownedPaintFor(slot, myBusinessId);
+          map[a.area_id] = { area_id: a.area_id, slot, paint };
         }
 
-        if (!slot) {
-          slot = {
-            taken: Boolean(a.taken),
-            status: a.status ?? null,
-            owner_business_id: a.owner_business_id ?? a.business_id ?? null,
-          };
-        }
-
-        // ✅ IMPORTANT: We DO NOT trust backend paint for ownership display.
-        // Ownership is a persisted fact: if owned -> always show owned colour.
-        const paint = ownedPaintFor(slot, myBusinessId);
-
-        map[a.area_id] = { area_id: a.area_id, slot, paint };
+        if (import.meta.env.DEV) console.debug("[ServiceAreaEditor] sponsorship map:", map);
+        setSponsorship(map);
+      } catch (e) {
+        console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
+        setSponsorship({});
       }
+    },
+    [myBusinessId]
+  );
 
-      if (import.meta.env.DEV) {
-        console.debug("[ServiceAreaEditor] sponsorship map:", map);
-      }
-      setSponsorship(map);
-    } catch (e) {
-      console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
-      setSponsorship({});
-    }
-  },
-  [myBusinessId]
-);
-
-useEffect(() => {
-  const ids = serviceAreas.map((a) => a.id);
-  fetchSponsorship(ids);
-}, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
-
+  useEffect(() => {
+    const ids = serviceAreas.map((a) => a.id);
+    fetchSponsorship(ids);
+  }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
   // ------- Availability by geometry (is there anything left to buy?) -------
   const computeAvailabilityForArea = useCallback(
-  async (areaId: string) => {
-    if (!areaId || !myBusinessId) return;
-    setAvailLoading((m) => ({ ...m, [areaId]: true }));
-    try {
-      const res = await fetch("/.netlify/functions/sponsored-preview", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          businessId: myBusinessId,
-          cleanerId: myBusinessId,
-          areaId,
-          slot: 1, // single Featured slot
-        }),
-      });
+    async (areaId: string) => {
+      if (!areaId || !myBusinessId) return;
+      setAvailLoading((m) => ({ ...m, [areaId]: true }));
+      try {
+        const res = await fetch("/.netlify/functions/sponsored-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            businessId: myBusinessId,
+            cleanerId: myBusinessId,
+            areaId,
+            slot: 1,
+          }),
+        });
 
-      if (!res.ok) {
-        setAvail((m) => ({ ...m, [areaId]: undefined }));
-        return;
+        if (!res.ok) {
+          setAvail((m) => ({ ...m, [areaId]: undefined }));
+          return;
+        }
+
+        const j = await res.json();
+        if (!j || !j.ok) {
+          setAvail((m) => ({ ...m, [areaId]: undefined }));
+          return;
+        }
+
+        const rawKm2 = j.available_km2 ?? j.area_km2 ?? j.remaining_km2 ?? 0;
+        const km2 = Number(rawKm2);
+        const soldOut = Boolean(j.sold_out);
+        const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
+
+        setAvail((m) => ({ ...m, [areaId]: hasRemaining }));
+      } finally {
+        setAvailLoading((m) => ({ ...m, [areaId]: false }));
       }
-
-      const j = await res.json();
-      if (!j || !j.ok) {
-        setAvail((m) => ({ ...m, [areaId]: undefined }));
-        return;
-      }
-
-      // Use remaining area from the preview. If sold_out is true or
-      // there is effectively zero remaining area, mark this area as unavailable.
-      const rawKm2 =
-        j.available_km2 ??
-        j.area_km2 ??
-        j.remaining_km2 ??
-        0;
-
-      const km2 = Number(rawKm2);
-      const soldOut = Boolean(j.sold_out);
-      const hasRemaining =
-        !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
-
-      // avail[areaId] === true  → there IS purchasable area
-      // avail[areaId] === false → NO purchasable area (slot taken / sold out)
-      setAvail((m) => ({ ...m, [areaId]: hasRemaining }));
-    } finally {
-      setAvailLoading((m) => ({ ...m, [areaId]: false }));
-    }
-  },
-  [myBusinessId]
-);
-
+    },
+    [myBusinessId]
+  );
 
   useEffect(() => {
     serviceAreas.forEach((a) => {
@@ -485,9 +451,7 @@ useEffect(() => {
     const multi = makeMultiPolygon(draftPolys);
 
     const newKey = normalizeMultiPolygon(multi);
-    const dup = serviceAreas.find(
-      (a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId
-    );
+    const dup = serviceAreas.find((a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId);
     if (dup) {
       setError(`This area matches an existing one: “${dup.name}”.`);
       return;
@@ -560,28 +524,42 @@ useEffect(() => {
     const bounds = new google.maps.LatLngBounds();
     (gj.coordinates as number[][][][]).forEach((poly) => {
       const rings = poly;
-      rings.forEach((ring) =>
-        ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng)))
-      );
+      rings.forEach((ring) => ring.forEach(([lng, lat]) => bounds.extend(new google.maps.LatLng(lat, lng))));
     });
     if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
   }, [isLoaded, serviceAreas]);
 
-  const totalDraftArea = useMemo(
-    () => (isLoaded ? totalAreaMeters(draftPolys) : 0),
-    [isLoaded, draftPolys]
-  );
+  const totalDraftArea = useMemo(() => (isLoaded ? totalAreaMeters(draftPolys) : 0), [isLoaded, draftPolys]);
 
   function getAreaSlotState(areaId: string): SingleSlotState | undefined {
-    const s = sponsorship[areaId];
-    return s?.slot;
+    return sponsorship[areaId]?.slot;
   }
+
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
   }
 
-  if (loadError)
-    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
+  /** ✅ Sorted list: Sponsored first (largest→smallest), then Not Sponsored (largest→smallest) */
+  const sortedServiceAreas = useMemo(() => {
+    if (!isLoaded) return serviceAreas;
+
+    const isSponsored = (id: string) => {
+      const slot = sponsorship[id]?.slot ?? null;
+      return !!slot && slot.taken && isBlockingStatus(slot.status);
+    };
+
+    const sizeKm2 = (a: ServiceAreaRow) => geoMultiPolygonAreaKm2(a.gj);
+
+    return [...serviceAreas].sort((a, b) => {
+      const aS = isSponsored(a.id);
+      const bS = isSponsored(b.id);
+
+      if (aS !== bS) return aS ? -1 : 1;
+      return sizeKm2(b) - sizeKm2(a);
+    });
+  }, [isLoaded, serviceAreas, sponsorship]);
+
+  if (loadError) return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
 
   return (
     <>
@@ -616,8 +594,7 @@ useEffect(() => {
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices, double-click to finish
-                    the polygon.
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish the polygon.
                   </div>
                 )}
 
@@ -646,55 +623,27 @@ useEffect(() => {
               </div>
             )}
 
-            const sortedServiceAreas = useMemo(() => {
-  // Don’t sort until maps geometry is available
-  if (!isLoaded) return serviceAreas;
-
-  const isSponsored = (id: string) => {
-    const slot = sponsorship[id]?.slot ?? null;
-    return !!slot && slot.taken && isBlockingStatus(slot.status);
-  };
-
-  const sizeKm2 = (a: ServiceAreaRow) => geoMultiPolygonAreaKm2(a.gj);
-
-  return [...serviceAreas].sort((a, b) => {
-    const aS = isSponsored(a.id);
-    const bS = isSponsored(b.id);
-
-    // 1) Sponsored first
-    if (aS !== bS) return aS ? -1 : 1;
-
-    // 2) Largest → smallest within group
-    return sizeKm2(b) - sizeKm2(a);
-  });
-}, [isLoaded, serviceAreas, sponsorship]);
-
-
             {/* List */}
             <ul className="space-y-2">
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
-                const mine =
-                  !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
-                const takenByOther =
-                  !!s && isBlockingStatus(s.status) && s.owner_business_id !== myBusinessId;
+                const mine = !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
+                const takenByOther = !!s && isBlockingStatus(s.status) && s.owner_business_id !== myBusinessId;
 
                 const hasGeo = avail[a.id] ?? true; // optimistic until computed
                 const busy = availLoading[a.id];
 
-                const disabled =
-                  takenByOther || (!mine && !takenByOther && hasGeo === false);
+                const disabled = takenByOther || (!mine && !takenByOther && hasGeo === false);
 
-                const title =
-                  mine
-                    ? "You sponsor this area"
-                    : takenByOther
-                    ? `Taken${s?.status ? ` (${s.status})` : ""}`
-                    : hasGeo === false
-                    ? "No purchasable region available"
-                    : busy
-                    ? "Checking availability…"
-                    : "Available";
+                const title = mine
+                  ? "You sponsor this area"
+                  : takenByOther
+                  ? `Taken${s?.status ? ` (${s.status})` : ""}`
+                  : hasGeo === false
+                  ? "No purchasable region available"
+                  : busy
+                  ? "Checking availability…"
+                  : "Available";
 
                 const label = mine
                   ? "Manage"
@@ -725,7 +674,7 @@ useEffect(() => {
                       <div>
                         <div className="font-medium">{a.name}</div>
                         <div className="text-xs text-gray-500">
-                          {new Date(a.created_at).toLocaleString()}
+                          {new Date(a.created_at).toLocaleString()} • {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -748,18 +697,13 @@ useEffect(() => {
                         {label}
                       </button>
                     </div>
-                    {busy && (
-                      <div className="text-[10px] text-gray-500 mt-1">
-                        Checking availability…
-                      </div>
-                    )}
+                    {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
                   </li>
                 );
               })}
+
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">
-                  No service areas yet. Click “New Area” to draw one.
-                </li>
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
               )}
             </ul>
           </div>
@@ -768,11 +712,12 @@ useEffect(() => {
             <div className="font-semibold mb-1">Legend</div>
             <div className="flex items-center gap-4 mb-3">
               <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(255,215,0,0.35)", border: "2px solid #B8860B" }}
-                />
-                Sponsored (Featured)
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(34,197,94,0.45)", border: "2px solid #16a34a" }} />
+                Owned by you
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "rgba(239,68,68,0.35)", border: "2px solid #dc2626" }} />
+                Owned by others
               </span>
             </div>
             <div className="font-semibold mb-1">Tips</div>
@@ -807,7 +752,7 @@ useEffect(() => {
 
               {/* non-editable painted overlays */}
               {activeAreaId === null &&
-  sortedServiceAreas.map((a) => {
+                sortedServiceAreas.map((a) => {
                   const gj = a.gj;
                   if (!gj || gj.type !== "MultiPolygon") return null;
 
@@ -880,7 +825,7 @@ useEffect(() => {
           onClose={() => setManageOpen(false)}
           cleanerId={myBusinessId}
           areaId={manageAreaId}
-          slot={1} // single Featured slot
+          slot={1}
         />
       )}
     </>
