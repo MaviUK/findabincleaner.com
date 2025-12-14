@@ -10,7 +10,7 @@ import {
 
 export type FindCleanersProps = {
   /**
-   * Now includes lat/lng so parents (ResultsList → CleanerCard) can attribute clicks
+   * Includes lat/lng so parents (ResultsList → CleanerCard) can attribute clicks
    * even when a result doesn’t carry area_id.
    */
   onSearchComplete?: (
@@ -38,6 +38,9 @@ type MatchIn = {
   // Some installs return these directly from the RPC:
   area_id?: string | null;
   area_name?: string | null;
+
+  // optional: if your RPC returns it, we just ignore it here unless you want to use it
+  is_covering_sponsor?: boolean | null;
 };
 
 export type MatchOut = {
@@ -54,6 +57,9 @@ export type MatchOut = {
   distance_m: number | null;
   area_id: string | null;
   area_name?: string | null;
+
+  // optional: keep if you want to show a badge later
+  is_covering_sponsor?: boolean;
 };
 
 function toArray(v: unknown): string[] {
@@ -64,7 +70,10 @@ function toArray(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -74,11 +83,13 @@ function formatDistance(m?: number | null) {
   if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
   return `${Math.round(m)} m`;
 }
+
 function toTelHref(phone?: string | null) {
   if (!phone) return null;
   const digits = phone.replace(/[^\d+]/g, "");
   return digits ? `tel:${digits}` : null;
 }
+
 function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
   let digits = phone.replace(/[^\d]/g, "");
@@ -111,7 +122,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode
+      // 1) Geocode postcode -> lat/lng (postcodes.io)
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -121,6 +132,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         setError("Postcode not found.");
         return;
       }
+
       const lat: number = Number(data.result.latitude);
       const lng: number = Number(data.result.longitude);
       const town: string =
@@ -129,32 +141,32 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         data.result.parliamentary_constituency ||
         data.result.region ||
         "";
+
       setLocality(town);
 
-      // 2) Try polygon RPC first
+      // 2) Use the NEW RPC that already returns:
+      //    - covering sponsored first
+      //    - the rest random each time
       let list: MatchIn[] = [];
       {
-        const { data: coverMatches, error: coverErr } = await supabase.rpc(
-          "find_cleaners_covering_point",
-          { lat, lng }
+        const { data: rows, error: rpcErr } = await supabase.rpc(
+          "search_cleaners_by_location",
+          {
+            p_lat: lat,
+            p_lng: lng,
+            p_limit: 50,
+          }
         );
-        if (!coverErr && coverMatches) list = coverMatches as MatchIn[];
-      }
 
-      // 3) Fallback to distance RPC
-      if (!list.length) {
-        const { data: distMatches, error: distErr } = await supabase.rpc(
-          "find_cleaners_for_point_sorted",
-          { lat, lng, max_km: 50, lim: 50 }
-        );
-        if (distErr && !list.length) {
-          setError(distErr.message);
+        if (rpcErr) {
+          setError(rpcErr.message);
           return;
         }
-        list = (distMatches || []) as MatchIn[];
+
+        list = (rows || []) as MatchIn[];
       }
 
-      // 4) Normalize
+      // 3) Normalize to your UI type
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -171,9 +183,10 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           (m.distance_m ?? null),
         area_id: (m as any).area_id ?? null,
         area_name: (m as any).area_name ?? null,
+        is_covering_sponsor: Boolean((m as any).is_covering_sponsor),
       }));
 
-      // 5) Record impressions (prefer area_id; else point-based so DB resolves area)
+      // 4) Record impressions (prefer area_id; else point-based so DB resolves area)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
@@ -201,11 +214,11 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         console.warn("recordEvent(impression) error", e);
       }
 
-      // 6) Update UI / bubble up — now INCLUDING lat/lng
+      // 5) Update UI / bubble up — INCLUDING lat/lng
       if (!onSearchComplete) setResults(normalized);
       onSearchComplete?.(normalized, pc, town, lat, lng);
 
-      // 7) (Optional) Debug helper for inline list
+      // 6) (Optional) Debug helper for inline list
       (window as any).__nbg_clickLogger = (
         r: MatchOut,
         ev: "click_website" | "click_phone" | "click_message"
@@ -264,6 +277,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
           {results.map((r) => {
             const tel = toTelHref(r.phone);
             const wa = toWhatsAppHref(r.phone);
+
             return (
               <li
                 key={r.cleaner_id}
@@ -283,6 +297,12 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                   <div className="min-w-0">
                     <div className="font-medium truncate">
                       {r.business_name ?? "Cleaner"}
+                      {/* Optional badge if you want it visible */}
+                      {r.is_covering_sponsor ? (
+                        <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                          Sponsored
+                        </span>
+                      ) : null}
                     </div>
 
                     <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
@@ -310,6 +330,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           Website
                         </a>
                       )}
+
                       {tel && (
                         <a
                           href={tel}
@@ -328,6 +349,7 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
                           Call
                         </a>
                       )}
+
                       {wa && (
                         <a
                           href={wa}
