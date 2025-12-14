@@ -646,9 +646,33 @@ useEffect(() => {
               </div>
             )}
 
+            const sortedServiceAreas = useMemo(() => {
+  // Don’t sort until maps geometry is available
+  if (!isLoaded) return serviceAreas;
+
+  const isSponsored = (id: string) => {
+    const slot = sponsorship[id]?.slot ?? null;
+    return !!slot && slot.taken && isBlockingStatus(slot.status);
+  };
+
+  const sizeKm2 = (a: ServiceAreaRow) => geoMultiPolygonAreaKm2(a.gj);
+
+  return [...serviceAreas].sort((a, b) => {
+    const aS = isSponsored(a.id);
+    const bS = isSponsored(b.id);
+
+    // 1) Sponsored first
+    if (aS !== bS) return aS ? -1 : 1;
+
+    // 2) Largest → smallest within group
+    return sizeKm2(b) - sizeKm2(a);
+  });
+}, [isLoaded, serviceAreas, sponsorship]);
+
+
             {/* List */}
             <ul className="space-y-2">
-              {serviceAreas.map((a) => {
+              {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
                 const mine =
                   !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
@@ -783,7 +807,7 @@ useEffect(() => {
 
               {/* non-editable painted overlays */}
               {activeAreaId === null &&
-                serviceAreas.map((a) => {
+  sortedServiceAreas.map((a) => {
                   const gj = a.gj;
                   if (!gj || gj.type !== "MultiPolygon") return null;
 
