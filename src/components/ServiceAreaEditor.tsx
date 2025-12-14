@@ -7,6 +7,19 @@ import AreaManageModal from "./AreaManageModal";
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
+const OWNED_PAINT = {
+  fill: "rgba(34, 197, 94, 0.45)",   // green
+  stroke: "#16a34a",
+  tier: 3,
+};
+
+const OTHER_OWNED_PAINT = {
+  fill: "rgba(239, 68, 68, 0.35)",   // red
+  stroke: "#dc2626",
+  tier: 2,
+};
+
+
 export interface ServiceAreaRow {
   id: string;
   business_id: string;
