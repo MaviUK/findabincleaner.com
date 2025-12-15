@@ -168,6 +168,8 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
 
       // 3) Normalize to your UI type
       const normalized: MatchOut[] = list.map((m) => ({
+
+        
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
         logo_url: m.logo_url ?? null,
@@ -186,12 +188,20 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
         is_covering_sponsor: Boolean((m as any).is_covering_sponsor),
       }));
 
+      const liveOnly = normalized.filter((r) => {
+  const hasEmail = Boolean((r as any).email);
+  const hasPhone = Boolean(r.phone);
+  const hasWhatsApp = Boolean(r.whatsapp);
+  return hasEmail || hasPhone || hasWhatsApp;
+});
+
+
       // 4) Record impressions (prefer area_id; else point-based so DB resolves area)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         await Promise.all(
-          normalized.map((r) =>
+          liveOnly.map((r) =>
             r.area_id
               ? recordEvent({
                   cleanerId: r.cleaner_id,
@@ -215,8 +225,8 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       }
 
       // 5) Update UI / bubble up — INCLUDING lat/lng
-      if (!onSearchComplete) setResults(normalized);
-      onSearchComplete?.(normalized, pc, town, lat, lng);
+      if (!onSearchComplete) setResults(liveOnly);
+      onSearchComplete?.(liveOnly, pc, town, lat, lng);
 
       // 6) (Optional) Debug helper for inline list
       (window as any).__nbg_clickLogger = (
@@ -402,3 +412,4 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
     </div>
   );
 }
+
