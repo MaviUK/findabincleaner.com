@@ -70,14 +70,14 @@ export default function Landing() {
             >
               {/* CLEAN */}
               <span
-                className="font-black uppercase bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500 bg-clip-text text-transparent"
+                className="font-black bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500 bg-clip-text text-transparent"
               >
                 clean
               </span>
 
               {/* ly */}
               <span
-                className="font-black uppercase bg-gradient-to-r from-sky-500 via-teal-500 to-emerald-600 bg-clip-text text-transparent"
+                className="font-black bg-gradient-to-r from-sky-500 via-teal-500 to-emerald-600 bg-clip-text text-transparent"
                 style={{ letterSpacing: "0.01em" }}
               >
                 ly
