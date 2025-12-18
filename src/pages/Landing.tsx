@@ -77,7 +77,7 @@ export default function Landing() {
 
               {/* ly */}
               <span
-                className="font-black bg-gradient-to-r from-sky-500 via-teal-500 to-emerald-600 bg-clip-text text-transparent"
+                className="font-normal bg-gradient-to-r from-sky-500 via-teal-500 to-emerald-600 bg-clip-text text-transparent"
                 style={{ letterSpacing: "0.01em" }}
               >
                 ly
