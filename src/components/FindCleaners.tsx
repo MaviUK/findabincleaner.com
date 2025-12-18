@@ -150,15 +150,13 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
       setLocality(town);
 
       /* 2) Search cleaners (category-aware) */
-      const { data: rows, error: rpcErr } = await supabase.rpc(
-        "search_cleaners_by_location",
-        {
-          p_lat: lat,
-          p_lng: lng,
-          p_limit: 50,
-          p_category_slug: categorySlug || null,
-        }
-      );
+      const { data: rows, error: rpcErr } = awaitsupabase.rpc("search_cleaners_by_location", {
+  p_lat: lat,
+  p_lng: lng,
+  p_limit: 50,
+  p_category_slug: serviceSlug,
+});
+
 
       if (rpcErr) {
         setError(rpcErr.message);
@@ -307,3 +305,4 @@ export default function FindCleaners({ onSearchComplete }: FindCleanersProps) {
     </div>
   );
 }
+
