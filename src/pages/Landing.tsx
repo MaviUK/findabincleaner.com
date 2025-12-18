@@ -1,65 +1,88 @@
 // src/pages/Landing.tsx
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import FindCleaners from "../components/FindCleaners";
 import ResultsList from "../components/ResultsList";
 
 type Cleaner = any;
+type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner" | null;
 
 export default function Landing() {
+  const [service, setService] = useState<ServiceSlug>(null);
+
   const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
   const [locality, setLocality] = useState<string>("");
 
-  // Keep the search point so clicks can be attributed when area_id is missing
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
 
   return (
     <main className="w-full">
-      <section className="container mx-auto max-w-5xl px-4 py-12">
-        <div className="space-y-4">
+      <section className="container mx-auto max-w-5xl px-4 py-14">
+        {/* HERO */}
+        <div className="space-y-4 text-center">
           <h1 className="text-4xl font-extrabold tracking-tight">
-            Book a trusted local cleaner in minutes
+            Find a trusted local cleaner
           </h1>
 
-          <p className="text-gray-600">
-            Choose a service, compare local businesses, check service areas and book online.
+          <p className="text-gray-600 max-w-2xl mx-auto">
+            Choose a service and enter your postcode to see verified local businesses.
           </p>
-
-          <div className="flex gap-3">
-            <Link
-              to="/login"
-              className="bg-emerald-700 text-white px-4 py-2 rounded"
-            >
-              I’m a cleaner
-            </Link>
-
-            <a href="#find" className="border px-4 py-2 rounded">
-              Find a service
-            </a>
-          </div>
         </div>
 
-        <div id="find" className="mt-8">
-          <div className="mb-3">
-            <h2 className="text-lg font-semibold">Find a cleaner near you</h2>
-            <p className="text-sm text-gray-600">
-              Select the service you need, then enter your postcode.
-            </p>
-          </div>
+        {/* SERVICE BUTTONS */}
+        <div className="mt-8 flex flex-wrap justify-center gap-3">
+          <button
+            onClick={() => setService("bin-cleaner")}
+            className={`px-5 py-3 rounded-lg border font-medium ${
+              service === "bin-cleaner"
+                ? "bg-emerald-700 text-white border-emerald-700"
+                : "bg-white hover:bg-gray-50"
+            }`}
+          >
+            🗑️ Bin Cleaner
+          </button>
 
-          <FindCleaners
-            onSearchComplete={(results, pc, town, lat, lng) => {
-              setCleaners(results || []);
-              setPostcode(pc || "");
-              setLocality(town || "");
-              setSearchLat(typeof lat === "number" ? lat : null);
-              setSearchLng(typeof lng === "number" ? lng : null);
-            }}
-          />
+          <button
+            onClick={() => setService("window-cleaner")}
+            className={`px-5 py-3 rounded-lg border font-medium ${
+              service === "window-cleaner"
+                ? "bg-emerald-700 text-white border-emerald-700"
+                : "bg-white hover:bg-gray-50"
+            }`}
+          >
+            🪟 Window Cleaner
+          </button>
+
+          <button
+            onClick={() => setService("cleaner")}
+            className={`px-5 py-3 rounded-lg border font-medium ${
+              service === "cleaner"
+                ? "bg-emerald-700 text-white border-emerald-700"
+                : "bg-white hover:bg-gray-50"
+            }`}
+          >
+            🧼 General Cleaner
+          </button>
         </div>
 
+        {/* SEARCH */}
+        {service && (
+          <div className="mt-10">
+            <FindCleaners
+              serviceSlug={service}
+              onSearchComplete={(results, pc, town, lat, lng) => {
+                setCleaners(results || []);
+                setPostcode(pc || "");
+                setLocality(town || "");
+                setSearchLat(typeof lat === "number" ? lat : null);
+                setSearchLng(typeof lng === "number" ? lng : null);
+              }}
+            />
+          </div>
+        )}
+
+        {/* RESULTS */}
         {Array.isArray(cleaners) && (
           <div className="mt-6">
             <ResultsList
@@ -72,9 +95,11 @@ export default function Landing() {
           </div>
         )}
 
-        <p className="mt-6 text-sm text-gray-500">
-          Free listing for cleaners • No signup fees
-        </p>
+        {!service && (
+          <p className="mt-10 text-center text-sm text-gray-500">
+            Select a service above to get started
+          </p>
+        )}
       </section>
     </main>
   );
