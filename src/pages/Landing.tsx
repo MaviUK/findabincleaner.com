@@ -38,7 +38,6 @@ export default function Landing() {
 
   const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-cleaner");
 
-  // keep search point so clicks can be attributed when area_id is missing
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
 
@@ -56,29 +55,33 @@ export default function Landing() {
       <section className="container mx-auto max-w-5xl px-4 py-10 sm:py-12">
         {/* Hero */}
         <div className="text-center">
-          {/* ✅ SINGLE hero headline (no duplicate “welcome” badge) */}
-          <h1 className="mt-4 text-center font-extrabold tracking-tight">
+          <h1 className="font-extrabold tracking-tight">
             <span className="block text-4xl sm:text-5xl text-gray-900">
               Welcome to
             </span>
 
+            {/* CLEAN.ly wordmark */}
             <span
-              className="
-                block
-                text-5xl sm:text-7xl
-                leading-[1.05]
-                font-black
-                bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500
-                bg-clip-text text-transparent
-                tracking-tight
-              "
+              className="block text-6xl sm:text-7xl leading-[1.05] mt-1"
               style={{
-                // Distinctive “brand” feel even before you wire a custom font in
-                fontFamily: `"Clash Display", "Inter", system-ui, sans-serif`,
-                letterSpacing: "-0.02em",
+                fontFamily: `"Bebas Neue", system-ui, sans-serif`,
+                letterSpacing: "0.04em",
               }}
             >
-              Cleanly
+              {/* CLEAN */}
+              <span
+                className="font-black uppercase bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500 bg-clip-text text-transparent"
+              >
+                CLEAN
+              </span>
+
+              {/* ly */}
+              <span
+                className="font-normal lowercase text-gray-800 ml-1"
+                style={{ letterSpacing: "0.01em" }}
+              >
+                ly
+              </span>
             </span>
           </h1>
 
@@ -92,7 +95,7 @@ export default function Landing() {
         <div className="mt-7 sm:mt-8 rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-6">
           {/* Service picker */}
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-            <div className="text-left sm:text-left">
+            <div>
               <div className="text-sm font-semibold text-gray-900">Service</div>
               <div className="text-xs text-gray-500 mt-1">
                 {activeService.blurb}
@@ -108,7 +111,7 @@ export default function Landing() {
                     type="button"
                     onClick={() => {
                       setServiceSlug(b.slug);
-                      setCleaners(null); // reset results when switching service
+                      setCleaners(null);
                     }}
                     className={[
                       "px-4 py-2 rounded-xl border text-sm font-semibold transition",
