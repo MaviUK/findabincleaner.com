@@ -1,5 +1,5 @@
 // src/components/FindCleaners.tsx
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
   recordEvent,
@@ -11,16 +11,7 @@ import {
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
-  /**
-   * REQUIRED: which category the user is searching for.
-   * We use this to keep bin/window/cleaner results separate.
-   */
-  serviceSlug: ServiceSlug;
-
-  /**
-   * Includes lat/lng so parents (ResultsList → CleanerCard) can attribute clicks
-   * even when a result doesn’t carry area_id.
-   */
+  serviceSlug: ServiceSlug; // REQUIRED (no "search all")
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -44,11 +35,8 @@ type MatchIn = {
   distance_m?: number | null;
   distance_meters?: number | null;
 
-  // Some installs return these directly from the RPC:
   area_id?: string | null;
   area_name?: string | null;
-
-  // optional: if your RPC returns it, we just ignore it here unless you want to use it
   is_covering_sponsor?: boolean | null;
 };
 
@@ -101,33 +89,34 @@ function toWhatsAppHref(phone?: string | null) {
   if (!phone) return null;
   let digits = phone.replace(/[^\d]/g, "");
   if (!digits) return null;
+
+  // If user stored +44… keep it. If they stored 07… convert to 44…
   if (phone.trim().startsWith("+")) {
     digits = phone.replace(/[^\d]/g, "");
   } else if (digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`; // UK
+    digits = `44${digits.slice(1)}`;
   }
+
   return `https://wa.me/${digits}`;
 }
 
-export default function FindCleaners({
-  serviceSlug,
-  onSearchComplete,
-}: FindCleanersProps) {
+export default function FindCleaners({ onSearchComplete, serviceSlug }: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [locality, setLocality] = useState<string>("");
-
   const submitCount = useRef(0);
 
-  async function lookup(ev?: FormEvent) {
+  async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
     if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
     if (!pc) return setError("Please enter a postcode.");
+
+    if (!serviceSlug) return setError("Please choose a service first.");
 
     try {
       setLoading(true);
@@ -139,6 +128,7 @@ export default function FindCleaners({
       );
       if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
       const data = await res.json();
+
       if (data.status !== 200 || !data.result) {
         setError("Postcode not found.");
         return;
@@ -155,30 +145,25 @@ export default function FindCleaners({
 
       setLocality(town);
 
-      // 2) Category-aware search RPC
-      // NOTE: your DB function MUST accept p_category_slug for this to work.
-      // If it doesn't yet, you'll see a clean RPC error message.
-      let list: MatchIn[] = [];
-      {
-        const { data: rows, error: rpcErr } = await supabase.rpc(
-          "search_cleaners_by_location",
-          {
-            p_lat: lat,
-            p_lng: lng,
-            p_limit: 50,
-            p_category_slug: serviceSlug, // <-- key change
-          }
-        );
-
-        if (rpcErr) {
-          setError(rpcErr.message);
-          return;
+      // 2) Call RPC (category-filtered)
+      const { data: rows, error: rpcErr } = await supabase.rpc(
+        "search_cleaners_by_location",
+        {
+          p_category_slug: serviceSlug,
+          p_lat: lat,
+          p_lng: lng,
+          p_limit: 50,
         }
+      );
 
-        list = (rows || []) as MatchIn[];
+      if (rpcErr) {
+        setError(rpcErr.message);
+        return;
       }
 
-      // 3) Normalize to UI type
+      const list = (rows || []) as MatchIn[];
+
+      // 3) Normalize
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -198,18 +183,13 @@ export default function FindCleaners({
         is_covering_sponsor: Boolean((m as any).is_covering_sponsor),
       }));
 
-      // Keep only those with some contact method
-      const liveOnly = normalized.filter(
-        (r) => Boolean(r.website) || Boolean(r.phone) || Boolean(r.whatsapp)
-      );
-
-      // 4) Record impressions
+      // 4) Record impressions (prefer area_id; else point-based)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
 
         await Promise.all(
-          liveOnly.map((r) =>
+          normalized.map((r) =>
             r.area_id
               ? recordEvent({
                   cleanerId: r.cleaner_id,
@@ -222,7 +202,7 @@ export default function FindCleaners({
                     lat,
                     lng,
                     town,
-                    category_slug: serviceSlug,
+                    service: serviceSlug,
                   },
                 })
               : recordEventFromPointBeacon({
@@ -231,12 +211,7 @@ export default function FindCleaners({
                   lng,
                   event: "impression",
                   sessionId,
-                  meta: {
-                    search_id: searchId,
-                    postcode: pc,
-                    town,
-                    category_slug: serviceSlug,
-                  },
+                  meta: { search_id: searchId, postcode: pc, town, service: serviceSlug },
                 })
           )
         );
@@ -244,11 +219,11 @@ export default function FindCleaners({
         console.warn("recordEvent(impression) error", e);
       }
 
-      // 5) Update UI / bubble up — INCLUDING lat/lng
-      if (!onSearchComplete) setResults(liveOnly);
-      onSearchComplete?.(liveOnly, pc, town, lat, lng);
+      // 5) Update UI / bubble up
+      if (!onSearchComplete) setResults(normalized);
+      onSearchComplete?.(normalized, pc, town, lat, lng);
 
-      // 6) Debug helper for inline list
+      // 6) Debug click logger
       (window as any).__nbg_clickLogger = (
         r: MatchOut,
         ev: "click_website" | "click_phone" | "click_message"
@@ -405,7 +380,7 @@ export default function FindCleaners({
 
           {!loading && !error && results.length === 0 && (
             <li className="text-gray-500">
-              No results near {postcode.trim().toUpperCase()}
+              No cleaners found near {postcode.trim().toUpperCase()}
               {locality ? `, in ${locality}` : ""}.
             </li>
           )}
