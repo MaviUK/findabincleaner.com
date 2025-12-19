@@ -5,7 +5,7 @@ import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
 import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
-import AccountDangerZone from "../components/settings/AccountDangerZone"; // keep if you have it
+import AccountDangerZone from "../components/settings/AccountDangerZone";
 
 type Cleaner = {
   id: string;
@@ -26,6 +26,10 @@ const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
   { key: "domestic", label: "Domestic", icon: "🏠" },
   { key: "commercial", label: "Commercial", icon: "🏢" },
 ];
+
+// ✅ Categories we want visible in the business UI (hide domestic-cleaner for now)
+type Category = { id: string; name: string; slug: string };
+const ALLOWED_CATEGORY_SLUGS = ["bin-cleaner", "window-cleaner", "cleaner"] as const;
 
 // shape the CleanerCard expects (lightweight local type)
 type CleanerCardShape = {
@@ -160,6 +164,64 @@ function ServiceTypePills({
   );
 }
 
+// ✅ Category pills for industries (bin-cleaner / window-cleaner / cleaner)
+function CategoryPills({
+  categories,
+  selected,
+  onToggle,
+}: {
+  categories: Category[];
+  selected: Set<string>;
+  onToggle: (categoryId: string) => void;
+}) {
+  const ordered = useMemo(() => {
+    const order: Record<string, number> = {
+      "bin-cleaner": 1,
+      "window-cleaner": 2,
+      cleaner: 3,
+    };
+    return [...categories].sort(
+      (a, b) => (order[a.slug] ?? 99) - (order[b.slug] ?? 99)
+    );
+  }, [categories]);
+
+  const iconFor = (slug: string) => {
+    if (slug === "bin-cleaner") return "🗑️";
+    if (slug === "window-cleaner") return "🪟";
+    return "🧼";
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm font-medium">Industries (what you appear under)</div>
+      <div className="flex flex-wrap gap-2">
+        {ordered.map((c) => {
+          const checked = selected.has(c.id);
+          return (
+            <button
+              key={c.id}
+              type="button"
+              onClick={() => onToggle(c.id)}
+              className={[
+                "inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-semibold select-none transition",
+                checked
+                  ? "bg-emerald-700 text-white border-emerald-700"
+                  : "bg-white hover:bg-gray-50 border-gray-300",
+              ].join(" ")}
+            >
+              <span className="text-base leading-none">{iconFor(c.slug)}</span>
+              <span>{c.name}</span>
+            </button>
+          );
+        })}
+      </div>
+      <p className="text-xs text-gray-500">
+        These control search + dashboard tabs + area purchases. (You can add more later.)
+      </p>
+    </div>
+  );
+}
+
 // coerce unknown/CSV/JSON values to a string[]
 const toArr = (v: any): string[] => {
   if (!v) return [];
@@ -191,12 +253,17 @@ export default function Settings() {
   const [businessName, setBusinessName] = useState("");
   const [address, setAddress] = useState("");
   const [phone, setPhone] = useState("");
-  const [whatsapp, setWhatsapp] = useState(""); // NEW
+  const [whatsapp, setWhatsapp] = useState("");
   const [website, setWebsite] = useState("");
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
   const [serviceTypes, setServiceTypes] = useState<string[]>([]);
+
+  // ✅ industries/categories state
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
 
   // logo state
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -210,7 +277,9 @@ export default function Settings() {
 
     (async () => {
       try {
-        const { data: { session } } = await supabase.auth.getSession();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
         if (!mounted) return;
 
         if (!session?.user) {
@@ -248,6 +317,17 @@ export default function Settings() {
         } else {
           fillForm(data as Cleaner, session.user.email ?? "");
         }
+
+        // ✅ Load categories list (always)
+        const { data: cats, error: catsErr } = await supabase
+          .from("service_categories")
+          .select("id,name,slug")
+          .in("slug", [...ALLOWED_CATEGORY_SLUGS]);
+
+        if (catsErr) throw catsErr;
+
+        if (!mounted) return;
+        setCategories((cats ?? []) as Category[]);
       } catch (e: any) {
         setErr(e.message || "Failed to load profile.");
       } finally {
@@ -268,12 +348,53 @@ export default function Settings() {
     };
   }, [navigate]);
 
+  // ✅ Once we have a cleaner id, load the current selected categories
+  useEffect(() => {
+    let mounted = true;
+
+    (async () => {
+      try {
+        if (!ready) return;
+        if (!cleaner?.id) {
+          // if no cleaner row yet, selections will save on first Save
+          setSelectedCategoryIds(new Set());
+          setCategoriesLoaded(true);
+          return;
+        }
+
+        const { data: picks, error } = await supabase
+          .from("cleaner_category_offerings")
+          .select("category_id")
+          .eq("cleaner_id", cleaner.id)
+          .eq("is_active", true);
+
+        if (error) throw error;
+
+        const next = new Set<string>((picks ?? []).map((p: any) => String(p.category_id)));
+        if (!mounted) return;
+        setSelectedCategoryIds(next);
+        setCategoriesLoaded(true);
+      } catch (e: any) {
+        console.error(e);
+        if (mounted) {
+          setCategoriesLoaded(true);
+          // don't hard-fail the whole settings page if this fails
+          setErr((prev) => prev ?? "Failed to load industry selections.");
+        }
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [ready, cleaner?.id]);
+
   function fillForm(c: Cleaner, fallbackEmail: string) {
     setCleaner(c);
     setBusinessName(c.business_name ?? "");
     setAddress(c.address ?? "");
     setPhone(c.phone ?? "");
-    setWhatsapp(c.whatsapp ?? ""); // NEW
+    setWhatsapp(c.whatsapp ?? "");
     setWebsite(c.website ?? "");
     setAbout(c.about ?? "");
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
@@ -282,8 +403,21 @@ export default function Settings() {
     setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
   }
 
+  function toggleCategory(categoryId: string) {
+    setMsg(null);
+    setErr(null);
+
+    setSelectedCategoryIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(categoryId)) next.delete(categoryId);
+      else next.add(categoryId);
+      return next;
+    });
+  }
+
   async function ensureRow(): Promise<string> {
     if (cleaner && cleaner.id) return cleaner.id;
+
     const { data: created, error } = await supabase
       .from("cleaners")
       .insert({
@@ -291,7 +425,7 @@ export default function Settings() {
         business_name: businessName || null,
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null, // NEW
+        whatsapp: whatsapp || null,
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -300,6 +434,7 @@ export default function Settings() {
       })
       .select("id,*")
       .single();
+
     if (error) throw error;
     setCleaner(created as Cleaner);
     return created.id as string;
@@ -311,16 +446,54 @@ export default function Settings() {
     const path = `${userId}/logo.png`;
     const { error: upErr } = await supabase.storage
       .from("logos")
-      .upload(path, png, { upsert: true, cacheControl: "3600", contentType: "image/png" });
+      .upload(path, png, {
+        upsert: true,
+        cacheControl: "3600",
+        contentType: "image/png",
+      });
     if (upErr) throw upErr;
     const { data } = supabase.storage.from("logos").getPublicUrl(path);
     return data.publicUrl;
+  }
+
+  // ✅ Save category selections into cleaner_category_offerings
+  async function saveCategories(cleanerId: string) {
+    const selected = Array.from(selectedCategoryIds);
+    const all = categories.map((c) => c.id);
+    const unselected = all.filter((id) => !selectedCategoryIds.has(id));
+
+    // Turn ON selected (upsert)
+    if (selected.length) {
+      const rows = selected.map((category_id) => ({
+        cleaner_id: cleanerId,
+        category_id,
+        is_active: true,
+      }));
+
+      const { error: upsertErr } = await supabase
+        .from("cleaner_category_offerings")
+        .upsert(rows, { onConflict: "cleaner_id,category_id" });
+
+      if (upsertErr) throw upsertErr;
+    }
+
+    // Turn OFF unselected
+    if (unselected.length) {
+      const { error: offErr } = await supabase
+        .from("cleaner_category_offerings")
+        .update({ is_active: false })
+        .eq("cleaner_id", cleanerId)
+        .in("category_id", unselected);
+
+      if (offErr) throw offErr;
+    }
   }
 
   async function save() {
     setSaving(true);
     setMsg(null);
     setErr(null);
+
     try {
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
@@ -332,7 +505,7 @@ export default function Settings() {
         business_name: businessName || null,
         address: address || null,
         phone: phone || null,
-        whatsapp: whatsapp || null, // NEW
+        whatsapp: whatsapp || null,
         website: website || null,
         about: about || null,
         contact_email: contactEmail || null,
@@ -344,10 +517,14 @@ export default function Settings() {
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
       if (error) throw error;
 
+      // ✅ save category selections too
+      await saveCategories(id);
+
       setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
       setResizedLogo(null);
+
       setMsg("Settings saved.");
     } catch (e: any) {
       setErr(e.message || "Failed to save.");
@@ -373,7 +550,16 @@ export default function Settings() {
       payment_methods: toArr(paymentMethods),
       service_types: toArr(serviceTypes),
     }),
-    [cleaner?.id, businessName, logoPreview, website, phone, whatsapp, paymentMethods, serviceTypes]
+    [
+      cleaner?.id,
+      businessName,
+      logoPreview,
+      website,
+      phone,
+      whatsapp,
+      paymentMethods,
+      serviceTypes,
+    ]
   );
 
   if (loading || !ready) {
@@ -387,7 +573,7 @@ export default function Settings() {
         <LogoutButton />
       </header>
 
-      {/* TOP: Full-width preview using the actual search card */}
+      {/* TOP: Full-width preview */}
       <section className="p-0 bg-transparent border-0">
         <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
 
@@ -479,10 +665,25 @@ export default function Settings() {
           </label>
         </section>
 
-        {/* RIGHT: Methods, services, logo, save */}
+        {/* RIGHT: Methods, industries, logo, save */}
         <section className="space-y-4 p-4 border rounded-2xl bg-white">
           <PaymentPills value={paymentMethods} onChange={setPaymentMethods} />
+
+          {/* (Optional) keep if you still want domestic/commercial on listing */}
           <ServiceTypePills value={serviceTypes} onChange={setServiceTypes} />
+
+          {/* ✅ NEW: industries/categories selection */}
+          <div className="pt-2 border-t">
+            {!categoriesLoaded ? (
+              <div className="text-sm text-gray-500">Loading industries…</div>
+            ) : (
+              <CategoryPills
+                categories={categories}
+                selected={selectedCategoryIds}
+                onToggle={toggleCategory}
+              />
+            )}
+          </div>
 
           <div>
             <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
