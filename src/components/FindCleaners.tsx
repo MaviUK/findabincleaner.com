@@ -1,5 +1,5 @@
 // src/components/FindCleaners.tsx
-import { useRef, useState, type FormEvent } from "react";
+import { useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
   recordEvent,
@@ -11,6 +11,10 @@ export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
+
+  /** ✅ NEW: lets the parent clear previous results immediately when a new search starts */
+  onSearchStart?: () => void;
+
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -75,6 +79,7 @@ const FRIENDLY_BAD_POSTCODE =
 
 export default function FindCleaners({
   onSearchComplete,
+  onSearchStart,
   serviceSlug,
 }: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
@@ -83,9 +88,12 @@ export default function FindCleaners({
   const [error, setError] = useState<string | null>(null);
   const submitCount = useRef(0);
 
-  async function lookup(ev?: FormEvent) {
+  async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
+
+    // ✅ CLEAR previous results immediately when a new search starts
+    onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
@@ -98,14 +106,15 @@ export default function FindCleaners({
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode (postcodes.io)
+      // 1) Geocode postcode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
-      // Friendly message for non-existent postcodes
+      // ✅ Friendly error (no hard red)
       if (!res.ok) {
-        if (res.status === 404) {
+        onSearchStart?.(); // ensure parent results are cleared
+        if (res.status === 404 || res.status === 400) {
           setError(FRIENDLY_BAD_POSTCODE);
           return;
         }
@@ -115,6 +124,7 @@ export default function FindCleaners({
 
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
+        onSearchStart?.(); // ensure parent results are cleared
         setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
@@ -128,7 +138,7 @@ export default function FindCleaners({
         data.result.region ||
         "";
 
-      // 2) Search via RPC (overloaded version with category slug)
+      // 2) Search via RPC (category slug overload)
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
         {
@@ -164,7 +174,7 @@ export default function FindCleaners({
         is_covering_sponsor: Boolean(m.is_covering_sponsor),
       }));
 
-      // Optional “live only” filter (keeps your earlier intent)
+      // Optional “live only” filter
       const liveOnly = normalized.filter((r) => {
         const hasPhone = Boolean(r.phone);
         const hasWhatsApp = Boolean(r.whatsapp);
@@ -176,15 +186,19 @@ export default function FindCleaners({
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
+
         await Promise.all(
           liveOnly.map((r) =>
             r.area_id
-              ? recordEvent({
+              ? // If you have a recordEvent() util in analytics, you can swap back to it.
+                // For now we stick to point-based beacon, which you already use elsewhere.
+                recordEventFromPointBeacon({
                   cleanerId: r.cleaner_id,
-                  areaId: r.area_id,
+                  lat,
+                  lng,
                   event: "impression",
                   sessionId,
-                  meta: { search_id: searchId, postcode: pc, lat, lng, town },
+                  meta: { search_id: searchId, postcode: pc, town, area_id: r.area_id },
                 })
               : recordEventFromPointBeacon({
                   cleanerId: r.cleaner_id,
@@ -218,10 +232,7 @@ export default function FindCleaners({
           className="h-11 w-full rounded-xl border border-black/10 bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           placeholder="Enter postcode (e.g., BT20 5NF)"
           value={postcode}
-          onChange={(e) => {
-            setPostcode(e.target.value);
-            if (error) setError(null); // clears the hint as soon as they edit
-          }}
+          onChange={(e) => setPostcode(e.target.value)}
         />
         <button
           type="submit"
@@ -232,8 +243,9 @@ export default function FindCleaners({
         </button>
       </form>
 
+      {/* ✅ Soft / friendly notice styling (not hard red) */}
       {error && (
-        <div className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+        <div className="mt-1 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
           <span className="text-lg leading-none">📍</span>
           <span className="whitespace-pre-line">
             {error}
@@ -241,10 +253,10 @@ export default function FindCleaners({
         </div>
       )}
 
-      {/* Inline dev results list (only if you're not using onSearchComplete) */}
+      {/* Dev-only inline list if you ever render this component without onSearchComplete */}
       {!onSearchComplete && results.length > 0 && (
         <div className="text-sm text-gray-600">
-          Found {results.length} result{results.length === 1 ? "" : "s"}.
+          Found {results.length} cleaners.
         </div>
       )}
     </div>
