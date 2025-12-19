@@ -1,9 +1,8 @@
 // src/components/FindCleaners.tsx
-import { useRef, useState } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { supabase } from "../lib/supabase";
 import {
   recordEvent,
-  recordEventBeacon,
   recordEventFromPointBeacon,
   getOrCreateSessionId,
 } from "../lib/analytics";
@@ -71,6 +70,9 @@ function toArray(v: unknown): string[] {
   return [];
 }
 
+const FRIENDLY_BAD_POSTCODE =
+  "Hmm… we couldn’t recognise that postcode.\nDouble-check it or try a nearby postcode.";
+
 export default function FindCleaners({
   onSearchComplete,
   serviceSlug,
@@ -78,31 +80,33 @@ export default function FindCleaners({
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
-  const [error, ] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const submitCount = useRef(0);
 
-  async function lookup(ev?: React.FormEvent) {
+  async function lookup(ev?: FormEvent) {
     ev?.preventDefault();
-    (null);
+    setError(null);
     if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
-    if (!pc) return setError("Please enter a postcode.");
+    if (!pc) {
+      setError("Please enter a postcode.");
+      return;
+    }
 
     try {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode
+      // 1) Geocode postcode (postcodes.io)
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
-      // Friendly error for 404/400
+      // Friendly message for non-existent postcodes
       if (!res.ok) {
         if (res.status === 404) {
-          setError(“Hmm… we couldn’t recognise that postcode.
-Double-check it or try a nearby postcode.”);
+          setError(FRIENDLY_BAD_POSTCODE);
           return;
         }
         setError("Couldn’t look up that postcode. Please try again.");
@@ -111,8 +115,7 @@ Double-check it or try a nearby postcode.”);
 
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
-        setError(“Hmm… we couldn’t recognise that postcode.
-Double-check it or try a nearby postcode.”);
+        setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
 
@@ -215,7 +218,10 @@ Double-check it or try a nearby postcode.”);
           className="h-11 w-full rounded-xl border border-black/10 bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           placeholder="Enter postcode (e.g., BT20 5NF)"
           value={postcode}
-          onChange={(e) => setPostcode(e.target.value)}
+          onChange={(e) => {
+            setPostcode(e.target.value);
+            if (error) setError(null); // clears the hint as soon as they edit
+          }}
         />
         <button
           type="submit"
@@ -226,20 +232,21 @@ Double-check it or try a nearby postcode.”);
         </button>
       </form>
 
-     {error && (
-  <div className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-    <span className="text-lg leading-none">📍</span>
-    <span>
-      Hmm… we couldn’t recognise that postcode.
-      <br />
-      <span className="text-emerald-700">
-        Double-check it or try a nearby postcode.
-      </span>
-    </span>
-  </div>
-)}
+      {error && (
+        <div className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+          <span className="text-lg leading-none">📍</span>
+          <span className="whitespace-pre-line">
+            {error}
+          </span>
+        </div>
+      )}
 
+      {/* Inline dev results list (only if you're not using onSearchComplete) */}
+      {!onSearchComplete && results.length > 0 && (
+        <div className="text-sm text-gray-600">
+          Found {results.length} result{results.length === 1 ? "" : "s"}.
+        </div>
+      )}
     </div>
   );
 }
-
