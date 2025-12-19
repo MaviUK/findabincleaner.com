@@ -11,7 +11,7 @@ import {
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
-  serviceSlug: ServiceSlug; // REQUIRED (no "search all")
+  serviceSlug: ServiceSlug;
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -32,9 +32,7 @@ type MatchIn = {
   service_types?: unknown;
   rating_avg?: number | null;
   rating_count?: number | null;
-  distance_m?: number | null;
   distance_meters?: number | null;
-
   area_id?: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean | null;
@@ -73,39 +71,14 @@ function toArray(v: unknown): string[] {
   return [];
 }
 
-function formatDistance(m?: number | null) {
-  if (typeof m !== "number" || !isFinite(m)) return "";
-  if (m >= 1000) return `${(m / 1000).toFixed(1)} km`;
-  return `${Math.round(m)} m`;
-}
-
-function toTelHref(phone?: string | null) {
-  if (!phone) return null;
-  const digits = phone.replace(/[^\d+]/g, "");
-  return digits ? `tel:${digits}` : null;
-}
-
-function toWhatsAppHref(phone?: string | null) {
-  if (!phone) return null;
-  let digits = phone.replace(/[^\d]/g, "");
-  if (!digits) return null;
-
-  // If user stored +44… keep it. If they stored 07… convert to 44…
-  if (phone.trim().startsWith("+")) {
-    digits = phone.replace(/[^\d]/g, "");
-  } else if (digits.startsWith("0")) {
-    digits = `44${digits.slice(1)}`;
-  }
-
-  return `https://wa.me/${digits}`;
-}
-
-export default function FindCleaners({ onSearchComplete, serviceSlug }: FindCleanersProps) {
+export default function FindCleaners({
+  onSearchComplete,
+  serviceSlug,
+}: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [locality, setLocality] = useState<string>("");
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
@@ -116,21 +89,28 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
     if (!pc) return setError("Please enter a postcode.");
 
-    if (!serviceSlug) return setError("Please choose a service first.");
-
     try {
       setLoading(true);
       submitCount.current += 1;
 
-      // 1) Geocode postcode -> lat/lng (postcodes.io)
+      // 1) Geocode postcode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
-      if (!res.ok) throw new Error(`Postcode lookup failed: ${res.status}`);
-      const data = await res.json();
 
+      // Friendly error for 404/400
+      if (!res.ok) {
+        if (res.status === 404) {
+          setError("Postcode not found — try e.g. BT20 5NF");
+          return;
+        }
+        setError("Couldn’t look up that postcode. Please try again.");
+        return;
+      }
+
+      const data = await res.json();
       if (data.status !== 200 || !data.result) {
-        setError("Postcode not found.");
+        setError("Postcode not found — try e.g. BT20 5NF");
         return;
       }
 
@@ -143,9 +123,7 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
         data.result.region ||
         "";
 
-      setLocality(town);
-
-      // 2) Call RPC (category-filtered)
+      // 2) Search via RPC (overloaded version with category slug)
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
         {
@@ -175,35 +153,33 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
         service_types: toArray(m.service_types),
         rating_avg: m.rating_avg ?? null,
         rating_count: m.rating_count ?? null,
-        distance_m:
-          (m.distance_meters as number | null | undefined) ??
-          (m.distance_m ?? null),
-        area_id: (m as any).area_id ?? null,
-        area_name: (m as any).area_name ?? null,
-        is_covering_sponsor: Boolean((m as any).is_covering_sponsor),
+        distance_m: m.distance_meters ?? null,
+        area_id: m.area_id ?? null,
+        area_name: m.area_name ?? null,
+        is_covering_sponsor: Boolean(m.is_covering_sponsor),
       }));
 
-      // 4) Record impressions (prefer area_id; else point-based)
+      // Optional “live only” filter (keeps your earlier intent)
+      const liveOnly = normalized.filter((r) => {
+        const hasPhone = Boolean(r.phone);
+        const hasWhatsApp = Boolean(r.whatsapp);
+        const hasWebsite = Boolean(r.website);
+        return hasPhone || hasWhatsApp || hasWebsite;
+      });
+
+      // 4) Record impressions
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
-
         await Promise.all(
-          normalized.map((r) =>
+          liveOnly.map((r) =>
             r.area_id
               ? recordEvent({
                   cleanerId: r.cleaner_id,
                   areaId: r.area_id,
                   event: "impression",
                   sessionId,
-                  meta: {
-                    search_id: searchId,
-                    postcode: pc,
-                    lat,
-                    lng,
-                    town,
-                    service: serviceSlug,
-                  },
+                  meta: { search_id: searchId, postcode: pc, lat, lng, town },
                 })
               : recordEventFromPointBeacon({
                   cleanerId: r.cleaner_id,
@@ -211,7 +187,7 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
                   lng,
                   event: "impression",
                   sessionId,
-                  meta: { search_id: searchId, postcode: pc, town, service: serviceSlug },
+                  meta: { search_id: searchId, postcode: pc, town },
                 })
           )
         );
@@ -220,50 +196,28 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
       }
 
       // 5) Update UI / bubble up
-      if (!onSearchComplete) setResults(normalized);
-      onSearchComplete?.(normalized, pc, town, lat, lng);
-
-      // 6) Debug click logger
-      (window as any).__nbg_clickLogger = (
-        r: MatchOut,
-        ev: "click_website" | "click_phone" | "click_message"
-      ) => {
-        const sessionId = getOrCreateSessionId();
-        return r.area_id
-          ? recordEventBeacon({
-              cleanerId: r.cleaner_id,
-              areaId: r.area_id,
-              event: ev,
-              sessionId,
-            })
-          : recordEventFromPointBeacon({
-              cleanerId: r.cleaner_id,
-              lat,
-              lng,
-              event: ev,
-              sessionId,
-            });
-      };
+      if (!onSearchComplete) setResults(liveOnly);
+      onSearchComplete?.(liveOnly, pc, town, lat, lng);
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
-      setError(e?.message || "Something went wrong.");
+      setError("Something went wrong. Please try again.");
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="space-y-4">
-      <form className="flex gap-2" onSubmit={lookup}>
+    <div className="space-y-3">
+      <form onSubmit={lookup} className="flex gap-2">
         <input
-          className="border rounded px-3 py-2 w-full"
+          className="h-11 w-full rounded-xl border border-black/10 bg-white px-4 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           placeholder="Enter postcode (e.g., BT20 5NF)"
           value={postcode}
           onChange={(e) => setPostcode(e.target.value)}
         />
         <button
           type="submit"
-          className="bg-emerald-700 text-white px-4 py-2 rounded"
+          className="h-11 shrink-0 rounded-xl bg-emerald-700 px-5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
           disabled={loading}
         >
           {loading ? "Searching…" : "Search"}
@@ -271,120 +225,16 @@ export default function FindCleaners({ onSearchComplete, serviceSlug }: FindClea
       </form>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded">
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           {error}
         </div>
       )}
 
       {/* Inline list (dev path only) */}
-      {!onSearchComplete && (
-        <ul className="space-y-2">
-          {results.map((r) => {
-            const tel = toTelHref(r.phone);
-            const wa = toWhatsAppHref(r.phone);
-
-            return (
-              <li
-                key={r.cleaner_id}
-                className="p-4 rounded-xl border flex items-center justify-between gap-4"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  {r.logo_url ? (
-                    <img
-                      src={r.logo_url}
-                      alt={`${r.business_name ?? "Cleaner"} logo`}
-                      className="h-10 w-10 rounded bg-white object-contain border"
-                    />
-                  ) : (
-                    <div className="h-10 w-10 rounded bg-gray-200 border" />
-                  )}
-
-                  <div className="min-w-0">
-                    <div className="font-medium truncate">
-                      {r.business_name ?? "Cleaner"}
-                      {r.is_covering_sponsor ? (
-                        <span className="ml-2 text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                          Sponsored
-                        </span>
-                      ) : null}
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-3 text-sm text-gray-600">
-                      {r.website && (
-                        <a
-                          href={r.website}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_website");
-                            setTimeout(() => {
-                              window.open(r.website!, "_blank", "noopener,noreferrer");
-                            }, 10);
-                          }}
-                        >
-                          Website
-                        </a>
-                      )}
-
-                      {tel && (
-                        <a
-                          href={tel}
-                          className="underline"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_phone");
-                            setTimeout(() => {
-                              window.location.href = tel;
-                            }, 10);
-                          }}
-                        >
-                          Call
-                        </a>
-                      )}
-
-                      {wa && (
-                        <a
-                          href={wa}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="underline"
-                          onClick={(e) => {
-                            e.preventDefault();
-                            (window as any).__nbg_clickLogger?.(r, "click_message");
-                            setTimeout(() => {
-                              window.open(wa, "_blank", "noopener,noreferrer");
-                            }, 10);
-                          }}
-                        >
-                          WhatsApp
-                        </a>
-                      )}
-                    </div>
-
-                    {r.area_id && (
-                      <div className="text-xs text-gray-500 mt-1">
-                        Matched area: {r.area_id}
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="text-sm text-gray-700 whitespace-nowrap">
-                  {formatDistance(r.distance_m)}
-                </div>
-              </li>
-            );
-          })}
-
-          {!loading && !error && results.length === 0 && (
-            <li className="text-gray-500">
-              No cleaners found near {postcode.trim().toUpperCase()}
-              {locality ? `, in ${locality}` : ""}.
-            </li>
-          )}
-        </ul>
+      {!onSearchComplete && results.length > 0 && (
+        <div className="text-sm text-gray-600">
+          {results.length} result{results.length === 1 ? "" : "s"}
+        </div>
       )}
     </div>
   );
