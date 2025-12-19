@@ -52,136 +52,147 @@ export default function Landing() {
 
   return (
     <main className="w-full">
-      <section className="container mx-auto max-w-5xl px-4 py-10 sm:py-12">
-        {/* Hero */}
-        <div className="text-center">
-          <h1 className="font-extrabold tracking-tight">
-            <span className="block text-4xl sm:text-5xl text-gray-900">
+      {/* soft background */}
+      <div className="bg-gradient-to-b from-emerald-50 via-white to-white">
+        <section className="container mx-auto max-w-5xl px-4 pt-10 pb-10 sm:pt-12 sm:pb-12">
+          {/* HERO */}
+          <div className="text-center">
+            <div className="inline-flex items-center gap-2 rounded-full border border-emerald-100 bg-white/70 px-3 py-1 text-xs text-emerald-700 shadow-sm">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
               Welcome to
-            </span>
+            </div>
 
-            {/* CLEAN.ly wordmark */}
-            <span
-              className="block text-6xl sm:text-7xl leading-[1.05] mt-1"
-              style={{
-                fontFamily: `"Bebas Neue", system-ui, sans-serif`,
-                letterSpacing: "0.04em",
-              }}
-            >
-              {/* CLEAN */}
-              <span
-                className="font-black bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500 bg-clip-text text-transparent"
-              >
-                clean
+            <h1 className="mt-4 tracking-tight">
+              {/* “Welcome to” + “CLEANly” wordmark */}
+              <span className="block text-4xl sm:text-5xl font-extrabold text-gray-900">
+                Welcome to
               </span>
 
-              {/* ly */}
               <span
-                className="font-normal bg-gradient-to-r from-sky-500 via-teal-500 to-emerald-600 bg-clip-text text-transparent"
-                style={{ letterSpacing: "0.01em" }}
+                className="block mt-1 text-6xl sm:text-7xl leading-[1.0]"
+                style={{ fontFamily: `"Bebas Neue", system-ui, sans-serif` }}
               >
-                ly
+                <span
+                  className="uppercase font-black bg-gradient-to-r from-emerald-600 via-teal-500 to-sky-500 bg-clip-text text-transparent drop-shadow-[0_1px_0_rgba(0,0,0,0.06)]"
+                  style={{ letterSpacing: "0.06em" }}
+                >
+                  CLEAN
+                </span>
+                <span
+                  className="lowercase font-normal text-gray-900/85"
+                  style={{ letterSpacing: "0.01em" }}
+                >
+                  ly
+                </span>
               </span>
-            </span>
-          </h1>
+            </h1>
 
-          <p className="mt-4 text-base sm:text-lg text-gray-600">
-            Pick a service, enter your postcode, and contact trusted local
-            cleaners in minutes.
-          </p>
-        </div>
+            <p className="mt-3 text-base sm:text-lg text-gray-600 max-w-2xl mx-auto">
+              Pick a service, enter your postcode, and contact trusted local
+              cleaners in minutes.
+            </p>
+          </div>
 
-        {/* Search panel */}
-        <div className="mt-7 sm:mt-8 rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-6">
-          {/* Service picker */}
-          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
-            <div>
-              <div className="text-sm font-semibold text-gray-900">Service</div>
-              <div className="text-xs text-gray-500 mt-1">
-                {activeService.blurb}
+          {/* SEARCH CARD */}
+          <div className="mt-7 sm:mt-8 mx-auto max-w-4xl">
+            <div className="rounded-3xl border border-black/5 bg-white shadow-[0_10px_30px_rgba(16,24,40,0.06)] p-4 sm:p-6">
+              {/* Service + segmented control */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                <div className="text-left">
+                  <div className="text-sm font-semibold text-gray-900">
+                    Service
+                  </div>
+                  <div className="text-xs text-gray-500 mt-1">
+                    {activeService.blurb}
+                  </div>
+                </div>
+
+                {/* Segmented buttons */}
+                <div className="inline-flex flex-wrap justify-center sm:justify-end gap-2">
+                  {SERVICE_BUTTONS.map((b) => {
+                    const active = b.slug === serviceSlug;
+                    return (
+                      <button
+                        key={b.slug}
+                        type="button"
+                        onClick={() => {
+                          setServiceSlug(b.slug);
+                          setCleaners(null);
+                        }}
+                        className={[
+                          "inline-flex items-center gap-2 px-4 py-2 rounded-full border text-sm font-semibold transition",
+                          "focus:outline-none focus:ring-2 focus:ring-emerald-500/40",
+                          active
+                            ? "bg-emerald-700 text-white border-emerald-700 shadow-sm"
+                            : "bg-white text-gray-900 border-gray-200 hover:border-gray-300",
+                        ].join(" ")}
+                      >
+                        <span>{b.icon}</span>
+                        {b.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Search */}
+              <div className="mt-4">
+                <FindCleaners
+                  serviceSlug={serviceSlug}
+                  onSearchComplete={(results, pc, town, lat, lng) => {
+                    setCleaners(results || []);
+                    setPostcode(pc || "");
+                    setLocality(town || "");
+                    setSearchLat(typeof lat === "number" ? lat : null);
+                    setSearchLng(typeof lng === "number" ? lng : null);
+                  }}
+                />
+              </div>
+
+              <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
+                <span>Free listing for cleaners • No signup fees</span>
+                <span className="inline-flex items-center gap-2">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  Verified businesses only
+                </span>
               </div>
             </div>
-
-            <div className="inline-flex flex-wrap justify-center sm:justify-end gap-2">
-              {SERVICE_BUTTONS.map((b) => {
-                const active = b.slug === serviceSlug;
-                return (
-                  <button
-                    key={b.slug}
-                    type="button"
-                    onClick={() => {
-                      setServiceSlug(b.slug);
-                      setCleaners(null);
-                    }}
-                    className={[
-                      "px-4 py-2 rounded-xl border text-sm font-semibold transition",
-                      "focus:outline-none focus:ring-2 focus:ring-emerald-500/40",
-                      active
-                        ? "bg-emerald-700 text-white border-emerald-700 shadow-sm"
-                        : "bg-white text-gray-900 border-gray-200 hover:border-gray-300",
-                    ].join(" ")}
-                  >
-                    <span className="mr-2">{b.icon}</span>
-                    {b.label}
-                  </button>
-                );
-              })}
-            </div>
           </div>
 
-          {/* Postcode search */}
-          <div className="mt-4">
-            <FindCleaners
-              serviceSlug={serviceSlug}
-              onSearchComplete={(results, pc, town, lat, lng) => {
-                setCleaners(results || []);
-                setPostcode(pc || "");
-                setLocality(town || "");
-                setSearchLat(typeof lat === "number" ? lat : null);
-                setSearchLng(typeof lng === "number" ? lng : null);
-              }}
-            />
-          </div>
+          {/* RESULTS */}
+          {hasResults && (
+            <div className="mt-8">
+              <div className="flex items-end justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-xs uppercase tracking-wide text-gray-500">
+                    Results
+                  </div>
+                  <div className="text-lg font-bold text-gray-900 truncate">
+                    {cleaners.length}{" "}
+                    {cleaners.length === 1 ? "business" : "businesses"}{" "}
+                    {postcode ? `near ${postcode.toUpperCase()}` : "near you"}
+                    {locality ? ` • ${locality}` : ""}
+                  </div>
+                </div>
 
-          <div className="mt-3 text-xs text-gray-500">
-            Free listing for cleaners • No signup fees
-          </div>
-        </div>
+                <span className="shrink-0 inline-flex items-center rounded-full bg-emerald-50 text-emerald-800 px-3 py-1 text-sm border border-emerald-100">
+                  {activeService.icon} {activeService.label}
+                </span>
+              </div>
 
-        {/* Results header */}
-        {hasResults && (
-          <div className="mt-6 flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm text-gray-500">Results</div>
-              <div className="text-lg font-bold text-gray-900 truncate">
-                {cleaners.length}{" "}
-                {cleaners.length === 1 ? "business" : "businesses"}{" "}
-                {postcode ? `near ${postcode.toUpperCase()}` : "near you"}
-                {locality ? ` • ${locality}` : ""}
+              <div className="mt-4">
+                <ResultsList
+                  cleaners={cleaners}
+                  postcode={postcode}
+                  locality={locality}
+                  searchLat={searchLat}
+                  searchLng={searchLng}
+                />
               </div>
             </div>
-
-            <div className="shrink-0">
-              <span className="inline-flex items-center rounded-full bg-gray-100 text-gray-700 px-3 py-1 text-sm">
-                {activeService.icon} {activeService.label}
-              </span>
-            </div>
-          </div>
-        )}
-
-        {/* Results list */}
-        {hasResults && (
-          <div className="mt-4">
-            <ResultsList
-              cleaners={cleaners}
-              postcode={postcode}
-              locality={locality}
-              searchLat={searchLat}
-              searchLng={searchLng}
-            />
-          </div>
-        )}
-      </section>
+          )}
+        </section>
+      </div>
     </main>
   );
 }
