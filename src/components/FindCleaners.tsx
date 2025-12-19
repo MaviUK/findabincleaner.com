@@ -78,12 +78,12 @@ export default function FindCleaners({
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const [error, ] = useState<string | null>(null);
   const submitCount = useRef(0);
 
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
-    setError(null);
+    (null);
     if (!onSearchComplete) setResults([]);
 
     const pc = postcode.trim().toUpperCase().replace(/\s+/g, " ");
@@ -101,7 +101,8 @@ export default function FindCleaners({
       // Friendly error for 404/400
       if (!res.ok) {
         if (res.status === 404) {
-          setError("Postcode not found — try e.g. BT20 5NF");
+          setError(“Hmm… we couldn’t recognise that postcode.
+Double-check it or try a nearby postcode.”);
           return;
         }
         setError("Couldn’t look up that postcode. Please try again.");
@@ -110,7 +111,8 @@ export default function FindCleaners({
 
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
-        setError("Postcode not found — try e.g. BT20 5NF");
+        setError(“Hmm… we couldn’t recognise that postcode.
+Double-check it or try a nearby postcode.”);
         return;
       }
 
@@ -224,18 +226,20 @@ export default function FindCleaners({
         </button>
       </form>
 
-      {error && (
-        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          {error}
-        </div>
-      )}
+     {error && (
+  <div className="mt-3 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+    <span className="text-lg leading-none">📍</span>
+    <span>
+      Hmm… we couldn’t recognise that postcode.
+      <br />
+      <span className="text-emerald-700">
+        Double-check it or try a nearby postcode.
+      </span>
+    </span>
+  </div>
+)}
 
-      {/* Inline list (dev path only) */}
-      {!onSearchComplete && results.length > 0 && (
-        <div className="text-sm text-gray-600">
-          {results.length} result{results.length === 1 ? "" : "s"}
-        </div>
-      )}
     </div>
   );
 }
+
