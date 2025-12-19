@@ -70,7 +70,7 @@ export default function Landing() {
         </div>
 
         {/* ✅ Shared width wrapper so Search + Results align */}
-        <div className="mt-7 sm:mt-8 w-full max-w-3xl mx-auto">
+        <div className="mt-7 sm:mt-8 w-full max-w-5xl mx-auto">
           {/* Search panel */}
           <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-6">
             {/* Service picker */}
