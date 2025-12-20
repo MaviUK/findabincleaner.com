@@ -1,16 +1,28 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-const sb = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE!
-);
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
+const PUBLIC_SITE_URL = process.env.PUBLIC_SITE_URL;
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+  console.error("[sponsored-checkout] Missing Supabase env vars");
+}
+if (!STRIPE_SECRET_KEY) {
+  console.error("[sponsored-checkout] Missing STRIPE_SECRET_KEY");
+}
+if (!PUBLIC_SITE_URL) {
+  console.error("[sponsored-checkout] Missing PUBLIC_SITE_URL");
+}
+
+const sb = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+
+const stripe = new Stripe(STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-const json = (body: any, status = 200) =>
+const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
@@ -19,12 +31,12 @@ const json = (body: any, status = 200) =>
 // small epsilon so we treat tiny leftovers as zero
 const EPS = 1e-6;
 
-export default async (req: Request) => {
+export default async (req) => {
   if (req.method !== "POST") {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
-  let body: any;
+  let body;
   try {
     body = await req.json();
   } catch {
@@ -35,7 +47,7 @@ export default async (req: Request) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot || 1);
 
-  // ✅ NEW: categoryId required for per-industry sponsorship
+  // ✅ NEW: categoryId for per-industry sponsorship
   const categoryIdRaw = body.categoryId ?? body.category_id ?? null;
   const categoryId = categoryIdRaw ? String(categoryIdRaw).trim() : null;
 
@@ -44,7 +56,6 @@ export default async (req: Request) => {
   if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
 
   if (![1].includes(slot)) {
-    // only one featured slot for now
     return json({ ok: false, error: "Invalid slot" }, 400);
   }
 
@@ -54,15 +65,13 @@ export default async (req: Request) => {
       "area_remaining_preview",
       {
         p_area_id: areaId,
-        p_category_id: categoryId, // ✅ per industry
+        p_category_id: categoryId,
         p_slot: slot,
       }
     );
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewData)
-      ? previewData[0] || {}
-      : previewData || {};
+    const row = Array.isArray(previewData) ? previewData[0] || {} : previewData || {};
 
     let available_km2 = Number(row.available_km2 ?? 0) || 0;
     const sold_out_flag = Boolean(row.sold_out);
@@ -101,11 +110,9 @@ export default async (req: Request) => {
       .maybeSingle();
 
     if (cleanerErr) throw cleanerErr;
-    if (!cleaner) {
-      return json({ ok: false, error: "Cleaner not found" }, 404);
-    }
+    if (!cleaner) return json({ ok: false, error: "Cleaner not found" }, 404);
 
-    let stripeCustomerId: string | null = cleaner.stripe_customer_id || null;
+    let stripeCustomerId = cleaner.stripe_customer_id || null;
     const customerName = cleaner.business_name || "Customer";
 
     if (!stripeCustomerId) {
@@ -121,7 +128,7 @@ export default async (req: Request) => {
         .eq("id", businessId);
     }
 
-    const createSession = (customerId: string) =>
+    const createSession = (customerId) =>
       stripe.checkout.sessions.create({
         mode: "subscription",
         customer: customerId,
@@ -129,7 +136,7 @@ export default async (req: Request) => {
           business_id: businessId,
           area_id: areaId,
           slot: String(slot),
-          category_id: categoryId, // ✅ NEW: so webhook can store it
+          category_id: categoryId, // ✅ NEW
         },
         line_items: [
           {
@@ -137,8 +144,7 @@ export default async (req: Request) => {
               currency: "gbp",
               product_data: {
                 name: "Featured service area",
-                description:
-                  "Be shown first in local search results for this area.",
+                description: "Be shown first in local search results for this area.",
               },
               unit_amount: amount_cents,
               recurring: { interval: "month" },
@@ -146,15 +152,14 @@ export default async (req: Request) => {
             quantity: 1,
           },
         ],
-        success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-        cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+        success_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=success`,
+        cancel_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
       });
 
-    let session: Stripe.Checkout.Session;
-
+    let session;
     try {
       session = await createSession(stripeCustomerId);
-    } catch (e: any) {
+    } catch (e) {
       // if stored customer is stale, recreate and retry once
       const code = e?.raw?.code;
       const param = e?.raw?.param;
@@ -164,6 +169,7 @@ export default async (req: Request) => {
           name: customerName,
           email: cleaner.email || undefined,
         });
+
         stripeCustomerId = customer.id;
 
         await sb
@@ -178,7 +184,7 @@ export default async (req: Request) => {
     }
 
     return json({ ok: true, url: session.url }, 200);
-  } catch (e: any) {
+  } catch (e) {
     console.error("[sponsored-checkout] error:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
