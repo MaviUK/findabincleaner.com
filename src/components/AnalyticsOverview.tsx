@@ -1,5 +1,5 @@
 // src/components/AnalyticsOverview.tsx
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
 
 type Totals = {
@@ -9,7 +9,12 @@ type Totals = {
   clicks_phone: number;
 };
 
-export default function AnalyticsOverview() {
+type Props = {
+  cleanerId: string;
+  categoryId?: string | null;
+};
+
+export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
   const [totals, setTotals] = useState<Totals>({
     impressions: 0,
     clicks_message: 0,
@@ -18,58 +23,65 @@ export default function AnalyticsOverview() {
   });
   const [loading, setLoading] = useState(true);
 
+  const sinceIso = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return d.toISOString();
+  }, []);
+
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       setLoading(true);
 
-      // find this user's cleaner id
-      const { data: { session } } = await supabase.auth.getSession();
-      const uid = session?.user?.id;
-      if (!uid) {
-        setTotals({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
-        setLoading(false);
-        return;
+      try {
+        // Helper: count events for this cleaner + (optional) category in last 30 days
+        async function countEvent(event: string) {
+          let q = supabase
+            .from("analytics_events")
+            .select("id", { count: "exact", head: true })
+            .eq("cleaner_id", cleanerId)
+            .eq("event", event)
+            .gte("created_at", sinceIso);
+
+          if (categoryId) q = q.eq("category_id", categoryId);
+
+          const { count, error } = await q;
+          if (error) throw error;
+          return count ?? 0;
+        }
+
+        const [impressions, clicks_message, clicks_website, clicks_phone] =
+          await Promise.all([
+            countEvent("impression"),
+            countEvent("click_message"),
+            countEvent("click_website"),
+            countEvent("click_phone"),
+          ]);
+
+        if (cancelled) return;
+
+        setTotals({
+          impressions,
+          clicks_message,
+          clicks_website,
+          clicks_phone,
+        });
+      } catch (e) {
+        console.error("AnalyticsOverview error:", e);
+        if (!cancelled) {
+          setTotals({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
-
-      const { data: cleaner, error: ce } = await supabase
-        .from("cleaners")
-        .select("id")
-        .eq("user_id", uid)
-        .maybeSingle();
-
-      if (ce || !cleaner) {
-        setTotals({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
-        setLoading(false);
-        return;
-      }
-
-      // sum stats only for this cleaner
-      const { data, error } = await supabase
-        .from("area_stats_30d")
-        .select("impressions, clicks_message, clicks_website, clicks_phone")
-        .eq("cleaner_id", cleaner.id);
-
-      if (error) {
-        console.error("analytics overview error:", error);
-        setTotals({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
-        setLoading(false);
-        return;
-      }
-
-      const agg = (data || []).reduce<Totals>(
-        (acc, r: any) => ({
-          impressions: acc.impressions + (r.impressions || 0),
-          clicks_message: acc.clicks_message + (r.clicks_message || 0),
-          clicks_website: acc.clicks_website + (r.clicks_website || 0),
-          clicks_phone: acc.clicks_phone + (r.clicks_phone || 0),
-        }),
-        { impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 }
-      );
-
-      setTotals(agg);
-      setLoading(false);
     })();
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [cleanerId, categoryId, sinceIso]);
 
   if (loading) return <div className="p-4 border rounded-xl">Loading analytics…</div>;
 
@@ -80,14 +92,18 @@ export default function AnalyticsOverview() {
     <div className="p-4 border rounded-xl">
       <div className="flex items-baseline justify-between">
         <h3 className="text-lg font-semibold">Last 30 days</h3>
-        <span className="text-sm text-gray-500">Across your service areas</span>
+        <span className="text-sm text-gray-500">
+          {categoryId ? "This industry" : "All industries"}
+        </span>
       </div>
+
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
         <Stat label="Impressions" value={totals.impressions} />
         <Stat label="Clicks (Message)" value={totals.clicks_message} />
         <Stat label="Clicks (Website)" value={totals.clicks_website} />
         <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
       </div>
+
       <div className="mt-4 text-sm text-gray-700">
         <span className="font-medium">Total CTR:</span> {ctr}
       </div>
