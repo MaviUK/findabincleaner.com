@@ -7,6 +7,7 @@ type Props = {
   onClose: () => void;
 
   businessId: string;
+  categoryId?: string | null; // ✅ NEW
   areaId: string;
   slot?: Slot;
 
@@ -75,7 +76,7 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot }),
+          body: JSON.stringify({ businessId, areaId, slot: 1, categoryId }),
         });
 
         const j = await res.json();
