@@ -46,6 +46,7 @@ export default async (req) => {
       "area_remaining_preview",
       {
         p_area_id: areaId,
+        p_category_id: categoryId, // ✅ add this
         p_slot: slot,
       }
     );
