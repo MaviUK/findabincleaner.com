@@ -47,6 +47,11 @@ export default function Dashboard() {
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
   const [openingPortal, setOpeningPortal] = useState(false);
 
+  // ✅ IMPORTANT: do NOT add hooks below early returns.
+  // Compute this as a normal value (no hook) to avoid hook-order crashes.
+  const activeCategory =
+    categories.find((c) => c.id === activeCategoryId) ?? null;
+
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
     const status = qs.get("checkout");
@@ -122,7 +127,6 @@ export default function Dashboard() {
         setCleaner(c);
 
         // 2) Load categories (industries) the cleaner operates in
-        // Uses cleaner_category_offerings -> service_categories
         const { data: cats, error: catErr } = await supabase
           .from("cleaner_category_offerings")
           .select("category_id, is_active, service_categories ( id, name, slug )")
@@ -130,7 +134,6 @@ export default function Dashboard() {
           .eq("is_active", true);
 
         if (catErr) {
-          // Don’t fail the dashboard for this, but show an error banner
           console.warn("Failed to load categories:", catErr);
           setCategories([]);
           setActiveCategoryId(null);
@@ -144,14 +147,12 @@ export default function Dashboard() {
               slug: sc.slug as string,
             }));
 
-          // de-dupe by id (just in case)
-          const dedup = Array.from(new Map(mapped.map((x) => [x.id, x])).values()).sort((a, b) =>
-            a.name.localeCompare(b.name)
+          const dedup = Array.from(new Map(mapped.map((x) => [x.id, x])).values()).sort(
+            (a, b) => a.name.localeCompare(b.name)
           );
 
           setCategories(dedup);
 
-          // keep existing active tab if still valid, else default to first
           setActiveCategoryId((prev) => {
             if (prev && dedup.some((d) => d.id === prev)) return prev;
             return dedup[0]?.id ?? null;
@@ -216,11 +217,6 @@ export default function Dashboard() {
   }
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
-
-  const activeCategory = useMemo(
-    () => categories.find((c) => c.id === activeCategoryId) ?? null,
-    [categories, activeCategoryId]
-  );
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -359,7 +355,6 @@ export default function Dashboard() {
                 </Link>
               </div>
 
-              {/* Pass category context (as any so it won't break if component hasn't been updated yet) */}
               <AnalyticsOverview
                 {...({
                   cleanerId: cleaner.id,
@@ -378,7 +373,6 @@ export default function Dashboard() {
               </div>
 
               <div className="rounded-xl overflow-hidden border">
-                {/* Pass category context (as any so it won't break if component hasn't been updated yet) */}
                 <ServiceAreaEditor
                   {...({
                     cleanerId: cleaner.id,
