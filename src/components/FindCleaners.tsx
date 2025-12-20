@@ -1,8 +1,7 @@
 // src/components/FindCleaners.tsx
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import {
-  recordEvent,
   recordEventFromPointBeacon,
   getOrCreateSessionId,
 } from "../lib/analytics";
@@ -12,7 +11,7 @@ export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
 
-  /** ✅ NEW: lets the parent clear previous results immediately when a new search starts */
+  /** lets the parent clear previous results immediately when a new search starts */
   onSearchStart?: () => void;
 
   onSearchComplete?: (
@@ -86,13 +85,47 @@ export default function FindCleaners({
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
+
+  // Helps avoid re-firing impressions for the exact same search payload
+  const lastImpressionKey = useRef<string>("");
   const submitCount = useRef(0);
+
+  // Cache service_categories.id for the current serviceSlug (optional)
+  // NOTE: This is NOT written to analytics_events.category_id yet (RPC update next).
+  const categoryIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadCategoryId() {
+      try {
+        const { data, error } = await supabase
+          .from("service_categories")
+          .select("id")
+          .eq("slug", serviceSlug)
+          .maybeSingle();
+
+        if (!cancelled) {
+          categoryIdRef.current = error ? null : data?.id ?? null;
+        }
+      } catch {
+        if (!cancelled) categoryIdRef.current = null;
+      }
+    }
+
+    categoryIdRef.current = null;
+    void loadCategoryId();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [serviceSlug]);
 
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
 
-    // ✅ CLEAR previous results immediately when a new search starts
+    // Clear previous results immediately when a new search starts
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -111,9 +144,8 @@ export default function FindCleaners({
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
-      // ✅ Friendly error (no hard red)
       if (!res.ok) {
-        onSearchStart?.(); // ensure parent results are cleared
+        onSearchStart?.();
         if (res.status === 404 || res.status === 400) {
           setError(FRIENDLY_BAD_POSTCODE);
           return;
@@ -124,7 +156,7 @@ export default function FindCleaners({
 
       const data = await res.json();
       if (data.status !== 200 || !data.result) {
-        onSearchStart?.(); // ensure parent results are cleared
+        onSearchStart?.();
         setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
@@ -182,34 +214,47 @@ export default function FindCleaners({
         return hasPhone || hasWhatsApp || hasWebsite;
       });
 
-      // 4) Record impressions
+      // 4) Record impressions (per-result) with position + sponsor flag
+      // IMPORTANT: Use a guard so we don’t fire duplicates for the same search payload.
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
+        const categoryId = categoryIdRef.current; // may be null if not loaded yet
 
-        await Promise.all(
-          liveOnly.map((r) =>
-            r.area_id
-              ? // If you have a recordEvent() util in analytics, you can swap back to it.
-                // For now we stick to point-based beacon, which you already use elsewhere.
-                recordEventFromPointBeacon({
-                  cleanerId: r.cleaner_id,
-                  lat,
-                  lng,
-                  event: "impression",
-                  sessionId,
-                  meta: { search_id: searchId, postcode: pc, town, area_id: r.area_id },
-                })
-              : recordEventFromPointBeacon({
-                  cleanerId: r.cleaner_id,
-                  lat,
-                  lng,
-                  event: "impression",
-                  sessionId,
-                  meta: { search_id: searchId, postcode: pc, town },
-                })
-          )
-        );
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(
+          5
+        )}|${lng.toFixed(5)}|${liveOnly.length}`;
+
+        if (lastImpressionKey.current !== impressionKey) {
+          lastImpressionKey.current = impressionKey;
+
+          await Promise.all(
+            liveOnly.map((r, idx) =>
+              recordEventFromPointBeacon({
+                cleanerId: r.cleaner_id,
+                lat,
+                lng,
+                event: "impression",
+                sessionId,
+                meta: {
+                  search_id: searchId,
+                  postcode: pc,
+                  town,
+                  locality: town,
+                  service_slug: serviceSlug,
+                  category_id: categoryId, // not written to column yet; stored in meta for now
+                  area_id: r.area_id ?? null,
+                  area_name: r.area_name ?? null,
+                  position: idx + 1, // 1-based position in results
+                  is_sponsored: Boolean(r.is_covering_sponsor),
+                  results_count: liveOnly.length,
+                  sponsored_count: liveOnly.filter((x) => x.is_covering_sponsor)
+                    .length,
+                },
+              })
+            )
+          );
+        }
       } catch (e) {
         console.warn("recordEvent(impression) error", e);
       }
@@ -243,17 +288,13 @@ export default function FindCleaners({
         </button>
       </form>
 
-      {/* ✅ Soft / friendly notice styling (not hard red) */}
       {error && (
         <div className="mt-1 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
           <span className="text-lg leading-none">📍</span>
-          <span className="whitespace-pre-line">
-            {error}
-          </span>
+          <span className="whitespace-pre-line">{error}</span>
         </div>
       )}
 
-      {/* Dev-only inline list if you ever render this component without onSearchComplete */}
       {!onSearchComplete && results.length > 0 && (
         <div className="text-sm text-gray-600">
           Found {results.length} cleaners.
