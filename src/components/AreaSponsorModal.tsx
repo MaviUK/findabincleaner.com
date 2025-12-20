@@ -41,6 +41,7 @@ export default function AreaSponsorModal({
   open,
   onClose,
   businessId,
+  categoryId, // ✅ ADD THIS
   areaId,
   slot = 1,
   areaName,
