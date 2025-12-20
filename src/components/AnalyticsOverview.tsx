@@ -23,6 +23,10 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
   });
   const [loading, setLoading] = useState(true);
 
+  // Normalise categoryId: only filter if it's a real non-empty string
+  const categoryFilter = (categoryId ?? "").trim() || null;
+
+  // Stable "since" timestamp (last 30 days)
   const sinceIso = useMemo(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -45,7 +49,7 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
             .eq("event", event)
             .gte("created_at", sinceIso);
 
-          if (categoryId) q = q.eq("category_id", categoryId);
+          if (categoryFilter) q = q.eq("category_id", categoryFilter);
 
           const { count, error } = await q;
           if (error) throw error;
@@ -71,7 +75,12 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
       } catch (e) {
         console.error("AnalyticsOverview error:", e);
         if (!cancelled) {
-          setTotals({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
+          setTotals({
+            impressions: 0,
+            clicks_message: 0,
+            clicks_website: 0,
+            clicks_phone: 0,
+          });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -81,7 +90,7 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [cleanerId, categoryId, sinceIso]);
+  }, [cleanerId, categoryFilter, sinceIso]);
 
   if (loading) return <div className="p-4 border rounded-xl">Loading analytics…</div>;
 
@@ -93,7 +102,7 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
       <div className="flex items-baseline justify-between">
         <h3 className="text-lg font-semibold">Last 30 days</h3>
         <span className="text-sm text-gray-500">
-          {categoryId ? "This industry" : "All industries"}
+          {categoryFilter ? "This industry" : "All industries"}
         </span>
       </div>
 
