@@ -367,11 +367,13 @@ export default function ServiceAreaEditor({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            businessId: myBusinessId,
-            cleanerId: myBusinessId,
-            areaId,
-            slot: 1,
-          }),
+  businessId: myBusinessId,
+  cleanerId: myBusinessId,
+  areaId,
+  slot: 1,
+  categoryId, // ✅ make sold-out per industry
+}),
+
         });
 
         if (!res.ok) {
