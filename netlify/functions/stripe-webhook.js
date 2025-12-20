@@ -3,29 +3,15 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 /**
- * This function owns a first-class URL (no redirects involved) and receives the
- * RAW body so Stripe signatures verify.
- *
- * Health check (GET in a browser):
- *   https://<your-site>/api/stripe/webhook
+ * Served at /api/stripe/webhook with RAW body so Stripe signature verifies.
  */
 export const config = {
-  path: "/api/stripe/webhook", // <- serve directly at /api/stripe/webhook
-  body: "raw", // <- raw body required for signature verification
+  path: "/api/stripe/webhook",
+  body: "raw",
 };
 
-const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
-const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
-
-if (!STRIPE_SECRET_KEY) console.error("[stripe-webhook] Missing STRIPE_SECRET_KEY");
-if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE)
-  console.error("[stripe-webhook] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE");
-if (!STRIPE_WEBHOOK_SECRET) console.error("[stripe-webhook] Missing STRIPE_WEBHOOK_SECRET");
-
-const stripe = new Stripe(STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -35,74 +21,62 @@ const json = (body, status = 200) =>
 
 /* ----------------------------- helpers ---------------------------------- */
 
-function cleanId(v) {
-  if (v == null) return null;
-  const s = String(v).trim();
-  return s.length ? s : null;
+function readMeta(meta) {
+  // Stripe metadata values are strings.
+  const business_id = (meta?.business_id || meta?.cleaner_id || meta?.cleanerId || "").trim() || null;
+  const area_id = (meta?.area_id || meta?.areaId || "").trim() || null;
+
+  const category_id =
+    (meta?.category_id || meta?.categoryId || meta?.category || "").trim() || null;
+
+  const slotRaw = meta?.slot ?? meta?.slot_id ?? meta?.slotId ?? null;
+  const slot = slotRaw != null && `${slotRaw}`.trim() !== "" ? Number(slotRaw) : null;
+
+  return { business_id, area_id, category_id, slot };
 }
 
-async function resolveContext({ meta, customerId }) {
-  // ✅ accept both snake_case + camelCase
-  const business_id = cleanId(meta?.cleaner_id ?? meta?.business_id ?? meta?.businessId);
-  const area_id = cleanId(meta?.area_id ?? meta?.areaId);
-  const slot = meta?.slot != null ? Number(meta.slot) : null;
+async function resolveBusinessFromCustomer(customerId) {
+  if (!customerId) return null;
 
-  // ✅ NEW: category_id for per-industry sponsorship
-  const category_id = cleanId(meta?.category_id ?? meta?.categoryId);
+  const { data, error } = await supabase
+    .from("cleaners")
+    .select("id")
+    .eq("stripe_customer_id", customerId)
+    .maybeSingle();
 
-  if (business_id && area_id && Number.isFinite(slot)) {
-    return { business_id, area_id, slot, category_id };
-  }
-
-  // Fall back via cleaners.stripe_customer_id
-  if (customerId) {
-    const { data, error } = await supabase
-      .from("cleaners")
-      .select("id")
-      .eq("stripe_customer_id", customerId)
-      .maybeSingle();
-
-    if (error) console.error("[webhook] resolveContext error:", error);
-
-    if (data?.id) {
-      // We can at least attach business_id for later debugging.
-      // area_id/slot/category_id may be missing if metadata wasn't provided.
-      return { business_id: data.id, area_id: null, slot: null, category_id: null };
-    }
-  }
-
-  return { business_id: null, area_id: null, slot: null, category_id: null };
+  if (error) console.error("[webhook] resolveBusinessFromCustomer error:", error);
+  return data?.id ?? null;
 }
 
 async function upsertSubscription(sub, meta = {}) {
-  const customerId =
-    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  // IMPORTANT:
-  // Prefer Stripe's subscription metadata when present (it persists),
-  // but allow the event-provided meta to fill gaps.
-  const mergedMeta = { ...(sub.metadata || {}), ...(meta || {}) };
+  const metaCtx = readMeta(meta);
+  let business_id = metaCtx.business_id;
+  const area_id = metaCtx.area_id;
+  const category_id = metaCtx.category_id;
+  const slot = metaCtx.slot;
 
-  const { business_id, area_id, slot, category_id } = await resolveContext({
-    meta: mergedMeta,
-    customerId,
-  });
+  // If business_id missing, recover it from cleaners.stripe_customer_id
+  if (!business_id && customerId) {
+    business_id = await resolveBusinessFromCustomer(customerId);
+  }
 
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
 
   const payload = {
-    business_id,
-    area_id,
-    slot: slot ?? null,
-
-    // ✅ NEW
+    business_id: business_id ?? null,
+    area_id: area_id ?? null,
     category_id: category_id ?? null,
+    slot: slot ?? null,
 
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
+
     price_monthly_pennies: price?.unit_amount ?? null,
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
+
     status: sub.status,
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
@@ -141,15 +115,15 @@ async function upsertInvoice(inv) {
         expand: ["customer", "items.data.price.product"],
       });
 
-      // ✅ This uses sub.metadata (which should contain category_id if checkout set it)
+      // This metadata is on the subscription (copied from checkout metadata)
       await upsertSubscription(sub, sub.metadata || {});
 
-      // Re-fetch the row id for FK
       const refetch = await supabase
         .from("sponsored_subscriptions")
         .select("id")
         .eq("stripe_subscription_id", subscriptionId)
         .maybeSingle();
+
       subRow = refetch.data ?? null;
     } catch (e) {
       console.error("[webhook] could not retrieve+insert subscription for invoice:", e);
@@ -212,7 +186,7 @@ export default async (req) => {
   let event;
   try {
     const raw = await req.text(); // RAW body is required
-    event = stripe.webhooks.constructEvent(raw, sig, STRIPE_WEBHOOK_SECRET);
+    event = stripe.webhooks.constructEvent(raw, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
     return json({ error: "Bad signature" }, 400);
@@ -225,13 +199,15 @@ export default async (req) => {
       case "checkout.session.completed": {
         const session = event.data.object;
 
+        // Important: session.metadata is where your area/category/slot lives
+        const meta = session?.metadata || {};
+
         if (session.mode === "subscription" && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription, {
             expand: ["latest_invoice", "customer", "items.data.price.product"],
           });
 
-          // ✅ session.metadata should include category_id from checkout
-          await upsertSubscription(sub, session.metadata || {});
+          await upsertSubscription(sub, meta);
 
           if (sub.latest_invoice && typeof sub.latest_invoice === "object") {
             await upsertInvoice(sub.latest_invoice);
@@ -243,15 +219,12 @@ export default async (req) => {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = event.data.object;
-
-        // ✅ sub.metadata should contain category_id if set at checkout
         await upsertSubscription(sub, sub.metadata || {});
         break;
       }
 
       case "customer.subscription.deleted": {
         const sub = event.data.object;
-
         const { error } = await supabase
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
