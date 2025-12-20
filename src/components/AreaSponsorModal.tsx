@@ -7,7 +7,7 @@ type Props = {
   onClose: () => void;
 
   businessId: string;
-  categoryId?: string | null; // ✅ NEW
+  categoryId?: string | null; // ✅ REQUIRED for per-industry sponsorship
   areaId: string;
   slot?: Slot;
 
@@ -41,7 +41,7 @@ export default function AreaSponsorModal({
   open,
   onClose,
   businessId,
-  categoryId, // ✅ ADD THIS
+  categoryId,
   areaId,
   slot = 1,
   areaName,
@@ -64,12 +64,29 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // 🔥 Only depends on stable inputs, not onPreviewGeoJSON
+  // ✅ Preview (per industry) — only depends on stable inputs
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
       if (!open) return;
+
+      // Hard guard: if categoryId missing, show error immediately
+      if (!categoryId) {
+        setPv((s) => ({
+          ...s,
+          loading: false,
+          error: "Missing categoryId",
+          soldOut: false,
+          totalKm2: null,
+          availableKm2: null,
+          priceCents: null,
+          ratePerKm2: null,
+          geojson: null,
+        }));
+        onPreviewGeoJSON?.(null);
+        return;
+      }
 
       setPv((s) => ({ ...s, loading: true, error: null }));
 
@@ -80,29 +97,26 @@ export default function AreaSponsorModal({
           body: JSON.stringify({ businessId, areaId, slot: 1, categoryId }),
         });
 
-        const j = await res.json();
+        const j = await res.json().catch(() => null);
 
         if (!res.ok || !j?.ok) {
           throw new Error(j?.error || j?.message || "Preview failed");
         }
 
-        const totalKm2 =
-          typeof j.total_km2 === "number" ? j.total_km2 : null;
-
+        const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
         const availableKm2 =
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-        if (!cancelled) {
-          const soldOut = availableKm2 <= EPS;
+        const soldOut = availableKm2 <= EPS;
 
+        if (!cancelled) {
           setPv({
             loading: false,
             error: null,
             soldOut,
             totalKm2,
             availableKm2,
-            priceCents:
-              typeof j.price_cents === "number" ? j.price_cents : null,
+            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
             ratePerKm2:
               typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
             geojson: j.geojson ?? null,
@@ -132,7 +146,8 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, onPreviewGeoJSON]);
+    // ✅ IMPORTANT: remove onPreviewGeoJSON from deps to avoid re-fetch loops
+  }, [open, businessId, areaId, slot, categoryId]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -145,14 +160,18 @@ export default function AreaSponsorModal({
   // ✅ Has purchasable area?
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
 
-  // ✅ Don’t block on pv.loading anymore – just require some area & not mid checkout
-  const canBuy =
-    open &&
-    hasArea &&
-    !checkingOut;
+  // ✅ Don’t block on pv.loading – just require area & not mid checkout
+  const canBuy = open && hasArea && !checkingOut && !!categoryId;
 
   const startCheckout = async () => {
     if (!canBuy) return;
+
+    // Guard again for clarity
+    if (!categoryId) {
+      setCheckoutErr("Missing categoryId");
+      return;
+    }
+
     setCheckingOut(true);
     setCheckoutErr(null);
 
@@ -160,10 +179,11 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ businessId, areaId, slot }),
+        // ✅ FIX: include categoryId
+        body: JSON.stringify({ businessId, areaId, slot, categoryId }),
       });
 
-      const j = await res.json();
+      const j = await res.json().catch(() => null);
 
       if (!res.ok || !j?.ok) {
         const message =
@@ -171,7 +191,7 @@ export default function AreaSponsorModal({
           j?.error ||
           (res.status === 409
             ? "No purchasable area left for this slot."
-            : "Checkout failed");
+            : `Checkout failed (${res.status})`);
 
         setCheckoutErr(message);
 
@@ -204,9 +224,7 @@ export default function AreaSponsorModal({
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/40">
       <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b">
-          <div className="font-semibold">
-            Sponsor — {areaName || "Area"}
-          </div>
+          <div className="font-semibold">Sponsor — {areaName || "Area"}</div>
           <button className="btn" onClick={handleClose}>
             Close
           </button>
@@ -214,9 +232,15 @@ export default function AreaSponsorModal({
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results.
-            Preview highlights the purchasable sub-region.
+            Featured sponsorship makes you first in local search results. Preview
+            highlights the purchasable sub-region.
           </div>
+
+          {!categoryId && (
+            <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+              Missing categoryId
+            </div>
+          )}
 
           {pv.error && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
@@ -259,9 +283,7 @@ export default function AreaSponsorModal({
               }`}
               onClick={startCheckout}
               disabled={!canBuy}
-              title={
-                !canBuy ? "No purchasable area available" : "Buy now"
-              }
+              title={!canBuy ? "No purchasable area available" : "Buy now"}
             >
               {checkingOut ? "Redirecting..." : "Buy now"}
             </button>
