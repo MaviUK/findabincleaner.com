@@ -823,6 +823,7 @@ export default function ServiceAreaEditor({
             clearPreview();
           }}
           businessId={myBusinessId}
+          categoryId={categoryId} 
           areaId={sponsorAreaId}
           areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
