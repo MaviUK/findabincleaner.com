@@ -2,51 +2,59 @@ import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
 const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
+  process.env.SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE!
 );
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: "2024-06-20",
 });
 
-const json = (body, status = 200) =>
+const json = (body: any, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json" },
   });
 
+// small epsilon so we treat tiny leftovers as zero
 const EPS = 1e-6;
 
-export default async (req) => {
+export default async (req: Request) => {
   if (req.method !== "POST") {
     return json({ ok: false, error: "Method not allowed" }, 405);
   }
 
-  let body;
+  let body: any;
   try {
     body = await req.json();
   } catch {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const businessId = (body.businessId || body.cleanerId || "").trim();
-  const areaId = (body.areaId || body.area_id || "").trim();
+  const businessId = String(body.businessId || body.cleanerId || "").trim();
+  const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot || 1);
+
+  // ✅ NEW: categoryId required for per-industry sponsorship
+  const categoryIdRaw = body.categoryId ?? body.category_id ?? null;
+  const categoryId = categoryIdRaw ? String(categoryIdRaw).trim() : null;
 
   if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
+
   if (![1].includes(slot)) {
+    // only one featured slot for now
     return json({ ok: false, error: "Invalid slot" }, 400);
   }
 
   try {
-    // 1) Recompute remaining area for this service area + slot
+    // 1) Recompute remaining area for this service area + category + slot
     const { data: previewData, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
         p_area_id: areaId,
-        p_category_id: categoryId, // ✅ add this
+        p_category_id: categoryId, // ✅ per industry
         p_slot: slot,
       }
     );
@@ -97,7 +105,7 @@ export default async (req) => {
       return json({ ok: false, error: "Cleaner not found" }, 404);
     }
 
-    let stripeCustomerId = cleaner.stripe_customer_id || null;
+    let stripeCustomerId: string | null = cleaner.stripe_customer_id || null;
     const customerName = cleaner.business_name || "Customer";
 
     if (!stripeCustomerId) {
@@ -113,7 +121,7 @@ export default async (req) => {
         .eq("id", businessId);
     }
 
-    const createSession = (customerId) =>
+    const createSession = (customerId: string) =>
       stripe.checkout.sessions.create({
         mode: "subscription",
         customer: customerId,
@@ -121,6 +129,7 @@ export default async (req) => {
           business_id: businessId,
           area_id: areaId,
           slot: String(slot),
+          category_id: categoryId, // ✅ NEW: so webhook can store it
         },
         line_items: [
           {
@@ -141,13 +150,15 @@ export default async (req) => {
         cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
       });
 
-    let session;
+    let session: Stripe.Checkout.Session;
+
     try {
       session = await createSession(stripeCustomerId);
-    } catch (e) {
+    } catch (e: any) {
       // if stored customer is stale, recreate and retry once
       const code = e?.raw?.code;
       const param = e?.raw?.param;
+
       if (code === "resource_missing" && param === "customer") {
         const customer = await stripe.customers.create({
           name: customerName,
@@ -167,7 +178,7 @@ export default async (req) => {
     }
 
     return json({ ok: true, url: session.url }, 200);
-  } catch (e) {
+  } catch (e: any) {
     console.error("[sponsored-checkout] error:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
