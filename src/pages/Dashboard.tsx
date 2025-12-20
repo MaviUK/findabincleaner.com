@@ -317,12 +317,13 @@ export default function Dashboard() {
                         type="button"
                         onClick={() => setActiveCategoryId(t.id)}
                         className={[
-                          "relative -mb-px px-4 py-2 text-sm font-semibold whitespace-nowrap",
-                          "border border-b-0 rounded-t-lg",
-                          active
-                            ? "bg-white border-ink-200 text-ink-900"
-                            : "bg-ink-50 border-ink-200 text-ink-700 hover:bg-white",
-                        ].join(" ")}
+  "relative -mb-px px-4 py-2 text-sm font-semibold whitespace-nowrap",
+  "border border-b-0 rounded-t-lg transition",
+  active
+    ? "bg-white text-ink-900 border-ink-300 shadow-[0_-1px_0_#fff,0_2px_10px_rgba(0,0,0,0.06)]"
+    : "bg-gray-100 text-gray-500 border-ink-200 hover:bg-gray-50 hover:text-gray-700",
+].join(" ")}
+
                       >
                         {t.name}
                       </button>
