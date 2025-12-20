@@ -1,7 +1,6 @@
 {
   "name": "web",
   "private": true,
-  "type": "module",
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
     "stripe": "^14.0.0"
