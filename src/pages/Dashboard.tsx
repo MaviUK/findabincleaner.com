@@ -36,21 +36,18 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Industry tabs
   const [categories, setCategories] = useState<CategoryTab[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
 
-  // Stripe redirect banner + refresh signal
   const qs = useHashQuery();
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
   const [openingPortal, setOpeningPortal] = useState(false);
 
-  // ✅ IMPORTANT: not a hook, safe before early returns
+  // ✅ Not a hook: safe to compute before early returns
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
-  // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
     const status = qs.get("checkout");
     const checkoutSession = qs.get("checkout_session");
@@ -90,13 +87,15 @@ export default function Dashboard() {
           error: userErr,
         } = await supabase.auth.getUser();
         if (userErr) throw userErr;
+
         if (!user) {
           window.location.hash = "#/login";
           return;
         }
+
         setUserId(user.id);
 
-        // 1) Ensure cleaner row exists
+        // Ensure cleaner row exists
         const { data: existing, error } = await supabase
           .from("cleaners")
           .select("*")
@@ -124,7 +123,7 @@ export default function Dashboard() {
 
         setCleaner(c);
 
-        // 2) Load active categories (industries) for this cleaner
+        // Load active categories (industries)
         const { data: cats, error: catErr } = await supabase
           .from("cleaner_category_offerings")
           .select("category_id, is_active, service_categories ( id, name, slug )")
@@ -174,11 +173,8 @@ export default function Dashboard() {
         body: JSON.stringify({ cleanerId: cleaner.id }),
       });
       const data = await res.json();
-      if (data?.url) {
-        window.location.href = data.url;
-      } else {
-        setBanner({ kind: "error", msg: data?.error || "Could not open billing portal." });
-      }
+      if (data?.url) window.location.href = data.url;
+      else setBanner({ kind: "error", msg: data?.error || "Could not open billing portal." });
     } catch (e: any) {
       setBanner({ kind: "error", msg: e?.message || "Could not open billing portal." });
     } finally {
@@ -215,6 +211,9 @@ export default function Dashboard() {
   }
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
+
+  // ✅ Key used to force a full remount when switching industry
+  const industryKey = `${cleaner.id}:${activeCategoryId ?? "none"}`;
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -294,25 +293,22 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* ONE “Industry Manager” card: tabs + analytics + service areas */}
+          {/* Browser-style tabs + content panel */}
           <section className="card">
-            <div className="card-pad space-y-5">
+            <div className="card-pad space-y-4">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                  <h2 className="text-lg font-semibold">Industry Manager</h2>
-                  <p className="muted text-sm">
-                    Switch tabs to manage analytics + service areas for each industry.
-                  </p>
+                  <h2 className="text-lg font-semibold">Industries</h2>
+                  <p className="muted text-sm">Switch tabs like a browser.</p>
                 </div>
-
                 <Link to="/settings" className="text-sm underline">
                   Manage industries →
                 </Link>
               </div>
 
-              {/* Tabs row (just above analytics, as requested) */}
+              {/* Tabs row (Chrome-ish) */}
               {categories.length ? (
-                <div className="flex flex-wrap gap-2 border-b border-ink-100 pb-3">
+                <div className="border-b border-ink-200 flex gap-1 overflow-x-auto">
                   {categories.map((t) => {
                     const active = t.id === activeCategoryId;
                     return (
@@ -321,10 +317,11 @@ export default function Dashboard() {
                         type="button"
                         onClick={() => setActiveCategoryId(t.id)}
                         className={[
-                          "px-3 py-1.5 rounded-full border text-sm font-semibold transition",
+                          "relative -mb-px px-4 py-2 text-sm font-semibold whitespace-nowrap",
+                          "border border-b-0 rounded-t-lg",
                           active
-                            ? "bg-emerald-700 text-white border-emerald-700"
-                            : "bg-white text-ink-900 border-ink-200 hover:border-ink-300",
+                            ? "bg-white border-ink-200 text-ink-900"
+                            : "bg-ink-50 border-ink-200 text-ink-700 hover:bg-white",
                         ].join(" ")}
                       >
                         {t.name}
@@ -342,10 +339,10 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* Content changes based on active tab */}
+              {/* Panel content changes per tab */}
               {activeCategoryId ? (
-                <div className="space-y-6">
-                  {/* Analytics (for active industry) */}
+                <div className="space-y-6" key={industryKey}>
+                  {/* Analytics */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Analytics</h3>
@@ -354,7 +351,9 @@ export default function Dashboard() {
                       </Link>
                     </div>
 
+                    {/* ✅ key forces remount when switching tab */}
                     <AnalyticsOverview
+                      key={`analytics:${industryKey}`}
                       {...({
                         cleanerId: cleaner.id,
                         categoryId: activeCategoryId,
@@ -363,14 +362,16 @@ export default function Dashboard() {
                     />
                   </div>
 
-                  {/* Service areas (for active industry) */}
+                  {/* Service Areas */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Your Service Areas</h3>
                     </div>
 
                     <div className="rounded-xl overflow-hidden border">
+                      {/* ✅ key forces remount when switching tab */}
                       <ServiceAreaEditor
+                        key={`areas:${industryKey}`}
                         {...({
                           cleanerId: cleaner.id,
                           sponsorshipVersion,
@@ -383,7 +384,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="rounded-xl border border-ink-100 bg-ink-50 px-4 py-3 text-sm text-ink-700">
-                  Select an industry tab above to view analytics and manage service areas.
+                  Select a tab above.
                 </div>
               )}
             </div>
