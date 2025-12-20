@@ -9,11 +9,13 @@ import AreaManageModal from "./AreaManageModal";
 
 export interface ServiceAreaRow {
   id: string;
-  business_id: string;
+  cleaner_id: string;
+  category_id: string | null;
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 }
+
 
 // Keep Slot type for back-compat where needed
 type Slot = 1;
@@ -187,9 +189,11 @@ function geoMultiPolygonAreaKm2(gj: any): number {
 type Props = {
   businessId?: string;
   cleanerId?: string;
+  categoryId?: string | null; // ✅ NEW
   sponsorshipVersion?: number;
   onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
+
 
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
@@ -197,9 +201,11 @@ type AvailLoadingMap = Record<string, boolean>;
 export default function ServiceAreaEditor({
   businessId,
   cleanerId,
+  categoryId = null, // ✅ NEW
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
+
   const myBusinessId = (businessId ?? cleanerId)!;
 
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
@@ -251,8 +257,10 @@ export default function ServiceAreaEditor({
     setError(null);
     try {
       const { data, error } = await supabase.rpc("list_service_areas", {
-        p_cleaner_id: myBusinessId,
-      });
+  p_cleaner_id: myBusinessId,
+  p_category_id: categoryId, // ✅ NEW
+});
+
       if (error) throw error;
       setServiceAreas(data || []);
     } catch (e: any) {
@@ -260,7 +268,7 @@ export default function ServiceAreaEditor({
     } finally {
       setLoading(false);
     }
-  }, [myBusinessId]);
+  }, [myBusinessId, categoryId]);
 
   useEffect(() => {
     if (!myBusinessId) return;
@@ -468,17 +476,21 @@ export default function ServiceAreaEditor({
     try {
       if (activeAreaId) {
         const { error } = await supabase.rpc("update_service_area", {
-          p_area_id: activeAreaId,
-          p_gj: multi,
-          p_name: draftName || "Untitled Area",
-        });
+  p_area_id: activeAreaId,
+  p_gj: multi,
+  p_name: draftName || "Untitled Area",
+  p_category_id: categoryId, // ✅ NEW
+});
+
         if (error) throw error;
       } else {
         const { error } = await supabase.rpc("insert_service_area", {
-          p_cleaner_id: myBusinessId,
-          p_gj: multi,
-          p_name: draftName || "Untitled Area",
-        });
+  p_cleaner_id: myBusinessId,
+  p_gj: multi,
+  p_name: draftName || "Untitled Area",
+  p_category_id: categoryId, // ✅ NEW
+});
+
         if (error) throw error;
       }
       await fetchAreas();
