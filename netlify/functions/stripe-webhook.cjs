@@ -1,39 +1,48 @@
-// netlify/functions/stripe-webhook.js
-import Stripe from "stripe";
-import { createClient } from "@supabase/supabase-js";
+// netlify/functions/stripe-webhook.cjs
+const Stripe = require("stripe");
+
+// Supabase SDK may be ESM in some setups, so we lazy-load it safely.
+let _supabase = null;
+async function getSupabase() {
+  if (_supabase) return _supabase;
+
+  const { createClient } = await import("@supabase/supabase-js");
+
+  _supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE
+  );
+
+  return _supabase;
+}
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
-
-const json = (obj, status = 200) => ({
-  statusCode: status,
+const json = (obj, statusCode = 200) => ({
+  statusCode,
   headers: { "content-type": "application/json" },
   body: JSON.stringify(obj),
 });
 
-async function resolveContext({ meta, customerId }) {
-  const business_id = meta?.cleaner_id || meta?.business_id || meta?.businessId || null;
+const EPS = 1e-9;
+
+async function resolveContext(supabase, { meta, customerId }) {
+  const business_id =
+    meta?.cleaner_id || meta?.business_id || meta?.businessId || null;
+
   const area_id = meta?.area_id || meta?.areaId || null;
 
-  // slot may be stored as string
   const slotRaw = meta?.slot ?? null;
   const slot = slotRaw != null ? Number(slotRaw) : null;
 
-  // ✅ NEW: category_id support
   const categoryRaw = meta?.category_id ?? meta?.categoryId ?? null;
   const category_id = categoryRaw ? String(categoryRaw) : null;
 
-  if (business_id && area_id && slot) {
-    return { business_id, area_id, slot, category_id };
-  }
+  if (business_id && area_id && slot) return { business_id, area_id, slot, category_id };
 
-  // Fallback: resolve business by Stripe customer id
+  // fallback via cleaners.stripe_customer_id
   if (customerId) {
     const { data, error } = await supabase
       .from("cleaners")
@@ -48,11 +57,11 @@ async function resolveContext({ meta, customerId }) {
   return { business_id: null, area_id: null, slot: null, category_id: null };
 }
 
-async function upsertSubscription(sub, meta = {}) {
+async function upsertSubscription(supabase, sub, meta = {}) {
   const customerId =
     typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  const { business_id, area_id, slot, category_id } = await resolveContext({
+  const { business_id, area_id, slot, category_id } = await resolveContext(supabase, {
     meta,
     customerId,
   });
@@ -63,7 +72,7 @@ async function upsertSubscription(sub, meta = {}) {
   const payload = {
     business_id,
     area_id,
-    category_id, // ✅ important
+    category_id: category_id ?? null, // ✅ important
     slot: slot ?? 1,
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
@@ -80,16 +89,15 @@ async function upsertSubscription(sub, meta = {}) {
     .upsert(payload, { onConflict: "stripe_subscription_id" });
 
   if (error) {
-    console.error("[stripe-webhook] upsert sub error:", error, payload);
+    console.error("[stripe-webhook] upsert subscription error:", error, payload);
     throw new Error("DB upsert(sponsored_subscriptions) failed");
   }
 }
 
-async function upsertInvoice(inv) {
+async function upsertInvoice(supabase, inv) {
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
-  // find subscription row
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
     .select("id")
@@ -97,16 +105,17 @@ async function upsertInvoice(inv) {
     .maybeSingle();
 
   if (findErr) {
-    console.error("[stripe-webhook] find sub for invoice error:", findErr);
+    console.error("[stripe-webhook] find subscription for invoice error:", findErr);
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // if missing, retrieve from Stripe and insert
+  // If invoice arrives first, backfill subscription
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId, {
       expand: ["customer", "items.data.price.product"],
     });
-    await upsertSubscription(sub, sub.metadata || {});
+
+    await upsertSubscription(supabase, sub, sub.metadata || {});
 
     const refetch = await supabase
       .from("sponsored_subscriptions")
@@ -125,12 +134,8 @@ async function upsertInvoice(inv) {
     amount_due_pennies: inv.amount_due ?? null,
     currency: (inv.currency || "gbp")?.toLowerCase(),
     status: inv.status,
-    period_start: inv.period_start
-      ? new Date(inv.period_start * 1000).toISOString()
-      : null,
-    period_end: inv.period_end
-      ? new Date(inv.period_end * 1000).toISOString()
-      : null,
+    period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
+    period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
   };
 
   const { error } = await supabase
@@ -143,8 +148,8 @@ async function upsertInvoice(inv) {
   }
 }
 
-export const handler = async (event) => {
-  // Health check (browser)
+exports.handler = async (event) => {
+  // Health check (open in browser)
   if (event.httpMethod === "GET") {
     return json({ ok: true, note: "Stripe webhook deployed. Use POST from Stripe." });
   }
@@ -178,6 +183,8 @@ export const handler = async (event) => {
   }
 
   try {
+    const supabase = await getSupabase();
+
     console.log(`[stripe-webhook] ${stripeEvent.type} id=${stripeEvent.id}`);
 
     switch (stripeEvent.type) {
@@ -189,10 +196,10 @@ export const handler = async (event) => {
             expand: ["latest_invoice", "customer", "items.data.price.product"],
           });
 
-          await upsertSubscription(sub, session.metadata || {});
+          await upsertSubscription(supabase, sub, session.metadata || {});
 
           if (sub.latest_invoice && typeof sub.latest_invoice === "object") {
-            await upsertInvoice(sub.latest_invoice);
+            await upsertInvoice(supabase, sub.latest_invoice);
           }
         }
         break;
@@ -201,7 +208,7 @@ export const handler = async (event) => {
       case "customer.subscription.created":
       case "customer.subscription.updated": {
         const sub = stripeEvent.data.object;
-        await upsertSubscription(sub, sub.metadata || {});
+        await upsertSubscription(supabase, sub, sub.metadata || {});
         break;
       }
 
@@ -220,7 +227,7 @@ export const handler = async (event) => {
       case "invoice.payment_failed":
       case "invoice.finalized":
       case "invoice.voided": {
-        await upsertInvoice(stripeEvent.data.object);
+        await upsertInvoice(await getSupabase(), stripeEvent.data.object);
         break;
       }
 
