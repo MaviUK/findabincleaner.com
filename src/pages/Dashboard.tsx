@@ -36,21 +36,19 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  // Tabs (industries)
+  // Industry tabs
   const [categories, setCategories] = useState<CategoryTab[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
 
-  // Banner + refresh signal after Stripe redirect
+  // Stripe redirect banner + refresh signal
   const qs = useHashQuery();
   const navigate = useNavigate();
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
   const [openingPortal, setOpeningPortal] = useState(false);
 
-  // ✅ IMPORTANT: do NOT add hooks below early returns.
-  // Compute this as a normal value (no hook) to avoid hook-order crashes.
-  const activeCategory =
-    categories.find((c) => c.id === activeCategoryId) ?? null;
+  // ✅ IMPORTANT: not a hook, safe before early returns
+  const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
   // Handle ?checkout=success/cancel (and optional checkout_session)
   useEffect(() => {
@@ -66,7 +64,7 @@ export default function Dashboard() {
           body: JSON.stringify({ checkout_session: checkoutSession }),
         });
       } catch {
-        // non-fatal; webhook may still complete
+        // non-fatal
       }
     }
 
@@ -126,7 +124,7 @@ export default function Dashboard() {
 
         setCleaner(c);
 
-        // 2) Load categories (industries) the cleaner operates in
+        // 2) Load active categories (industries) for this cleaner
         const { data: cats, error: catErr } = await supabase
           .from("cleaner_category_offerings")
           .select("category_id, is_active, service_categories ( id, name, slug )")
@@ -147,8 +145,8 @@ export default function Dashboard() {
               slug: sc.slug as string,
             }));
 
-          const dedup = Array.from(new Map(mapped.map((x) => [x.id, x])).values()).sort(
-            (a, b) => a.name.localeCompare(b.name)
+          const dedup = Array.from(new Map(mapped.map((x) => [x.id, x])).values()).sort((a, b) =>
+            a.name.localeCompare(b.name)
           );
 
           setCategories(dedup);
@@ -225,7 +223,7 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold">Cleaner Dashboard</h1>
           {activeCategory ? (
             <p className="muted mt-1">
-              Viewing: <span className="font-medium text-ink-900">{activeCategory.name}</span>
+              Managing: <span className="font-medium text-ink-900">{activeCategory.name}</span>
             </p>
           ) : (
             <p className="muted mt-1">Choose an industry to manage analytics & service areas.</p>
@@ -296,14 +294,14 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Industry tabs */}
+          {/* ONE “Industry Manager” card: tabs + analytics + service areas */}
           <section className="card">
-            <div className="card-pad space-y-3">
+            <div className="card-pad space-y-5">
               <div className="flex items-center justify-between gap-3 flex-wrap">
                 <div>
-                  <h2 className="text-lg font-semibold">Industries</h2>
+                  <h2 className="text-lg font-semibold">Industry Manager</h2>
                   <p className="muted text-sm">
-                    If you operate in more than one industry, you’ll manage each one separately.
+                    Switch tabs to manage analytics + service areas for each industry.
                   </p>
                 </div>
 
@@ -312,8 +310,9 @@ export default function Dashboard() {
                 </Link>
               </div>
 
+              {/* Tabs row (just above analytics, as requested) */}
               {categories.length ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap gap-2 border-b border-ink-100 pb-3">
                   {categories.map((t) => {
                     const active = t.id === activeCategoryId;
                     return (
@@ -342,46 +341,51 @@ export default function Dashboard() {
                   to choose what you offer.
                 </div>
               )}
-            </div>
-          </section>
 
-          {/* Analytics */}
-          <section className="card">
-            <div className="card-pad space-y-4">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Analytics</h2>
-                <Link to="/analytics" className="text-sm underline">
-                  View full stats →
-                </Link>
-              </div>
+              {/* Content changes based on active tab */}
+              {activeCategoryId ? (
+                <div className="space-y-6">
+                  {/* Analytics (for active industry) */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-base font-semibold">Analytics</h3>
+                      <Link to="/analytics" className="text-sm underline">
+                        View full stats →
+                      </Link>
+                    </div>
 
-              <AnalyticsOverview
-                {...({
-                  cleanerId: cleaner.id,
-                  categoryId: activeCategoryId,
-                  categorySlug: activeCategory?.slug ?? null,
-                } as any)}
-              />
-            </div>
-          </section>
+                    <AnalyticsOverview
+                      {...({
+                        cleanerId: cleaner.id,
+                        categoryId: activeCategoryId,
+                        categorySlug: activeCategory?.slug ?? null,
+                      } as any)}
+                    />
+                  </div>
 
-          {/* Service areas */}
-          <section className="card">
-            <div className="card-pad space-y-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-lg font-semibold">Your Service Areas (manage)</h2>
-              </div>
+                  {/* Service areas (for active industry) */}
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-base font-semibold">Your Service Areas</h3>
+                    </div>
 
-              <div className="rounded-xl overflow-hidden border">
-                <ServiceAreaEditor
-                  {...({
-                    cleanerId: cleaner.id,
-                    sponsorshipVersion,
-                    categoryId: activeCategoryId,
-                    categorySlug: activeCategory?.slug ?? null,
-                  } as any)}
-                />
-              </div>
+                    <div className="rounded-xl overflow-hidden border">
+                      <ServiceAreaEditor
+                        {...({
+                          cleanerId: cleaner.id,
+                          sponsorshipVersion,
+                          categoryId: activeCategoryId,
+                          categorySlug: activeCategory?.slug ?? null,
+                        } as any)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-ink-100 bg-ink-50 px-4 py-3 text-sm text-ink-700">
+                  Select an industry tab above to view analytics and manage service areas.
+                </div>
+              )}
             </div>
           </section>
         </>
