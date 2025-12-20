@@ -11,7 +11,7 @@ export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
 
-  /** lets the parent clear previous results immediately when a new search starts */
+  /** ✅ lets the parent clear previous results immediately when a new search starts */
   onSearchStart?: () => void;
 
   onSearchComplete?: (
@@ -86,12 +86,13 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Helps avoid re-firing impressions for the exact same search payload
-  const lastImpressionKey = useRef<string>("");
+  // used only for dev / debouncing if you expand later
   const submitCount = useRef(0);
 
-  // Cache service_categories.id for the current serviceSlug (optional)
-  // NOTE: This is NOT written to analytics_events.category_id yet (RPC update next).
+  // Prevent firing impression events multiple times for identical searches
+  const lastImpressionKey = useRef<string>("");
+
+  // Cache the service_categories.id for the current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -125,7 +126,7 @@ export default function FindCleaners({
     ev?.preventDefault();
     setError(null);
 
-    // Clear previous results immediately when a new search starts
+    // ✅ clear previous results immediately when a new search starts
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -144,6 +145,7 @@ export default function FindCleaners({
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
+      // ✅ friendly error (no hard red)
       if (!res.ok) {
         onSearchStart?.();
         if (res.status === 404 || res.status === 400) {
@@ -214,13 +216,15 @@ export default function FindCleaners({
         return hasPhone || hasWhatsApp || hasWebsite;
       });
 
-      // 4) Record impressions (per-result) with position + sponsor flag
-      // IMPORTANT: Use a guard so we don’t fire duplicates for the same search payload.
+      // 4) Record impressions (one per result) with categoryId written to column
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
-        const categoryId = categoryIdRef.current; // may be null if not loaded yet
+        const categoryId = categoryIdRef.current; // ✅ IMPORTANT
+        const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor)
+          .length;
 
+        // simple de-dupe so we don't spam on re-renders
         const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(
           5
         )}|${lng.toFixed(5)}|${liveOnly.length}`;
@@ -236,20 +240,19 @@ export default function FindCleaners({
                 lng,
                 event: "impression",
                 sessionId,
+                categoryId, // ✅ THIS is what makes category_id populate in the DB
                 meta: {
                   search_id: searchId,
                   postcode: pc,
                   town,
                   locality: town,
                   service_slug: serviceSlug,
-                  category_id: categoryId, // not written to column yet; stored in meta for now
                   area_id: r.area_id ?? null,
                   area_name: r.area_name ?? null,
-                  position: idx + 1, // 1-based position in results
+                  position: idx + 1, // 1-based
                   is_sponsored: Boolean(r.is_covering_sponsor),
                   results_count: liveOnly.length,
-                  sponsored_count: liveOnly.filter((x) => x.is_covering_sponsor)
-                    .length,
+                  sponsored_count: sponsoredCount,
                 },
               })
             )
@@ -288,6 +291,7 @@ export default function FindCleaners({
         </button>
       </form>
 
+      {/* ✅ Soft / friendly notice styling (not hard red) */}
       {error && (
         <div className="mt-1 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
           <span className="text-lg leading-none">📍</span>
@@ -295,10 +299,9 @@ export default function FindCleaners({
         </div>
       )}
 
+      {/* Dev-only inline list if you ever render this component without onSearchComplete */}
       {!onSearchComplete && results.length > 0 && (
-        <div className="text-sm text-gray-600">
-          Found {results.length} cleaners.
-        </div>
+        <div className="text-sm text-gray-600">Found {results.length} cleaners.</div>
       )}
     </div>
   );
