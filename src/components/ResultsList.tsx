@@ -21,9 +21,6 @@ type Props = {
   /** Pass these from the page that did the postcode → lat/lng lookup */
   searchLat?: number | null;
   searchLng?: number | null;
-
-  /** ✅ IMPORTANT: pass industry/category id so clicks match impressions */
-  categoryId?: string | null;
 };
 
 export default function ResultsList({
@@ -32,7 +29,6 @@ export default function ResultsList({
   locality,
   searchLat = null,
   searchLng = null,
-  categoryId = null,
 }: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
@@ -57,12 +53,8 @@ export default function ResultsList({
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          payment_methods: toArr(
-            c.payment_methods ?? c.payment_methods_accepted ?? c.payments
-          ),
-          service_types: toArr(
-            c.service_types ?? c.services ?? c.service_types_supported
-          ),
+          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
+          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
         };
 
         return (
@@ -71,10 +63,13 @@ export default function ResultsList({
             cleaner={cleaner}
             postcodeHint={postcode}
             showPayments
+            /* IMPORTANT: gives clicks the correct area */
             areaId={c.area_id ?? null}
+            /* Fallback so DB can determine area if areaId missing */
             searchLat={searchLat}
             searchLng={searchLng}
-            categoryId={categoryId}   // ✅ THIS is the missing piece
+            /* ✅ THE FIX: gives clicks the correct industry */
+            categoryId={c.category_id ?? null}
           />
         );
       })}
