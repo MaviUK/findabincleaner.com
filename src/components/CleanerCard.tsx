@@ -4,8 +4,6 @@ import { Autocomplete } from "@react-google-maps/api";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
 import {
-  recordEventBeacon,
-  recordEventFromPointBeacon,
   getOrCreateSessionId,
 } from "../lib/analytics";
 
@@ -38,7 +36,6 @@ export type CleanerCardProps = {
 
   /** For analytics attribution (preferred if available) */
   areaId?: string | null;
-
   /** Fallback so the DB can compute area when areaId is missing */
   searchLat?: number | null;
   searchLng?: number | null;
@@ -57,6 +54,54 @@ type EnquiryPayload = {
   email: string;
   message: string;
 };
+
+// --- Supabase RPC endpoints (beacon style) ---
+// We do this here so logging works even when navigation/new-tab happens.
+function supabaseRpcUrl(fn: "record_event" | "record_event_from_point") {
+  const base = (import.meta as any).env?.VITE_SUPABASE_URL;
+  if (!base) return null;
+  return `${String(base).replace(/\/$/, "")}/rest/v1/rpc/${fn}`;
+}
+
+function supabaseAnonKey() {
+  return (import.meta as any).env?.VITE_SUPABASE_ANON_KEY ?? null;
+}
+
+type AnalyticsEvent = "impression" | "click_message" | "click_phone" | "click_website";
+
+function sendRpcBeacon(
+  fn: "record_event" | "record_event_from_point",
+  body: any
+): void {
+  try {
+    const url = supabaseRpcUrl(fn);
+    const key = supabaseAnonKey();
+    if (!url || !key) return;
+
+    const payload = JSON.stringify(body);
+
+    // Prefer sendBeacon (best chance of completing during navigation)
+    if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+      const blob = new Blob([payload], { type: "application/json" });
+      navigator.sendBeacon(url, blob);
+      return;
+    }
+
+    // Fallback: fetch with keepalive
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      body: payload,
+      keepalive: true,
+    }).catch(() => {});
+  } catch {
+    // swallow
+  }
+}
 
 export default function CleanerCard({
   cleaner,
@@ -120,53 +165,50 @@ export default function CleanerCard({
     return normalizeWebsite(cleaner.website);
   }, [cleaner.website]);
 
-  // Helpers to log + navigate
-  function go(href?: string | null, blank?: boolean) {
-    if (!href) return;
-    if (blank) window.open(href, "_blank", "noopener,noreferrer");
-    else window.location.href = href;
-  }
-
-  /**
-   * ✅ FIXED analytics logging:
-   * - If areaId exists -> record_event (RPC)
-   * - Else if point exists -> record_event_from_point (RPC)
-   * - Else -> SKIP (do NOT call record_event with areaId null)
-   */
-  function logClick(event: "click_message" | "click_website" | "click_phone") {
+  function logClick(event: Exclude<AnalyticsEvent, "impression">) {
+    // Area-based RPC if areaId is known
     if (areaId) {
-      recordEventBeacon({
-        cleanerId: cleaner.id,
-        areaId,
-        categoryId,
-        event,
-        sessionId,
+      sendRpcBeacon("record_event", {
+        p_cleaner_id: cleaner.id,
+        p_area_id: areaId,
+        p_event: event,
+        p_session_id: sessionId,
+        p_meta: {},
+        p_uniq: null,
+        p_category_id: categoryId ?? null,
       });
       return;
     }
 
+    // Point-based RPC fallback
     if (
       typeof searchLat === "number" &&
       Number.isFinite(searchLat) &&
       typeof searchLng === "number" &&
       Number.isFinite(searchLng)
     ) {
-      recordEventFromPointBeacon({
-        cleanerId: cleaner.id,
-        lat: searchLat,
-        lng: searchLng,
-        categoryId,
-        event,
-        sessionId,
+      sendRpcBeacon("record_event_from_point", {
+        p_cleaner_id: cleaner.id,
+        p_lat: searchLat,
+        p_lng: searchLng,
+        p_event: event,
+        p_session_id: sessionId,
+        p_meta: {},
+        p_uniq: null,
+        p_category_id: categoryId ?? null,
       });
       return;
     }
 
-    // No usable analytics attribution => skip
-    console.warn("Analytics skipped (missing areaId and lat/lng)", {
-      cleanerId: cleaner.id,
-      event,
-      categoryId,
+    // Worst-case: still send record_event with null area (DB stores null area_id)
+    sendRpcBeacon("record_event", {
+      p_cleaner_id: cleaner.id,
+      p_area_id: null,
+      p_event: event,
+      p_session_id: sessionId,
+      p_meta: {},
+      p_uniq: null,
+      p_category_id: categoryId ?? null,
     });
   }
 
@@ -234,6 +276,7 @@ export default function CleanerCard({
               </div>
             )}
           </div>
+
           <div className="min-w-0 flex flex-col justify-between">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
@@ -277,8 +320,10 @@ export default function CleanerCard({
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
-            onMouseDown={() => logClick("click_message")}
-            onClick={() => setShowEnquiry(true)}
+            onClick={() => {
+              logClick("click_message");
+              setShowEnquiry(true);
+            }}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
@@ -299,8 +344,10 @@ export default function CleanerCard({
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                  onMouseDown={() => logClick("click_phone")}
-                  onClick={() => setShowPhone(false)}
+                  onClick={() => {
+                    logClick("click_phone");
+                    setShowPhone(false);
+                  }}
                   title="Tap to call"
                 >
                   {prettyPhone(cleaner.phone)}
@@ -309,7 +356,7 @@ export default function CleanerCard({
             </>
           )}
 
-          {/* ✅ Website: log first, then open (reliable) */}
+          {/* ✅ Website: log first, then open */}
           {websiteHref && (
             <a
               href={websiteHref}
@@ -360,12 +407,14 @@ export default function CleanerCard({
             </div>
           ) : null}
 
-          {/* Actions on mobile (full width) */}
+          {/* Actions on mobile */}
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              onMouseDown={() => logClick("click_message")}
-              onClick={() => setShowEnquiry(true)}
+              onClick={() => {
+                logClick("click_message");
+                setShowEnquiry(true);
+              }}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
             >
               Message
@@ -386,8 +435,10 @@ export default function CleanerCard({
                   <a
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                    onMouseDown={() => logClick("click_phone")}
-                    onClick={() => setShowPhone(false)}
+                    onClick={() => {
+                      logClick("click_phone");
+                      setShowPhone(false);
+                    }}
                     title="Tap to call"
                   >
                     {prettyPhone(cleaner.phone)}
@@ -396,7 +447,6 @@ export default function CleanerCard({
               </>
             )}
 
-            {/* ✅ Website: log first, then open (reliable) */}
             {websiteHref && (
               <a
                 href={websiteHref}
@@ -442,19 +492,14 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
-          // analytics context
-          areaId={areaId}
-          sessionId={sessionId}
-          searchLat={searchLat}
-          searchLng={searchLng}
-          categoryId={categoryId}
+          logClick={logClick}
         />
       )}
     </div>
   );
 }
 
-/* -------- Enquiry Modal extracted to keep file readable -------- */
+/* -------- Enquiry Modal -------- */
 function EnquiryModal(props: {
   cleaner: Cleaner;
   onClose: () => void;
@@ -479,12 +524,7 @@ function EnquiryModal(props: {
   };
   hasPlaces: boolean;
   autocompleteRef: any;
-  /** analytics context */
-  areaId: string | null;
-  sessionId: string;
-  searchLat: number | null;
-  searchLng: number | null;
-  categoryId: string | null;
+  logClick: (event: "click_message" | "click_phone" | "click_website") => void;
 }) {
   const {
     cleaner,
@@ -510,60 +550,14 @@ function EnquiryModal(props: {
     },
     hasPlaces,
     autocompleteRef,
-    areaId,
-    sessionId,
-    searchLat,
-    searchLng,
-    categoryId,
+    logClick,
   } = props;
 
-  function logClickModal(event: "click_message" | "click_website" | "click_phone") {
-    if (areaId) {
-      recordEventBeacon({
-        cleanerId: cleaner.id,
-        areaId,
-        categoryId,
-        event,
-        sessionId,
-      });
-      return;
-    }
-
-    if (
-      typeof searchLat === "number" &&
-      Number.isFinite(searchLat) &&
-      typeof searchLng === "number" &&
-      Number.isFinite(searchLng)
-    ) {
-      recordEventFromPointBeacon({
-        cleanerId: cleaner.id,
-        lat: searchLat,
-        lng: searchLng,
-        categoryId,
-        event,
-        sessionId,
-      });
-      return;
-    }
-
-    console.warn("Analytics skipped in modal (missing areaId and lat/lng)", {
-      cleanerId: cleaner.id,
-      event,
-      categoryId,
-    });
-  }
-
   return (
-    <div
-      className="fixed inset-0 z-40"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="enquiry-title"
-    >
+    <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-labelledby="enquiry-title">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
         <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
-          {/* Sticky header */}
           <div className="sticky top-0 z-10 bg-white border-b border-black/5">
             <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
               <div>
@@ -585,11 +579,7 @@ function EnquiryModal(props: {
             </div>
           </div>
 
-          {/* Scrollable content */}
-          <form
-            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
-            onSubmit={(e) => e.preventDefault()}
-          >
+          <form className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4" onSubmit={(e) => e.preventDefault()}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">Name</label>
@@ -680,7 +670,6 @@ function EnquiryModal(props: {
             )}
           </form>
 
-          {/* Sticky footer */}
           <div className="sticky bottom-0 z-10 bg-white border-t border-black/5 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom,0)+12px)]">
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
               {isMobile && cleaner.whatsapp && (
@@ -696,7 +685,7 @@ function EnquiryModal(props: {
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                  onMouseDown={() => logClickModal("click_message")}
+                  onClick={() => logClick("click_message")}
                 >
                   Send via WhatsApp
                 </a>
@@ -710,7 +699,7 @@ function EnquiryModal(props: {
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
 
-                  logClickModal("click_message");
+                  logClick("click_message");
 
                   try {
                     setSubmitting("email");
@@ -738,6 +727,7 @@ function EnquiryModal(props: {
                 {submitting === "email" ? "Sending…" : "Send via Email"}
               </button>
             </div>
+
             <p className="text-xs text-night-600 pt-2">
               We’ll include your details in the message so {cleaner.business_name} can reply.
             </p>
@@ -756,32 +746,35 @@ function detectIsMobile() {
   const coarse =
     typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
-  const iPadOS = /Macintosh/.test(ua) && touchPoints > 1; // iPadOS 13+ Safari
+  const iPadOS = /Macintosh/.test(ua) && touchPoints > 1;
   return mobileUA || iPadOS || coarse;
 }
 
 function digitsOnly(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
+
 function normalizeWhatsApp(input: string) {
   if (input.startsWith("http")) return input;
   const d = digitsOnly(input);
   const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
 }
+
 function normalizeWebsite(raw: string) {
   let url = raw.trim();
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
   return url;
 }
+
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44"))
-    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
   if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
+
 function isFiniteNumber(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
 }
@@ -798,8 +791,7 @@ function buildWhatsAppUrl(
     `Phone: ${data.phone || "-"}\n` +
     `Email: ${data.email || "-"}\n\n` +
     `${data.message || ""}`;
-  const encoded = encodeURIComponent(text);
-  return `${base}?text=${encoded}`;
+  return `${base}?text=${encodeURIComponent(text)}`;
 }
 
 async function defaultSendEmail(payload: EnquiryPayload, endpoint?: string) {
@@ -809,6 +801,7 @@ async function defaultSendEmail(payload: EnquiryPayload, endpoint?: string) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+
   if (!res.ok) {
     if (res.status === 404) throw new Error("Email service not configured on the server.");
     const ct = res.headers.get("content-type") || "";
