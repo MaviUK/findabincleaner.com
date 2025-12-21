@@ -232,30 +232,33 @@ export default function FindCleaners({
           lastImpressionKey.current = impressionKey;
 
           await Promise.all(
-            liveOnly.map((r, idx) =>
-              recordEventFromPointBeacon({
-                cleanerId: r.cleaner_id,
-                lat,
-                lng,
-                event: "impression",
-                sessionId,
-                categoryId: r.category_id ?? null,
-                meta: {
-                  search_id: searchId,
-                  postcode: pc,
-                  town,
-                  locality: town,
-                  service_slug: serviceSlug,
-                  area_id: r.area_id ?? null,
-                  area_name: r.area_name ?? null,
-                  position: idx + 1, // 1-based
-                  is_sponsored: Boolean(r.is_covering_sponsor),
-                  results_count: liveOnly.length,
-                  sponsored_count: sponsoredCount,
-                },
-              })
-            )
-          );
+  liveOnly.map((r, idx) =>
+    recordEventBeacon({
+      cleanerId: r.cleaner_id,
+      areaId: r.area_id ?? null,              // ✅ THIS populates analytics_events.area_id
+      categoryId: r.category_id ?? null,      // ✅ keeps category_id
+      event: "impression",
+      sessionId,
+      meta: {
+        search_id: searchId,
+        postcode: pc,
+        town,
+        locality: town,
+        service_slug: serviceSlug,
+        area_id: r.area_id ?? null,
+        area_name: r.area_name ?? null,
+        position: idx + 1,
+        is_sponsored: Boolean(r.is_covering_sponsor),
+        results_count: liveOnly.length,
+        sponsored_count: sponsoredCount,
+        // (optional) keep lat/lng if you want them for debugging
+        lat,
+        lng,
+      },
+    })
+  )
+);
+
         }
       } catch (e) {
         console.warn("recordEvent(impression) error", e);
@@ -303,3 +306,4 @@ export default function FindCleaners({
     </div>
   );
 }
+
