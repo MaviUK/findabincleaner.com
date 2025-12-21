@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
+import { supabase } from "../lib/supabase";
 import {
   recordEventBeacon,
   recordEventFromPointBeacon,
@@ -42,7 +43,7 @@ export type CleanerCardProps = {
   searchLat?: number | null;
   searchLng?: number | null;
 
-  /** ✅ Industry tab id (required for per-industry analytics) */
+  /** Industry tab id (required for per-industry analytics) */
   categoryId?: string | null;
 };
 
@@ -56,6 +57,67 @@ type EnquiryPayload = {
   email: string;
   message: string;
 };
+
+function readCategoryFromUrl(): string | null {
+  try {
+    // Works with hash routing (#/path?x=y) and normal (?x=y)
+    const hash = window.location.hash || "";
+    const qIndex = hash.indexOf("?");
+    const hashSearch = qIndex >= 0 ? hash.slice(qIndex) : "";
+    const spHash = new URLSearchParams(hashSearch);
+
+    const sp = new URLSearchParams(window.location.search);
+
+    const cat =
+      spHash.get("category") ||
+      sp.get("category") ||
+      spHash.get("categoryId") ||
+      sp.get("categoryId");
+
+    if (cat && /^[0-9a-fA-F-]{36}$/.test(cat)) return cat;
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function readServiceSlugFromUrl(): string | null {
+  try {
+    const hash = window.location.hash || "";
+    const qIndex = hash.indexOf("?");
+    const hashSearch = qIndex >= 0 ? hash.slice(qIndex) : "";
+    const spHash = new URLSearchParams(hashSearch);
+
+    const sp = new URLSearchParams(window.location.search);
+
+    const slug =
+      spHash.get("service") ||
+      sp.get("service") ||
+      spHash.get("slug") ||
+      sp.get("slug") ||
+      spHash.get("serviceSlug") ||
+      sp.get("serviceSlug");
+
+    return slug ? String(slug) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function lookupCategoryIdBySlug(slug: string): Promise<string | null> {
+  try {
+    const { data, error } = await supabase
+      .from("service_categories")
+      .select("id")
+      .eq("slug", slug)
+      .maybeSingle();
+    if (error) return null;
+    return data?.id ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export default function CleanerCard({
   cleaner,
@@ -81,6 +143,45 @@ export default function CleanerCard({
 
   // Session id for analytics
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
+
+  // ✅ ensure we always have a categoryId if possible
+  const [resolvedCategoryId, setResolvedCategoryId] = useState<string | null>(
+    categoryId ?? null
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      // 1) prefer prop
+      if (categoryId && !cancelled) {
+        setResolvedCategoryId(categoryId);
+        return;
+      }
+
+      // 2) try URL param ?category=UUID
+      const fromUrl = readCategoryFromUrl();
+      if (fromUrl && !cancelled) {
+        setResolvedCategoryId(fromUrl);
+        return;
+      }
+
+      // 3) try URL slug (?service=bin-cleaner) then lookup id
+      const slug = readServiceSlugFromUrl();
+      if (slug) {
+        const id = await lookupCategoryIdBySlug(slug);
+        if (!cancelled) setResolvedCategoryId(id);
+        return;
+      }
+
+      // 4) nothing
+      if (!cancelled) setResolvedCategoryId(null);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [categoryId]);
 
   // Device checks
   const [isMobile, setIsMobile] = useState(false);
@@ -119,57 +220,64 @@ export default function CleanerCard({
     return normalizeWebsite(cleaner.website);
   }, [cleaner.website]);
 
-  // Helpers to navigate
-  function go(href?: string | null, blank?: boolean) {
-    if (!href) return;
-    if (blank) window.open(href, "_blank", "noopener,noreferrer");
-    else window.location.href = href;
-  }
-
-  /**
-   * ✅ SAFE click logger:
-   * - Uses area-based rpc when areaId exists
-   * - Falls back to point-based rpc when we have searchLat/searchLng
-   * - Never throws; always catches so clicks don’t silently fail
-   */
   function logClick(event: "click_message" | "click_website" | "click_phone") {
-    const run = () => {
-      if (areaId) {
-        return recordEventBeacon({
-          cleanerId: cleaner.id,
-          areaId,
-          categoryId,
-          event,
-          sessionId,
-        });
-      }
+    const category_id = resolvedCategoryId ?? null;
 
-      if (
-        typeof searchLat === "number" &&
-        Number.isFinite(searchLat) &&
-        typeof searchLng === "number" &&
-        Number.isFinite(searchLng)
-      ) {
-        return recordEventFromPointBeacon({
-          cleanerId: cleaner.id,
-          lat: searchLat,
-          lng: searchLng,
-          categoryId,
-          event,
-          sessionId,
-        });
-      }
-
-      // no areaId and no point → don’t crash, just skip
-      return Promise.resolve();
+    // Helpful debugging context
+    const meta = {
+      source: "CleanerCard",
+      href: typeof window !== "undefined" ? window.location.href : "",
+      has_area_id: Boolean(areaId),
+      has_point: typeof searchLat === "number" && typeof searchLng === "number",
     };
 
-    void run().catch((e) => console.warn("analytics click failed", e));
+    // ✅ IMPORTANT: recordEvent() requires areaId; don’t call it when areaId is null.
+    if (areaId) {
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId,
+        categoryId: category_id,
+        event,
+        sessionId,
+        meta,
+      }).catch((e) => console.warn("recordEventBeacon error", e));
+      return;
+    }
+
+    // If areaId missing, prefer point-based logging
+    if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        categoryId: category_id,
+        event,
+        sessionId,
+        meta,
+      }).catch((e) => console.warn("recordEventFromPointBeacon error", e));
+      return;
+    }
+
+    // Last resort: no areaId and no lat/lng → still attempt via recordEventBeacon
+    // but with a fake meta marker; if your RPC requires area_id, this may fail.
+    recordEventBeacon({
+      cleanerId: cleaner.id,
+      areaId: null,
+      categoryId: category_id,
+      event,
+      sessionId,
+      meta: { ...meta, note: "no areaId + no point" },
+    }).catch((e) => console.warn("recordEventBeacon(no-area) error", e));
   }
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-3 sm:p-5">
-      {/* MOBILE HEADER (sm:hidden) — logo left, name right, chevron */}
+      {/* MOBILE HEADER (sm:hidden) */}
       <div className="sm:hidden">
         <button
           type="button"
@@ -192,9 +300,7 @@ export default function CleanerCard({
             )}
           </div>
           <div className="flex-1 min-w-0 text-left">
-            <div className="truncate text-lg font-bold">
-              {cleaner.business_name}
-            </div>
+            <div className="truncate text-lg font-bold">{cleaner.business_name}</div>
             {isFiniteNumber(cleaner.rating_avg) && (
               <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-xs ring-1 ring-blue-200">
                 <span className="font-semibold">
@@ -217,7 +323,7 @@ export default function CleanerCard({
         </button>
       </div>
 
-      {/* DESKTOP HEADER (hidden on mobile): original left column with big logo */}
+      {/* DESKTOP HEADER */}
       <div className="hidden sm:flex items-stretch gap-5">
         <div className="flex items-stretch gap-5 flex-1 min-w-0">
           <div className="self-stretch w-[184px] rounded-3xl overflow-hidden">
@@ -235,6 +341,7 @@ export default function CleanerCard({
               </div>
             )}
           </div>
+
           <div className="min-w-0 flex flex-col justify-between">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
@@ -284,7 +391,7 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Desktop actions column */}
+        {/* Desktop actions */}
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
@@ -301,10 +408,7 @@ export default function CleanerCard({
                 <button
                   type="button"
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
-                  onClick={() => {
-                    logClick("click_phone");
-                    setShowPhone(true);
-                  }}
+                  onClick={() => setShowPhone(true)}
                   aria-expanded={showPhone}
                 >
                   Phone
@@ -323,7 +427,6 @@ export default function CleanerCard({
             </>
           )}
 
-          {/* ✅ Website: log first, then open (reliable) */}
           {websiteHref && (
             <a
               href={websiteHref}
@@ -342,7 +445,7 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* DETAILS SECTION (mobile collapsible, desktop always visible) */}
+      {/* DETAILS SECTION (mobile collapsible) */}
       <div
         id={`card-details-${cleaner.id}`}
         className={`sm:hidden transition-[grid-template-rows,opacity] duration-200 ${
@@ -352,7 +455,6 @@ export default function CleanerCard({
         }`}
       >
         <div className="min-h-0 overflow-hidden">
-          {/* Services */}
           {cleaner.service_types?.length ? (
             <div className="pt-2">
               <div className="text-sm font-medium text-night-800 mb-1.5">
@@ -366,7 +468,6 @@ export default function CleanerCard({
             </div>
           ) : null}
 
-          {/* Payments */}
           {(showPayments ?? true) && cleaner.payment_methods?.length ? (
             <div className="pt-3 border-t border-black/5">
               <div className="text-sm font-medium text-night-800 mb-1.5">
@@ -380,7 +481,6 @@ export default function CleanerCard({
             </div>
           ) : null}
 
-          {/* Actions on mobile (full width) */}
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
@@ -397,10 +497,7 @@ export default function CleanerCard({
                   <button
                     type="button"
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/30 hover:ring-[#1D4ED8]/50"
-                    onClick={() => {
-                      logClick("click_phone");
-                      setShowPhone(true);
-                    }}
+                    onClick={() => setShowPhone(true)}
                     aria-expanded={showPhone}
                   >
                     Phone
@@ -419,7 +516,6 @@ export default function CleanerCard({
               </>
             )}
 
-            {/* ✅ Website: log first, then open (reliable) */}
             {websiteHref && (
               <a
                 href={websiteHref}
@@ -439,7 +535,7 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* Enquiry Modal (mobile sheet / desktop dialog) */}
+      {/* Enquiry Modal */}
       {showEnquiry && (
         <EnquiryModal
           cleaner={cleaner}
@@ -447,7 +543,6 @@ export default function CleanerCard({
           onSendEnquiry={onSendEnquiry}
           emailEndpoint={emailEndpoint}
           isMobile={isMobile}
-          // controlled form state + errors so we keep existing UX
           state={{
             name,
             address,
@@ -466,12 +561,11 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
-          // analytics context
           areaId={areaId}
           sessionId={sessionId}
           searchLat={searchLat}
           searchLng={searchLng}
-          categoryId={categoryId}
+          categoryId={resolvedCategoryId}
         />
       )}
     </div>
@@ -503,7 +597,6 @@ function EnquiryModal(props: {
   };
   hasPlaces: boolean;
   autocompleteRef: any;
-  /** analytics context */
   areaId: string | null;
   sessionId: string;
   searchLat: number | null;
@@ -541,52 +634,54 @@ function EnquiryModal(props: {
     categoryId,
   } = props;
 
-  // ✅ SAFE click logger in modal too (never throws; always catches)
   function logClickModal(event: "click_message" | "click_website" | "click_phone") {
-    const run = () => {
-      if (areaId) {
-        return recordEventBeacon({
-          cleanerId: cleaner.id,
-          areaId,
-          categoryId,
-          event,
-          sessionId,
-        });
-      }
+    const meta = { source: "EnquiryModal" };
 
-      if (
-        typeof searchLat === "number" &&
-        Number.isFinite(searchLat) &&
-        typeof searchLng === "number" &&
-        Number.isFinite(searchLng)
-      ) {
-        return recordEventFromPointBeacon({
-          cleanerId: cleaner.id,
-          lat: searchLat,
-          lng: searchLng,
-          categoryId,
-          event,
-          sessionId,
-        });
-      }
+    if (areaId) {
+      recordEventBeacon({
+        cleanerId: cleaner.id,
+        areaId,
+        categoryId,
+        event,
+        sessionId,
+        meta,
+      }).catch((e) => console.warn("recordEventBeacon(modal) error", e));
+      return;
+    }
 
-      return Promise.resolve();
-    };
+    if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        categoryId,
+        event,
+        sessionId,
+        meta,
+      }).catch((e) => console.warn("recordEventFromPointBeacon(modal) error", e));
+      return;
+    }
 
-    void run().catch((e) => console.warn("analytics click failed", e));
+    recordEventBeacon({
+      cleanerId: cleaner.id,
+      areaId: null,
+      categoryId,
+      event,
+      sessionId,
+      meta: { ...meta, note: "no areaId + no point" },
+    }).catch((e) => console.warn("recordEventBeacon(modal no-area) error", e));
   }
 
   return (
-    <div
-      className="fixed inset-0 z-40"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="enquiry-title"
-    >
+    <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-labelledby="enquiry-title">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
         <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
-          {/* Sticky header */}
           <div className="sticky top-0 z-10 bg-white border-b border-black/5">
             <div className="p-4 sm:p-6 flex items-start justify-between gap-4">
               <div>
@@ -608,11 +703,7 @@ function EnquiryModal(props: {
             </div>
           </div>
 
-          {/* Scrollable content */}
-          <form
-            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
-            onSubmit={(e) => e.preventDefault()}
-          >
+          <form className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4" onSubmit={(e) => e.preventDefault()}>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">Name</label>
@@ -625,6 +716,7 @@ function EnquiryModal(props: {
                   required
                 />
               </div>
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">Phone</label>
                 <input
@@ -702,7 +794,6 @@ function EnquiryModal(props: {
             )}
           </form>
 
-          {/* Sticky footer */}
           <div className="sticky bottom-0 z-10 bg-white border-t border-black/5 px-4 sm:px-6 py-3 pb-[calc(env(safe-area-inset-bottom,0)+12px)]">
             <div className="flex flex-col sm:flex-row gap-2 sm:gap-3">
               {isMobile && cleaner.whatsapp && (
@@ -732,7 +823,6 @@ function EnquiryModal(props: {
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
 
-                  // record Email message click
                   logClickModal("click_message");
 
                   try {
@@ -762,8 +852,7 @@ function EnquiryModal(props: {
               </button>
             </div>
             <p className="text-xs text-night-600 pt-2">
-              We’ll include your details in the message so {cleaner.business_name} can
-              reply.
+              We’ll include your details in the message so {cleaner.business_name} can reply.
             </p>
           </div>
         </div>
@@ -778,54 +867,40 @@ function detectIsMobile() {
   const ua = navigator.userAgent || "";
   const touchPoints = (navigator as any).maxTouchPoints || 0;
   const coarse =
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches;
+    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
-  const iPadOS = /Macintosh/.test(ua) && touchPoints > 1; // iPadOS 13+ Safari
+  const iPadOS = /Macintosh/.test(ua) && touchPoints > 1;
   return mobileUA || iPadOS || coarse;
 }
 
 function digitsOnly(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
-
 function normalizeWhatsApp(input: string) {
   if (input.startsWith("http")) return input;
   const d = digitsOnly(input);
   const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
 }
-
 function normalizeWebsite(raw: string) {
   let url = raw.trim();
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
   return url;
 }
-
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44"))
-    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
-  if (d.length === 11 && d.startsWith("0"))
-    return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
-
 function isFiniteNumber(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
 }
 
 function buildWhatsAppUrl(
   wa: string,
-  data: {
-    business: string;
-    name: string;
-    address: string;
-    phone: string;
-    email: string;
-    message: string;
-  }
+  data: { business: string; name: string; address: string; phone: string; email: string; message: string }
 ) {
   const base = normalizeWhatsApp(wa);
   const text =
@@ -847,8 +922,7 @@ async function defaultSendEmail(payload: EnquiryPayload, endpoint?: string) {
     body: JSON.stringify(payload),
   });
   if (!res.ok) {
-    if (res.status === 404)
-      throw new Error("Email service not configured on the server.");
+    if (res.status === 404) throw new Error("Email service not configured on the server.");
     const ct = res.headers.get("content-type") || "";
     if (ct.includes("application/json")) {
       const j = await res.json().catch(() => null);
