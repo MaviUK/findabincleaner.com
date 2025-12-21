@@ -49,52 +49,51 @@ type RecordEventFromPointArgs = {
 };
 
 /**
- * ---------- IMPORTANT ----------
- * For "beacon-like" reliability on clicks (especially Website),
- * we call Supabase REST RPC directly with fetch({ keepalive: true }).
- *
- * supabase.rpc() can be cancelled by navigation / new tab.
+ * INTERNAL: send a POST to Supabase REST RPC with keepalive (so it survives navigation)
  */
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
+function postRpcKeepalive(rpcName: string, body: any) {
+  // supabase-js v2 exposes these
+  const anyClient: any = supabase as any;
+  const supabaseUrl: string | undefined = anyClient?.supabaseUrl;
+  const supabaseKey: string | undefined = anyClient?.supabaseKey;
 
-async function rpcKeepalive(functionName: string, payload: any) {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return;
-
-  // If user is logged in, include bearer token (helps if RLS checks auth).
-  // If not logged in, anon key still works for public logging if your RPC permits it.
-  let bearer = SUPABASE_ANON_KEY;
-  try {
-    const { data } = await supabase.auth.getSession();
-    const token = data?.session?.access_token;
-    if (token) bearer = token;
-  } catch {
-    // ignore
+  if (!supabaseUrl || !supabaseKey) {
+    // fallback: best effort (may get cancelled on nav)
+    // still useful for local testing
+    return supabase.rpc(rpcName, body);
   }
 
-  try {
-    await fetch(`${SUPABASE_URL}/rest/v1/rpc/${functionName}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        apikey: SUPABASE_ANON_KEY,
-        authorization: `Bearer ${bearer}`,
-      },
-      body: JSON.stringify(payload),
-      // ✅ this is the key for navigation safety
-      keepalive: true,
-      // keep it simple + compatible
-      mode: "cors",
-      credentials: "omit",
-    });
-  } catch {
-    // swallow errors: analytics should never break UX
+  const url = `${supabaseUrl}/rest/v1/rpc/${rpcName}`;
+  const payload = JSON.stringify(body);
+
+  // If browser supports beacon, use it (most reliable during unload/nav)
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    const blob = new Blob([payload], { type: "application/json" });
+    navigator.sendBeacon(url, blob);
+    return;
   }
+
+  // Otherwise use fetch keepalive
+  fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: payload,
+    keepalive: true,
+    mode: "cors",
+    credentials: "omit",
+  }).catch(() => {
+    // ignore errors (analytics should never break UX)
+  });
 }
 
 /**
- * Writes via area-based RPC (awaited).
- * Use this when you *need* the write to finish (admin tools etc).
+ * Writes via area-based RPC.
+ * If you want a "reliable" call before navigation, use recordEventBeacon().
  */
 export async function recordEvent({
   cleanerId,
@@ -107,9 +106,7 @@ export async function recordEvent({
   const sid = sessionId ?? getOrCreateSessionId();
 
   if (!areaId) {
-    throw new Error(
-      "recordEvent requires areaId. Use recordEventFromPointBeacon instead."
-    );
+    throw new Error("recordEvent requires areaId. Use recordEventFromPointBeacon instead.");
   }
 
   const payload: any = {
@@ -126,10 +123,29 @@ export async function recordEvent({
 }
 
 /**
- * Writes via point-based RPC (awaited).
- * Use this when you *need* the write to finish (admin tools etc).
+ * Reliable "beacon-like" event logger for area-based events.
+ * This is what you should call from clicks before opening new tabs.
  */
-export async function recordEventFromPoint({
+export function recordEventBeacon(args: RecordEventArgs) {
+  const sid = args.sessionId ?? getOrCreateSessionId();
+
+  // If areaId is missing, still record (area_id will be null)
+  const payload: any = {
+    p_cleaner_id: args.cleanerId,
+    p_area_id: args.areaId ?? null,
+    p_event: args.event,
+    p_session_id: sid,
+    p_meta: args.meta ?? {},
+    p_category_id: args.categoryId ?? null,
+  };
+
+  postRpcKeepalive("record_event", payload);
+}
+
+/**
+ * Point-based RPC (DB finds area from lat/lng).
+ */
+export async function recordEventFromPointBeacon({
   cleanerId,
   lat,
   lng,
@@ -150,61 +166,13 @@ export async function recordEventFromPoint({
     p_category_id: categoryId ?? null,
   };
 
-  const { error } = await supabase.rpc("record_event_from_point", payload);
-  if (error) throw error;
+  // reliable send (survives navigation)
+  postRpcKeepalive("record_event_from_point", payload);
 }
 
 /**
- * ✅ "Beacon" versions (fire-and-forget, keepalive)
- * These are what your CleanerCard should call on clicks.
+ * Compatibility wrapper (if anything imports recordEventFromPoint)
  */
-export function recordEventBeacon({
-  cleanerId,
-  areaId,
-  event,
-  sessionId,
-  categoryId,
-  meta,
-}: RecordEventArgs) {
-  const sid = sessionId ?? getOrCreateSessionId();
-
-  // If missing areaId, we still attempt (your SQL can store null area_id)
-  const payload: any = {
-    p_cleaner_id: cleanerId,
-    p_area_id: areaId ?? null,
-    p_event: event,
-    p_session_id: sid,
-    p_meta: meta ?? {},
-    p_category_id: categoryId ?? null,
-  };
-
-  // fire-and-forget
-  void rpcKeepalive("record_event", payload);
-}
-
-/**
- * ✅ Point-based "beacon" version (fire-and-forget, keepalive)
- */
-export function recordEventFromPointBeacon({
-  cleanerId,
-  lat,
-  lng,
-  event,
-  sessionId,
-  categoryId,
-  meta,
-}: RecordEventFromPointArgs) {
-  const sid = sessionId ?? getOrCreateSessionId();
-
-  const payload: any = {
-    p_cleaner_id: cleanerId,
-    p_lat: lat,
-    p_lng: lng,
-    p_event: event,
-    p_session_id: sid,
-    p_meta: meta ?? {},
-    p_category_id: categoryId ?? null,
-  };
-
-  void rpcKeepalive("record_event_from_point", payload);
+export async function recordEventFromPoint(args: RecordEventFromPointArgs) {
+  return recordEventFromPointBeacon(args);
 }
