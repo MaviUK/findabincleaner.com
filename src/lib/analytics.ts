@@ -49,8 +49,8 @@ type RecordEventFromPointArgs = {
 };
 
 /**
- * Writes via area-based RPC.
- * ✅ Allow areaId to be null — RPC can store it as null.
+ * Area-based RPC. If areaId is missing, we DO NOT throw (so click logging doesn’t die).
+ * Caller should use recordEventFromPointBeacon when possible.
  */
 export async function recordEvent({
   cleanerId,
@@ -62,9 +62,13 @@ export async function recordEvent({
 }: RecordEventArgs) {
   const sid = sessionId ?? getOrCreateSessionId();
 
+  // If we don’t have an areaId, we can’t use this RPC.
+  // Return silently rather than throwing.
+  if (!areaId) return;
+
   const payload: any = {
     p_cleaner_id: cleanerId,
-    p_area_id: areaId ?? null,
+    p_area_id: areaId,
     p_event: event,
     p_session_id: sid,
     p_meta: meta ?? {},
@@ -75,6 +79,9 @@ export async function recordEvent({
   if (error) throw error;
 }
 
+/**
+ * Point-based RPC.
+ */
 export async function recordEventFromPointBeacon({
   cleanerId,
   lat,
@@ -100,10 +107,10 @@ export async function recordEventFromPointBeacon({
   if (error) throw error;
 }
 
+/** Keep old names so imports don’t break */
 export async function recordEventBeacon(args: RecordEventArgs) {
   return recordEvent(args);
 }
-
 export async function recordEventFromPoint(args: RecordEventFromPointArgs) {
   return recordEventFromPointBeacon(args);
 }
