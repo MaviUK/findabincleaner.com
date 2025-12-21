@@ -24,7 +24,7 @@ export type Cleaner = {
   rating_count?: number | null;
 
   payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  service_types?: string[] | null;   // ["domestic","commercial"]
+  service_types?: string[] | null; // ["domestic","commercial"]
 };
 
 export type CleanerCardProps = {
@@ -41,6 +41,9 @@ export type CleanerCardProps = {
   /** Fallback so the DB can compute area when areaId is missing */
   searchLat?: number | null;
   searchLng?: number | null;
+
+  /** ✅ Industry tab id (required for per-industry analytics) */
+  categoryId?: string | null;
 };
 
 type EnquiryPayload = {
@@ -62,6 +65,7 @@ export default function CleanerCard({
   areaId = null,
   searchLat = null,
   searchLng = null,
+  categoryId = null,
 }: CleanerCardProps) {
   const [showPhone, setShowPhone] = useState(false);
   const [showEnquiry, setShowEnquiry] = useState(false);
@@ -123,10 +127,12 @@ export default function CleanerCard({
   }
 
   function logClick(event: "click_message" | "click_website" | "click_phone") {
+    // If categoryId is missing, we still log (but per-industry analytics will be incomplete).
     if (areaId) {
       recordEventBeacon({
         cleanerId: cleaner.id,
         areaId,
+        categoryId,
         event,
         sessionId,
       });
@@ -141,6 +147,7 @@ export default function CleanerCard({
         cleanerId: cleaner.id,
         lat: searchLat,
         lng: searchLng,
+        categoryId,
         event,
         sessionId,
       });
@@ -149,6 +156,7 @@ export default function CleanerCard({
       recordEventBeacon({
         cleanerId: cleaner.id,
         areaId: null,
+        categoryId,
         event,
         sessionId,
       });
@@ -306,15 +314,21 @@ export default function CleanerCard({
             </>
           )}
 
+          {/* ✅ Website: log first, then open (reliable) */}
           {websiteHref && (
-            <button
-              type="button"
-              onMouseDown={() => logClick("click_website")}
-              onClick={() => go(websiteHref, true)}
+            <a
+              href={websiteHref}
+              target="_blank"
+              rel="noopener noreferrer"
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
+              onClick={(e) => {
+                e.preventDefault();
+                logClick("click_website");
+                window.open(websiteHref, "_blank", "noopener,noreferrer");
+              }}
             >
               Website
-            </button>
+            </a>
           )}
         </div>
       </div>
@@ -387,15 +401,21 @@ export default function CleanerCard({
               </>
             )}
 
+            {/* ✅ Website: log first, then open (reliable) */}
             {websiteHref && (
-              <button
-                type="button"
-                onMouseDown={() => logClick("click_website")}
-                onClick={() => go(websiteHref, true)}
+              <a
+                href={websiteHref}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
+                onClick={(e) => {
+                  e.preventDefault();
+                  logClick("click_website");
+                  window.open(websiteHref, "_blank", "noopener,noreferrer");
+                }}
               >
                 Website
-              </button>
+              </a>
             )}
           </div>
         </div>
@@ -409,7 +429,6 @@ export default function CleanerCard({
           onSendEnquiry={onSendEnquiry}
           emailEndpoint={emailEndpoint}
           isMobile={isMobile}
-          // controlled form state + errors so we keep existing UX
           state={{
             name,
             address,
@@ -433,6 +452,7 @@ export default function CleanerCard({
           sessionId={sessionId}
           searchLat={searchLat}
           searchLng={searchLng}
+          categoryId={categoryId}
         />
       )}
     </div>
@@ -469,6 +489,7 @@ function EnquiryModal(props: {
   sessionId: string;
   searchLat: number | null;
   searchLng: number | null;
+  categoryId: string | null;
 }) {
   const {
     cleaner,
@@ -498,14 +519,16 @@ function EnquiryModal(props: {
     sessionId,
     searchLat,
     searchLng,
+    categoryId,
   } = props;
 
-  // local logger inside modal (fixes the out-of-scope error)
+  // local logger inside modal
   function logClickModal(event: "click_message" | "click_website" | "click_phone") {
     if (areaId) {
       recordEventBeacon({
         cleanerId: cleaner.id,
         areaId,
+        categoryId,
         event,
         sessionId,
       });
@@ -519,6 +542,7 @@ function EnquiryModal(props: {
         cleanerId: cleaner.id,
         lat: searchLat,
         lng: searchLng,
+        categoryId,
         event,
         sessionId,
       });
@@ -526,6 +550,7 @@ function EnquiryModal(props: {
       recordEventBeacon({
         cleanerId: cleaner.id,
         areaId: null,
+        categoryId,
         event,
         sessionId,
       });
