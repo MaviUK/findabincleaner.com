@@ -1,5 +1,6 @@
 // src/pages/Analytics.tsx
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 type Row = {
@@ -10,7 +11,17 @@ type Row = {
   clicks_website: number | null;
   clicks_phone: number | null;
   cleaner_id: string;
+  category_id?: string | null;
 };
+
+function useHashSearchParams() {
+  const { hash } = useLocation();
+  return useMemo(() => {
+    const qIndex = hash.indexOf("?");
+    const search = qIndex >= 0 ? hash.slice(qIndex) : "";
+    return new URLSearchParams(search);
+  }, [hash]);
+}
 
 export default function Analytics() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -18,6 +29,9 @@ export default function Analytics() {
   const [err, setErr] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  const qs = useHashSearchParams();
+  const categoryId = qs.get("category"); // <- from #/analytics?category=...
 
   async function loadRows() {
     try {
@@ -33,14 +47,18 @@ export default function Analytics() {
         .select("id")
         .eq("user_id", uid)
         .maybeSingle();
+
       if (ce) throw ce;
       if (!cleaner) throw new Error("No cleaner profile found.");
 
-      const { data, error } = await supabase
+      let query = supabase
         .from("area_stats_30d")
-        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id")
-        .eq("cleaner_id", cleaner.id)
-        .order("area_name", { ascending: true });
+        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id, category_id")
+        .eq("cleaner_id", cleaner.id);
+
+      if (categoryId) query = query.eq("category_id", categoryId);
+
+      const { data, error } = await query.order("area_name", { ascending: true });
       if (error) throw error;
 
       setRows((data as Row[]) || []);
@@ -56,7 +74,6 @@ export default function Analytics() {
   useEffect(() => {
     loadRows();
 
-    // quick auto-refresh so new events appear without manual reload
     const t1 = setTimeout(loadRows, 1500);
     const t2 = setTimeout(loadRows, 3500);
 
@@ -70,7 +87,8 @@ export default function Analytics() {
       window.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+    // reload if category changes
+  }, [categoryId]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -190,10 +208,7 @@ export default function Analytics() {
                 <td className="py-2 px-3">{totals.msg + totals.web + totals.phone}</td>
                 <td className="py-2 px-3">
                   {totals.impressions
-                    ? `${(
-                        ((totals.msg + totals.web + totals.phone) / totals.impressions) *
-                        100
-                      ).toFixed(1)}%`
+                    ? `${(((totals.msg + totals.web + totals.phone) / totals.impressions) * 100).toFixed(1)}%`
                     : "—"}
                 </td>
               </tr>
