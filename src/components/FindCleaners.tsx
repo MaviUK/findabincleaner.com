@@ -53,8 +53,8 @@ export type MatchOut = {
   area_name?: string | null;
   is_covering_sponsor?: boolean;
 
-  /** ✅ add category_id so downstream components can log clicks correctly */
-  category_id: string | null;
+  /** ✅ IMPORTANT: carry the category id through to cards so clicks log correctly */
+  category_id?: string | null;
 };
 
 function toArray(v: unknown): string[] {
@@ -65,7 +65,10 @@ function toArray(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -83,9 +86,10 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  const submitCount = useRef(0);
+  // Prevent firing impression events multiple times for identical searches
   const lastImpressionKey = useRef<string>("");
 
+  // Cache the service_categories.id for the current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -115,28 +119,11 @@ export default function FindCleaners({
     };
   }, [serviceSlug]);
 
-  async function ensureCategoryId(): Promise<string | null> {
-    if (categoryIdRef.current) return categoryIdRef.current;
-
-    try {
-      const { data, error } = await supabase
-        .from("service_categories")
-        .select("id")
-        .eq("slug", serviceSlug)
-        .maybeSingle();
-
-      const id = error ? null : data?.id ?? null;
-      categoryIdRef.current = id;
-      return id;
-    } catch {
-      return null;
-    }
-  }
-
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
 
+    // ✅ clear previous results immediately when a new search starts
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -148,7 +135,6 @@ export default function FindCleaners({
 
     try {
       setLoading(true);
-      submitCount.current += 1;
 
       // 1) Geocode postcode
       const res = await fetch(
@@ -181,9 +167,6 @@ export default function FindCleaners({
         data.result.region ||
         "";
 
-      // ✅ ensure we have category id for logging + passing down
-      const categoryId = await ensureCategoryId();
-
       // 2) Search via RPC (category slug overload)
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
@@ -202,7 +185,10 @@ export default function FindCleaners({
 
       const list = (rows || []) as MatchIn[];
 
-      // 3) Normalize
+      // ✅ category id for THIS serviceSlug (bin/window/general)
+      const categoryId = categoryIdRef.current;
+
+      // 3) Normalize + attach category_id to each result (so clicks can use it)
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -218,7 +204,9 @@ export default function FindCleaners({
         area_id: m.area_id ?? null,
         area_name: m.area_name ?? null,
         is_covering_sponsor: Boolean(m.is_covering_sponsor),
-        category_id: categoryId ?? null, // ✅ HERE
+
+        // ✅ the fix
+        category_id: categoryId,
       }));
 
       // Optional “live only” filter
@@ -229,12 +217,13 @@ export default function FindCleaners({
         return hasPhone || hasWhatsApp || hasWebsite;
       });
 
-      // 4) Record impressions
+      // 4) Record impressions (one per result) with categoryId written to column
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
+        // simple de-dupe so we don't spam on re-renders
         const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
           5
         )}|${liveOnly.length}`;
@@ -250,7 +239,7 @@ export default function FindCleaners({
                 lng,
                 event: "impression",
                 sessionId,
-                categoryId: categoryId ?? null, // ✅ ensures category_id writes
+                categoryId: r.category_id ?? null,
                 meta: {
                   search_id: searchId,
                   postcode: pc,
@@ -259,7 +248,7 @@ export default function FindCleaners({
                   service_slug: serviceSlug,
                   area_id: r.area_id ?? null,
                   area_name: r.area_name ?? null,
-                  position: idx + 1,
+                  position: idx + 1, // 1-based
                   is_sponsored: Boolean(r.is_covering_sponsor),
                   results_count: liveOnly.length,
                   sponsored_count: sponsoredCount,
