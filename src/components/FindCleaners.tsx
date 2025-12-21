@@ -1,10 +1,7 @@
 // src/components/FindCleaners.tsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import {
-  recordEventFromPointBeacon,
-  getOrCreateSessionId,
-} from "../lib/analytics";
+import { recordEventFromPointBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
@@ -55,6 +52,9 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
+
+  /** ✅ add category_id so downstream components can log clicks correctly */
+  category_id: string | null;
 };
 
 function toArray(v: unknown): string[] {
@@ -65,10 +65,7 @@ function toArray(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
 }
@@ -86,13 +83,9 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // used only for dev / debouncing if you expand later
   const submitCount = useRef(0);
-
-  // Prevent firing impression events multiple times for identical searches
   const lastImpressionKey = useRef<string>("");
 
-  // Cache the service_categories.id for the current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -122,11 +115,28 @@ export default function FindCleaners({
     };
   }, [serviceSlug]);
 
+  async function ensureCategoryId(): Promise<string | null> {
+    if (categoryIdRef.current) return categoryIdRef.current;
+
+    try {
+      const { data, error } = await supabase
+        .from("service_categories")
+        .select("id")
+        .eq("slug", serviceSlug)
+        .maybeSingle();
+
+      const id = error ? null : data?.id ?? null;
+      categoryIdRef.current = id;
+      return id;
+    } catch {
+      return null;
+    }
+  }
+
   async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
 
-    // ✅ clear previous results immediately when a new search starts
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -145,7 +155,6 @@ export default function FindCleaners({
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
-      // ✅ friendly error (no hard red)
       if (!res.ok) {
         onSearchStart?.();
         if (res.status === 404 || res.status === 400) {
@@ -171,6 +180,9 @@ export default function FindCleaners({
         data.result.parliamentary_constituency ||
         data.result.region ||
         "";
+
+      // ✅ ensure we have category id for logging + passing down
+      const categoryId = await ensureCategoryId();
 
       // 2) Search via RPC (category slug overload)
       const { data: rows, error: rpcErr } = await supabase.rpc(
@@ -206,6 +218,7 @@ export default function FindCleaners({
         area_id: m.area_id ?? null,
         area_name: m.area_name ?? null,
         is_covering_sponsor: Boolean(m.is_covering_sponsor),
+        category_id: categoryId ?? null, // ✅ HERE
       }));
 
       // Optional “live only” filter
@@ -216,18 +229,15 @@ export default function FindCleaners({
         return hasPhone || hasWhatsApp || hasWebsite;
       });
 
-      // 4) Record impressions (one per result) with categoryId written to column
+      // 4) Record impressions
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
-        const categoryId = categoryIdRef.current; // ✅ IMPORTANT
-        const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor)
-          .length;
+        const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
-        // simple de-dupe so we don't spam on re-renders
-        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
           5
-        )}|${lng.toFixed(5)}|${liveOnly.length}`;
+        )}|${liveOnly.length}`;
 
         if (lastImpressionKey.current !== impressionKey) {
           lastImpressionKey.current = impressionKey;
@@ -240,7 +250,7 @@ export default function FindCleaners({
                 lng,
                 event: "impression",
                 sessionId,
-                categoryId, // ✅ THIS is what makes category_id populate in the DB
+                categoryId: categoryId ?? null, // ✅ ensures category_id writes
                 meta: {
                   search_id: searchId,
                   postcode: pc,
@@ -249,7 +259,7 @@ export default function FindCleaners({
                   service_slug: serviceSlug,
                   area_id: r.area_id ?? null,
                   area_name: r.area_name ?? null,
-                  position: idx + 1, // 1-based
+                  position: idx + 1,
                   is_sponsored: Boolean(r.is_covering_sponsor),
                   results_count: liveOnly.length,
                   sponsored_count: sponsoredCount,
@@ -291,7 +301,6 @@ export default function FindCleaners({
         </button>
       </form>
 
-      {/* ✅ Soft / friendly notice styling (not hard red) */}
       {error && (
         <div className="mt-1 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
           <span className="text-lg leading-none">📍</span>
@@ -299,7 +308,6 @@ export default function FindCleaners({
         </div>
       )}
 
-      {/* Dev-only inline list if you ever render this component without onSearchComplete */}
       {!onSearchComplete && results.length > 0 && (
         <div className="text-sm text-gray-600">Found {results.length} cleaners.</div>
       )}
