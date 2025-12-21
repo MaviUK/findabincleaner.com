@@ -21,6 +21,9 @@ type Props = {
   /** Pass these from the page that did the postcode → lat/lng lookup */
   searchLat?: number | null;
   searchLng?: number | null;
+
+  /** ✅ current industry category id (optional, but needed for per-industry analytics) */
+  categoryId?: string | null;
 };
 
 export default function ResultsList({
@@ -29,6 +32,7 @@ export default function ResultsList({
   locality,
   searchLat = null,
   searchLng = null,
+  categoryId = null,
 }: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
@@ -72,6 +76,8 @@ export default function ResultsList({
             /* Fallback so DB can determine area if areaId missing */
             searchLat={searchLat}
             searchLng={searchLng}
+            /* ✅ ensures clicks are attributed to the selected industry */
+            categoryId={c.category_id ?? categoryId ?? null}
           />
         );
       })}
