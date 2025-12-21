@@ -450,6 +450,37 @@ export default function ServiceAreaEditor({
     mapRef.current = map;
   }, []);
 
+    const zoomToArea = useCallback(
+    (area: ServiceAreaRow) => {
+      if (!isLoaded || !mapRef.current) return;
+
+      const gj = area?.gj;
+      if (!gj?.coordinates) return;
+
+      const bounds = new google.maps.LatLngBounds();
+
+      // Supports MultiPolygon and Polygon (just in case)
+      const polys: number[][][][] =
+        gj.type === "Polygon"
+          ? [gj.coordinates as unknown as number[][][]]
+          : (gj.coordinates as unknown as number[][][][]);
+
+      polys.forEach((rings) => {
+        (rings as unknown as number[][][]).forEach((ring) => {
+          ring.forEach(([lng, lat]) =>
+            bounds.extend(new google.maps.LatLng(lat, lng))
+          );
+        });
+      });
+
+      if (!bounds.isEmpty()) {
+        mapRef.current.fitBounds(bounds, 60); // padding
+      }
+    },
+    [isLoaded]
+  );
+
+
   const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
     drawingMgrRef.current = dm;
   }, []);
@@ -771,8 +802,24 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
-                return (
-                  <li key={a.id} className="border rounded-lg p-3">
+               return (
+  <li
+    key={a.id}
+    role="button"
+    tabIndex={0}
+    onClick={() => zoomToArea(a)}                 // ✅ click = zoom
+    onKeyDown={(e) => {                          // ✅ keyboard access
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        zoomToArea(a);
+      }
+    }}
+    title="Click to zoom to this area"
+    className={`border rounded-lg p-3 cursor-pointer transition-colors
+      hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10
+      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}  // ✅ highlight sponsored only
+  >
+
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{a.name}</div>
