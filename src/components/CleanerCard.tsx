@@ -38,6 +38,7 @@ export type CleanerCardProps = {
 
   /** For analytics attribution (preferred if available) */
   areaId?: string | null;
+
   /** Fallback so the DB can compute area when areaId is missing */
   searchLat?: number | null;
   searchLng?: number | null;
@@ -126,8 +127,13 @@ export default function CleanerCard({
     else window.location.href = href;
   }
 
+  /**
+   * ✅ FIXED analytics logging:
+   * - If areaId exists -> record_event (RPC)
+   * - Else if point exists -> record_event_from_point (RPC)
+   * - Else -> SKIP (do NOT call record_event with areaId null)
+   */
   function logClick(event: "click_message" | "click_website" | "click_phone") {
-    // If categoryId is missing, we still log (but per-industry analytics will be incomplete).
     if (areaId) {
       recordEventBeacon({
         cleanerId: cleaner.id,
@@ -136,13 +142,15 @@ export default function CleanerCard({
         event,
         sessionId,
       });
-    } else if (
+      return;
+    }
+
+    if (
       typeof searchLat === "number" &&
-      isFinite(searchLat) &&
+      Number.isFinite(searchLat) &&
       typeof searchLng === "number" &&
-      isFinite(searchLng)
+      Number.isFinite(searchLng)
     ) {
-      // No areaId on the client → let the DB determine it from the point
       recordEventFromPointBeacon({
         cleanerId: cleaner.id,
         lat: searchLat,
@@ -151,16 +159,15 @@ export default function CleanerCard({
         event,
         sessionId,
       });
-    } else {
-      // Last resort: still send without area; DB will store null area_id
-      recordEventBeacon({
-        cleanerId: cleaner.id,
-        areaId: null,
-        categoryId,
-        event,
-        sessionId,
-      });
+      return;
     }
+
+    // No usable analytics attribution => skip
+    console.warn("Analytics skipped (missing areaId and lat/lng)", {
+      cleanerId: cleaner.id,
+      event,
+      categoryId,
+    });
   }
 
   return (
@@ -191,9 +198,7 @@ export default function CleanerCard({
             <div className="truncate text-lg font-bold">{cleaner.business_name}</div>
             {isFiniteNumber(cleaner.rating_avg) && (
               <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2 py-0.5 text-xs ring-1 ring-blue-200">
-                <span className="font-semibold">
-                  {Number(cleaner.rating_avg).toFixed(2)}
-                </span>
+                <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
                 {isFiniteNumber(cleaner.rating_count) && (
                   <span className="opacity-70">({cleaner.rating_count})</span>
                 )}
@@ -232,18 +237,12 @@ export default function CleanerCard({
           <div className="min-w-0 flex flex-col justify-between">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <div className="truncate text-xl md:text-2xl font-bold">
-                  {cleaner.business_name}
-                </div>
+                <div className="truncate text-xl md:text-2xl font-bold">{cleaner.business_name}</div>
                 {isFiniteNumber(cleaner.rating_avg) && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 text-blue-700 px-2.5 py-1 text-sm ring-1 ring-blue-200">
-                    <span className="font-semibold">
-                      {Number(cleaner.rating_avg).toFixed(2)}
-                    </span>
+                    <span className="font-semibold">{Number(cleaner.rating_avg).toFixed(2)}</span>
                     {isFiniteNumber(cleaner.rating_count) && (
-                      <span className="opacity-70">
-                        ({cleaner.rating_count} reviews)
-                      </span>
+                      <span className="opacity-70">({cleaner.rating_count} reviews)</span>
                     )}
                   </span>
                 )}
@@ -251,9 +250,7 @@ export default function CleanerCard({
 
               {cleaner.service_types?.length ? (
                 <div className="pt-3">
-                  <div className="text-sm font-medium text-night-800 mb-1.5">
-                    Services
-                  </div>
+                  <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
                   <div className="flex flex-wrap gap-1.5">
                     {cleaner.service_types.map((s, i) => (
                       <ServicePill key={`svc-${i}`} kind={s} />
@@ -265,9 +262,7 @@ export default function CleanerCard({
 
             {(showPayments ?? true) && cleaner.payment_methods?.length ? (
               <div className="pt-3 border-t border-black/5">
-                <div className="text-sm font-medium text-night-800 mb-1.5">
-                  Payments Accepted
-                </div>
+                <div className="text-sm font-medium text-night-800 mb-1.5">Payments Accepted</div>
                 <div className="flex flex-wrap gap-1.5">
                   {cleaner.payment_methods.map((m, i) => (
                     <PaymentPill key={`pay-${i}`} kind={m} />
@@ -522,7 +517,6 @@ function EnquiryModal(props: {
     categoryId,
   } = props;
 
-  // local logger inside modal
   function logClickModal(event: "click_message" | "click_website" | "click_phone") {
     if (areaId) {
       recordEventBeacon({
@@ -532,11 +526,14 @@ function EnquiryModal(props: {
         event,
         sessionId,
       });
-    } else if (
+      return;
+    }
+
+    if (
       typeof searchLat === "number" &&
-      isFinite(searchLat) &&
+      Number.isFinite(searchLat) &&
       typeof searchLng === "number" &&
-      isFinite(searchLng)
+      Number.isFinite(searchLng)
     ) {
       recordEventFromPointBeacon({
         cleanerId: cleaner.id,
@@ -546,15 +543,14 @@ function EnquiryModal(props: {
         event,
         sessionId,
       });
-    } else {
-      recordEventBeacon({
-        cleanerId: cleaner.id,
-        areaId: null,
-        categoryId,
-        event,
-        sessionId,
-      });
+      return;
     }
+
+    console.warn("Analytics skipped in modal (missing areaId and lat/lng)", {
+      cleanerId: cleaner.id,
+      event,
+      categoryId,
+    });
   }
 
   return (
@@ -606,6 +602,7 @@ function EnquiryModal(props: {
                   required
                 />
               </div>
+
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">Phone</label>
                 <input
@@ -713,7 +710,6 @@ function EnquiryModal(props: {
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
 
-                  // record Email message click
                   logClickModal("click_message");
 
                   try {
@@ -758,8 +754,7 @@ function detectIsMobile() {
   const ua = navigator.userAgent || "";
   const touchPoints = (navigator as any).maxTouchPoints || 0;
   const coarse =
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(pointer: coarse)").matches;
+    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
   const iPadOS = /Macintosh/.test(ua) && touchPoints > 1; // iPadOS 13+ Safari
   return mobileUA || iPadOS || coarse;
@@ -782,7 +777,8 @@ function normalizeWebsite(raw: string) {
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44"))
+    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
   if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
