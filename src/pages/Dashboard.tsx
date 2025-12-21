@@ -45,7 +45,6 @@ export default function Dashboard() {
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
   const [openingPortal, setOpeningPortal] = useState(false);
 
-  // ✅ Not a hook: safe to compute before early returns
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
   useEffect(() => {
@@ -212,8 +211,10 @@ export default function Dashboard() {
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
 
-  // ✅ Key used to force a full remount when switching industry
   const industryKey = `${cleaner.id}:${activeCategoryId ?? "none"}`;
+
+  // ✅ NEW: keep Analytics deep link on the same industry tab
+  const analyticsLink = activeCategoryId ? `/analytics?category=${activeCategoryId}` : "/analytics";
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -264,7 +265,6 @@ export default function Dashboard() {
         </section>
       ) : (
         <>
-          {/* Profile summary */}
           <section className="card">
             <div className="card-pad grid grid-cols-[auto_1fr_auto] items-center gap-4">
               {cleaner.logo_url ? (
@@ -293,7 +293,6 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* Browser-style tabs + content panel */}
           <section className="card">
             <div className="card-pad space-y-4">
               <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -306,7 +305,6 @@ export default function Dashboard() {
                 </Link>
               </div>
 
-              {/* Tabs row (Chrome-ish) */}
               {categories.length ? (
                 <div className="border-b border-ink-200 flex gap-1 overflow-x-auto">
                   {categories.map((t) => {
@@ -317,13 +315,12 @@ export default function Dashboard() {
                         type="button"
                         onClick={() => setActiveCategoryId(t.id)}
                         className={[
-  "relative -mb-px px-4 py-2 text-sm font-semibold whitespace-nowrap",
-  "border border-b-0 rounded-t-lg transition",
-  active
-    ? "bg-white text-ink-900 border-ink-300 shadow-[0_-1px_0_#fff,0_2px_10px_rgba(0,0,0,0.06)]"
-    : "bg-gray-100 text-gray-500 border-ink-200 hover:bg-gray-50 hover:text-gray-700",
-].join(" ")}
-
+                          "relative -mb-px px-4 py-2 text-sm font-semibold whitespace-nowrap",
+                          "border border-b-0 rounded-t-lg transition",
+                          active
+                            ? "bg-white text-ink-900 border-ink-300 shadow-[0_-1px_0_#fff,0_2px_10px_rgba(0,0,0,0.06)]"
+                            : "bg-gray-100 text-gray-500 border-ink-200 hover:bg-gray-50 hover:text-gray-700",
+                        ].join(" ")}
                       >
                         {t.name}
                       </button>
@@ -340,45 +337,37 @@ export default function Dashboard() {
                 </div>
               )}
 
-              {/* Panel content changes per tab */}
               {activeCategoryId ? (
                 <div className="space-y-6" key={industryKey}>
-                  {/* Analytics */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Analytics</h3>
-                      <Link to="/analytics" className="text-sm underline">
+
+                      {/* ✅ UPDATED: keep category in the link */}
+                      <Link to={analyticsLink} className="text-sm underline">
                         View full stats →
                       </Link>
                     </div>
 
-                    {/* ✅ key forces remount when switching tab */}
+                    {/* ✅ Pass cleanerId + categoryId properly */}
                     <AnalyticsOverview
                       key={`analytics:${industryKey}`}
-                      {...({
-                        cleanerId: cleaner.id,
-                        categoryId: activeCategoryId,
-                        categorySlug: activeCategory?.slug ?? null,
-                      } as any)}
+                      cleanerId={cleaner.id}
+                      categoryId={activeCategoryId}
                     />
                   </div>
 
-                  {/* Service Areas */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Your Service Areas</h3>
                     </div>
 
                     <div className="rounded-xl overflow-hidden border">
-                      {/* ✅ key forces remount when switching tab */}
                       <ServiceAreaEditor
                         key={`areas:${industryKey}`}
-                        {...({
-                          cleanerId: cleaner.id,
-                          sponsorshipVersion,
-                          categoryId: activeCategoryId,
-                          categorySlug: activeCategory?.slug ?? null,
-                        } as any)}
+                        cleanerId={cleaner.id}
+                        sponsorshipVersion={sponsorshipVersion}
+                        categoryId={activeCategoryId}
                       />
                     </div>
                   </div>
