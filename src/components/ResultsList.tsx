@@ -22,7 +22,7 @@ type Props = {
   searchLat?: number | null;
   searchLng?: number | null;
 
-  /** ✅ current industry category id (optional, but needed for per-industry analytics) */
+  /** ✅ IMPORTANT: pass industry/category id so clicks match impressions */
   categoryId?: string | null;
 };
 
@@ -71,13 +71,10 @@ export default function ResultsList({
             cleaner={cleaner}
             postcodeHint={postcode}
             showPayments
-            /* IMPORTANT: gives clicks the correct area */
             areaId={c.area_id ?? null}
-            /* Fallback so DB can determine area if areaId missing */
             searchLat={searchLat}
             searchLng={searchLng}
-            /* ✅ ensures clicks are attributed to the selected industry */
-            categoryId={c.category_id ?? categoryId ?? null}
+            categoryId={categoryId}   // ✅ THIS is the missing piece
           />
         );
       })}
