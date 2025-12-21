@@ -3,14 +3,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { PaymentPill } from "./icons/payments";
 import { ServicePill } from "./icons/services";
-import { supabase } from "../lib/supabase";
 import {
   recordEventBeacon,
   recordEventFromPointBeacon,
   getOrCreateSessionId,
 } from "../lib/analytics";
 
-// Broad type to match Settings/ResultsList usage
 export type Cleaner = {
   id: string;
   business_name: string;
@@ -24,8 +22,8 @@ export type Cleaner = {
   rating_avg?: number | null;
   rating_count?: number | null;
 
-  payment_methods?: string[] | null; // ["bank_transfer","gocardless","paypal","cash","stripe","card_machine"]
-  service_types?: string[] | null; // ["domestic","commercial"]
+  payment_methods?: string[] | null;
+  service_types?: string[] | null;
 };
 
 export type CleanerCardProps = {
@@ -43,7 +41,7 @@ export type CleanerCardProps = {
   searchLat?: number | null;
   searchLng?: number | null;
 
-  /** Industry tab id (required for per-industry analytics) */
+  /** ✅ Industry id (required for per-industry analytics) */
   categoryId?: string | null;
 };
 
@@ -57,67 +55,6 @@ type EnquiryPayload = {
   email: string;
   message: string;
 };
-
-function readCategoryFromUrl(): string | null {
-  try {
-    // Works with hash routing (#/path?x=y) and normal (?x=y)
-    const hash = window.location.hash || "";
-    const qIndex = hash.indexOf("?");
-    const hashSearch = qIndex >= 0 ? hash.slice(qIndex) : "";
-    const spHash = new URLSearchParams(hashSearch);
-
-    const sp = new URLSearchParams(window.location.search);
-
-    const cat =
-      spHash.get("category") ||
-      sp.get("category") ||
-      spHash.get("categoryId") ||
-      sp.get("categoryId");
-
-    if (cat && /^[0-9a-fA-F-]{36}$/.test(cat)) return cat;
-
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function readServiceSlugFromUrl(): string | null {
-  try {
-    const hash = window.location.hash || "";
-    const qIndex = hash.indexOf("?");
-    const hashSearch = qIndex >= 0 ? hash.slice(qIndex) : "";
-    const spHash = new URLSearchParams(hashSearch);
-
-    const sp = new URLSearchParams(window.location.search);
-
-    const slug =
-      spHash.get("service") ||
-      sp.get("service") ||
-      spHash.get("slug") ||
-      sp.get("slug") ||
-      spHash.get("serviceSlug") ||
-      sp.get("serviceSlug");
-
-    return slug ? String(slug) : null;
-  } catch {
-    return null;
-  }
-}
-
-async function lookupCategoryIdBySlug(slug: string): Promise<string | null> {
-  try {
-    const { data, error } = await supabase
-      .from("service_categories")
-      .select("id")
-      .eq("slug", slug)
-      .maybeSingle();
-    if (error) return null;
-    return data?.id ?? null;
-  } catch {
-    return null;
-  }
-}
 
 export default function CleanerCard({
   cleaner,
@@ -143,45 +80,6 @@ export default function CleanerCard({
 
   // Session id for analytics
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
-
-  // ✅ ensure we always have a categoryId if possible
-  const [resolvedCategoryId, setResolvedCategoryId] = useState<string | null>(
-    categoryId ?? null
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      // 1) prefer prop
-      if (categoryId && !cancelled) {
-        setResolvedCategoryId(categoryId);
-        return;
-      }
-
-      // 2) try URL param ?category=UUID
-      const fromUrl = readCategoryFromUrl();
-      if (fromUrl && !cancelled) {
-        setResolvedCategoryId(fromUrl);
-        return;
-      }
-
-      // 3) try URL slug (?service=bin-cleaner) then lookup id
-      const slug = readServiceSlugFromUrl();
-      if (slug) {
-        const id = await lookupCategoryIdBySlug(slug);
-        if (!cancelled) setResolvedCategoryId(id);
-        return;
-      }
-
-      // 4) nothing
-      if (!cancelled) setResolvedCategoryId(null);
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [categoryId]);
 
   // Device checks
   const [isMobile, setIsMobile] = useState(false);
@@ -220,64 +118,53 @@ export default function CleanerCard({
     return normalizeWebsite(cleaner.website);
   }, [cleaner.website]);
 
+  /** Core logger: always include categoryId; use areaId if available else point */
   function logClick(event: "click_message" | "click_website" | "click_phone") {
-    const category_id = resolvedCategoryId ?? null;
+    try {
+      if (areaId) {
+        recordEventBeacon({
+          cleanerId: cleaner.id,
+          areaId,
+          categoryId: categoryId ?? null,
+          event,
+          sessionId,
+        });
+        return;
+      }
 
-    // Helpful debugging context
-    const meta = {
-      source: "CleanerCard",
-      href: typeof window !== "undefined" ? window.location.href : "",
-      has_area_id: Boolean(areaId),
-      has_point: typeof searchLat === "number" && typeof searchLng === "number",
-    };
+      if (
+        typeof searchLat === "number" &&
+        Number.isFinite(searchLat) &&
+        typeof searchLng === "number" &&
+        Number.isFinite(searchLng)
+      ) {
+        recordEventFromPointBeacon({
+          cleanerId: cleaner.id,
+          lat: searchLat,
+          lng: searchLng,
+          categoryId: categoryId ?? null,
+          event,
+          sessionId,
+        });
+        return;
+      }
 
-    // ✅ IMPORTANT: recordEvent() requires areaId; don’t call it when areaId is null.
-    if (areaId) {
+      // last resort: no area and no point
       recordEventBeacon({
         cleanerId: cleaner.id,
-        areaId,
-        categoryId: category_id,
+        areaId: null,
+        categoryId: categoryId ?? null,
         event,
         sessionId,
-        meta,
-      }).catch((e) => console.warn("recordEventBeacon error", e));
-      return;
+      });
+    } catch (e) {
+      console.warn("logClick failed", e);
     }
-
-    // If areaId missing, prefer point-based logging
-    if (
-      typeof searchLat === "number" &&
-      isFinite(searchLat) &&
-      typeof searchLng === "number" &&
-      isFinite(searchLng)
-    ) {
-      recordEventFromPointBeacon({
-        cleanerId: cleaner.id,
-        lat: searchLat,
-        lng: searchLng,
-        categoryId: category_id,
-        event,
-        sessionId,
-        meta,
-      }).catch((e) => console.warn("recordEventFromPointBeacon error", e));
-      return;
-    }
-
-    // Last resort: no areaId and no lat/lng → still attempt via recordEventBeacon
-    // but with a fake meta marker; if your RPC requires area_id, this may fail.
-    recordEventBeacon({
-      cleanerId: cleaner.id,
-      areaId: null,
-      categoryId: category_id,
-      event,
-      sessionId,
-      meta: { ...meta, note: "no areaId + no point" },
-    }).catch((e) => console.warn("recordEventBeacon(no-area) error", e));
   }
 
   return (
     <div className="bg-white text-night-900 rounded-xl shadow-soft border border-black/5 p-3 sm:p-5">
-      {/* MOBILE HEADER (sm:hidden) */}
+      {/* MOBILE HEADER */}
       <div className="sm:hidden">
         <button
           type="button"
@@ -395,8 +282,11 @@ export default function CleanerCard({
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
-            onMouseDown={() => logClick("click_message")}
-            onClick={() => setShowEnquiry(true)}
+            onPointerDown={() => logClick("click_message")}
+            onClick={() => {
+              logClick("click_message");
+              setShowEnquiry(true);
+            }}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
@@ -417,7 +307,7 @@ export default function CleanerCard({
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                  onMouseDown={() => logClick("click_phone")}
+                  onPointerDown={() => logClick("click_phone")}
                   onClick={() => setShowPhone(false)}
                   title="Tap to call"
                 >
@@ -433,7 +323,9 @@ export default function CleanerCard({
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
+              onPointerDown={() => logClick("click_website")}
               onClick={(e) => {
+                // ensure log always fires, then open
                 e.preventDefault();
                 logClick("click_website");
                 window.open(websiteHref, "_blank", "noopener,noreferrer");
@@ -445,7 +337,7 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* DETAILS SECTION (mobile collapsible) */}
+      {/* MOBILE DETAILS */}
       <div
         id={`card-details-${cleaner.id}`}
         className={`sm:hidden transition-[grid-template-rows,opacity] duration-200 ${
@@ -457,9 +349,7 @@ export default function CleanerCard({
         <div className="min-h-0 overflow-hidden">
           {cleaner.service_types?.length ? (
             <div className="pt-2">
-              <div className="text-sm font-medium text-night-800 mb-1.5">
-                Services
-              </div>
+              <div className="text-sm font-medium text-night-800 mb-1.5">Services</div>
               <div className="flex flex-wrap gap-1.5">
                 {cleaner.service_types.map((s, i) => (
                   <ServicePill key={`msvc-${i}`} kind={s} />
@@ -484,8 +374,11 @@ export default function CleanerCard({
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              onMouseDown={() => logClick("click_message")}
-              onClick={() => setShowEnquiry(true)}
+              onPointerDown={() => logClick("click_message")}
+              onClick={() => {
+                logClick("click_message");
+                setShowEnquiry(true);
+              }}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
             >
               Message
@@ -506,7 +399,7 @@ export default function CleanerCard({
                   <a
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                    onMouseDown={() => logClick("click_phone")}
+                    onPointerDown={() => logClick("click_phone")}
                     onClick={() => setShowPhone(false)}
                     title="Tap to call"
                   >
@@ -522,6 +415,7 @@ export default function CleanerCard({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
+                onPointerDown={() => logClick("click_website")}
                 onClick={(e) => {
                   e.preventDefault();
                   logClick("click_website");
@@ -561,18 +455,19 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
+          // analytics context
           areaId={areaId}
           sessionId={sessionId}
           searchLat={searchLat}
           searchLng={searchLng}
-          categoryId={resolvedCategoryId}
+          categoryId={categoryId}
         />
       )}
     </div>
   );
 }
 
-/* -------- Enquiry Modal extracted to keep file readable -------- */
+/* -------- Enquiry Modal extracted -------- */
 function EnquiryModal(props: {
   cleaner: Cleaner;
   onClose: () => void;
@@ -635,46 +530,45 @@ function EnquiryModal(props: {
   } = props;
 
   function logClickModal(event: "click_message" | "click_website" | "click_phone") {
-    const meta = { source: "EnquiryModal" };
+    try {
+      if (areaId) {
+        recordEventBeacon({
+          cleanerId: cleaner.id,
+          areaId,
+          categoryId: categoryId ?? null,
+          event,
+          sessionId,
+        });
+        return;
+      }
 
-    if (areaId) {
+      if (
+        typeof searchLat === "number" &&
+        Number.isFinite(searchLat) &&
+        typeof searchLng === "number" &&
+        Number.isFinite(searchLng)
+      ) {
+        recordEventFromPointBeacon({
+          cleanerId: cleaner.id,
+          lat: searchLat,
+          lng: searchLng,
+          categoryId: categoryId ?? null,
+          event,
+          sessionId,
+        });
+        return;
+      }
+
       recordEventBeacon({
         cleanerId: cleaner.id,
-        areaId,
-        categoryId,
+        areaId: null,
+        categoryId: categoryId ?? null,
         event,
         sessionId,
-        meta,
-      }).catch((e) => console.warn("recordEventBeacon(modal) error", e));
-      return;
+      });
+    } catch (e) {
+      console.warn("logClickModal failed", e);
     }
-
-    if (
-      typeof searchLat === "number" &&
-      isFinite(searchLat) &&
-      typeof searchLng === "number" &&
-      isFinite(searchLng)
-    ) {
-      recordEventFromPointBeacon({
-        cleanerId: cleaner.id,
-        lat: searchLat,
-        lng: searchLng,
-        categoryId,
-        event,
-        sessionId,
-        meta,
-      }).catch((e) => console.warn("recordEventFromPointBeacon(modal) error", e));
-      return;
-    }
-
-    recordEventBeacon({
-      cleanerId: cleaner.id,
-      areaId: null,
-      categoryId,
-      event,
-      sessionId,
-      meta: { ...meta, note: "no areaId + no point" },
-    }).catch((e) => console.warn("recordEventBeacon(modal no-area) error", e));
   }
 
   return (
@@ -738,9 +632,7 @@ function EnquiryModal(props: {
                         const p = autocompleteRef.current?.getPlace?.();
                         const value = p?.formatted_address || p?.name || "";
                         if (value) setAddress(value);
-                      } catch {
-                        /* noop */
-                      }
+                      } catch {}
                     }}
                   >
                     <input
@@ -809,7 +701,8 @@ function EnquiryModal(props: {
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                  onMouseDown={() => logClickModal("click_message")}
+                  onPointerDown={() => logClickModal("click_message")}
+                  onClick={() => logClickModal("click_message")}
                 >
                   Send via WhatsApp
                 </a>
@@ -818,12 +711,11 @@ function EnquiryModal(props: {
               <button
                 type="button"
                 disabled={!!submitting}
+                onPointerDown={() => logClickModal("click_message")}
                 onClick={async () => {
                   setError(null);
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
-
-                  logClickModal("click_message");
 
                   try {
                     setSubmitting("email");
@@ -851,6 +743,7 @@ function EnquiryModal(props: {
                 {submitting === "email" ? "Sending…" : "Send via Email"}
               </button>
             </div>
+
             <p className="text-xs text-night-600 pt-2">
               We’ll include your details in the message so {cleaner.business_name} can reply.
             </p>
@@ -867,7 +760,8 @@ function detectIsMobile() {
   const ua = navigator.userAgent || "";
   const touchPoints = (navigator as any).maxTouchPoints || 0;
   const coarse =
-    typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
   const mobileUA = /Android|iPhone|iPad|iPod|IEMobile|Opera Mini/i.test(ua);
   const iPadOS = /Macintosh/.test(ua) && touchPoints > 1;
   return mobileUA || iPadOS || coarse;
@@ -876,24 +770,30 @@ function detectIsMobile() {
 function digitsOnly(s: string) {
   return s.replace(/[^\d+]/g, "");
 }
+
 function normalizeWhatsApp(input: string) {
   if (input.startsWith("http")) return input;
   const d = digitsOnly(input);
   const noPlus = d.startsWith("+") ? d.slice(1) : d;
   return `https://wa.me/${noPlus}`;
 }
+
 function normalizeWebsite(raw: string) {
   let url = raw.trim();
   if (!/^https?:\/\//i.test(url)) url = "https://" + url;
   return url;
 }
+
 function prettyPhone(p?: string) {
   if (!p) return "";
   const d = digitsOnly(p);
-  if (d.startsWith("+44")) return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
-  if (d.length === 11 && d.startsWith("0")) return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.startsWith("+44"))
+    return "+44 " + d.slice(3).replace(/(\d{4})(\d{3})(\d{3})/, "$1 $2 $3");
+  if (d.length === 11 && d.startsWith("0"))
+    return d.replace(/(\d{5})(\d{3})(\d{3})/, "$1 $2 $3");
   return p;
 }
+
 function isFiniteNumber(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
 }
