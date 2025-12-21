@@ -31,14 +31,17 @@ export default function Analytics() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   const qs = useHashSearchParams();
-  const categoryId = qs.get("category"); // <- from #/analytics?category=...
+  const categoryId = (qs.get("category") ?? "").trim() || null;
 
   async function loadRows() {
     try {
       setErr(null);
       setLoading(true);
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
       const uid = session?.user?.id;
       if (!uid) throw new Error("You’re not signed in.");
 
@@ -53,7 +56,9 @@ export default function Analytics() {
 
       let query = supabase
         .from("area_stats_30d")
-        .select("area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id, category_id")
+        .select(
+          "area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id, category_id"
+        )
         .eq("cleaner_id", cleaner.id);
 
       if (categoryId) query = query.eq("category_id", categoryId);
@@ -87,7 +92,6 @@ export default function Analytics() {
       window.removeEventListener("visibilitychange", onFocus);
       window.removeEventListener("focus", onFocus);
     };
-    // reload if category changes
   }, [categoryId]);
 
   const filtered = useMemo(() => {
@@ -131,6 +135,11 @@ export default function Analytics() {
           {lastUpdated && (
             <div className="text-xs text-gray-500 mt-1">
               Last updated {lastUpdated.toLocaleTimeString()}
+            </div>
+          )}
+          {categoryId && (
+            <div className="text-xs text-gray-500 mt-1">
+              Filtered to industry: <span className="font-mono">{categoryId}</span>
             </div>
           )}
         </div>
