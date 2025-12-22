@@ -10,7 +10,6 @@ type RecordEventInput = {
   meta?: Record<string, any>;
 };
 
-/** Stable per-device session id */
 export function getOrCreateSessionId() {
   const key = "cl_session_id";
   let v = localStorage.getItem(key);
@@ -21,16 +20,11 @@ export function getOrCreateSessionId() {
   return v;
 }
 
+// ✅ IMPORTANT: hit Netlify function directly (no redirect)
 function endpoint() {
-  // Uses your netlify redirect:
-  // /api/record_event -> /.netlify/functions/record_event
-  return "/api/record_event";
+  return "/.netlify/functions/record_event";
 }
 
-/**
- * Main sender. Uses sendBeacon when possible, otherwise fetch.
- * IMPORTANT: We do NOT require auth/cookies for this.
- */
 export async function recordEventBeacon(input: RecordEventInput) {
   const body = {
     cleaner_id: input.cleanerId,
@@ -43,25 +37,12 @@ export async function recordEventBeacon(input: RecordEventInput) {
     meta: input.meta ?? {},
   };
 
-  const url = endpoint();
-  const payload = JSON.stringify(body);
-
-  // Try beacon first (best for click tracking)
-  try {
-    if (navigator.sendBeacon) {
-      const blob = new Blob([payload], { type: "application/json" });
-      const ok = navigator.sendBeacon(url, blob);
-      if (ok) return;
-    }
-  } catch {
-    // ignore and fall back to fetch
-  }
-
-  // Fallback to fetch
-  const res = await fetch(url, {
+  // ✅ Force fetch so it always shows in Fetch/XHR
+  const res = await fetch(endpoint(), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: payload,
+    body: JSON.stringify(body),
+    // keepalive helps on navigation
     keepalive: true,
   });
 
@@ -71,11 +52,9 @@ export async function recordEventBeacon(input: RecordEventInput) {
   }
 }
 
-/**
- * If you have a lat/lng and want to store it as columns too.
- * (Some backends use these to resolve area_id server-side.)
- */
-export function recordEventFromPointBeacon(input: Omit<RecordEventInput, "lat" | "lng"> & { lat: number; lng: number }) {
+export function recordEventFromPointBeacon(
+  input: Omit<RecordEventInput, "lat" | "lng"> & { lat: number; lng: number }
+) {
   return recordEventBeacon({
     ...input,
     lat: input.lat,
