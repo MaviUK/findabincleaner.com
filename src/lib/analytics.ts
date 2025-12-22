@@ -2,62 +2,61 @@
 type RecordEventInput = {
   cleanerId: string;
   event: "impression" | "click_message" | "click_phone" | "click_website";
-  sessionId?: string;
+  sessionId?: string | null;
   categoryId?: string | null;
   areaId?: string | null;
-  lat?: number | null;
-  lng?: number | null;
   meta?: Record<string, any>;
 };
 
-export function getOrCreateSessionId() {
-  const key = "cl_session_id";
-  let v = localStorage.getItem(key);
-  if (!v) {
-    v = crypto.randomUUID();
-    localStorage.setItem(key, v);
+const SESSION_KEY = "cleanly_session_id";
+
+export function getOrCreateSessionId(): string {
+  try {
+    const existing = localStorage.getItem(SESSION_KEY);
+    if (existing) return existing;
+    const id = crypto.randomUUID();
+    localStorage.setItem(SESSION_KEY, id);
+    return id;
+  } catch {
+    // If storage blocked, still return a usable id per page load
+    return crypto.randomUUID();
   }
-  return v;
 }
 
-// ✅ IMPORTANT: hit Netlify function directly (no redirect)
-function endpoint() {
-  return "/.netlify/functions/record_event";
-}
-
-export async function recordEventBeacon(input: RecordEventInput) {
-  const body = {
+/**
+ * Fire-and-forget event recorder.
+ * Uses fetch(keepalive) to avoid beacon inconsistencies across browsers/adblock.
+ * Hits /api/record_event which you redirect to the Netlify function.
+ */
+export async function recordEventBeacon(input: RecordEventInput): Promise<void> {
+  const payload = {
     cleaner_id: input.cleanerId,
     event: input.event,
-    session_id: input.sessionId ?? getOrCreateSessionId(),
+    session_id: input.sessionId ?? null,
     category_id: input.categoryId ?? null,
     area_id: input.areaId ?? null,
-    lat: input.lat ?? null,
-    lng: input.lng ?? null,
     meta: input.meta ?? {},
   };
 
-  // ✅ Force fetch so it always shows in Fetch/XHR
-  const res = await fetch(endpoint(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    // keepalive helps on navigation
-    keepalive: true,
-  });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    throw new Error(`record_event failed: ${res.status} ${txt}`);
+  try {
+    await fetch("/api/record_event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // keepalive allows the request to complete even when navigating away
+      keepalive: true,
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    // fallback (direct functions path) if redirects/proxies fail for any reason
+    try {
+      await fetch("/.netlify/functions/record_event", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        keepalive: true,
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // swallow
+    }
   }
-}
-
-export function recordEventFromPointBeacon(
-  input: Omit<RecordEventInput, "lat" | "lng"> & { lat: number; lng: number }
-) {
-  return recordEventBeacon({
-    ...input,
-    lat: input.lat,
-    lng: input.lng,
-  });
 }
