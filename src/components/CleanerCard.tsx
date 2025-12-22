@@ -1,17 +1,17 @@
 // src/components/CleanerCard.tsx
 import { useMemo } from "react";
-import { recordEventBeacon } from "../lib/analytics";
+import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type Cleaner = {
   id: string;
   business_name: string | null;
   logo_url: string | null;
-  distance_m: number | null;
   website: string | null;
   phone: string | null;
-  whatsapp?: string | null;
-  rating_avg?: number | null;
-  rating_count?: number | null;
+  whatsapp: string | null;
+  distance_m: number | null;
+  rating_avg: number | null;
+  rating_count: number | null;
   payment_methods?: string[];
   service_types?: string[];
 };
@@ -20,30 +20,19 @@ type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   showPayments?: boolean;
+
+  /** IMPORTANT for analytics */
   areaId?: string | null;
   categoryId?: string | null;
+
+  /** optional fallback if your backend ever uses it */
   searchLat?: number | null;
   searchLng?: number | null;
 };
 
-function fmtDistance(m: number | null) {
-  if (m == null) return null;
-  if (m < 1000) return `${Math.round(m)} m`;
+function km(m?: number | null) {
+  if (!m && m !== 0) return null;
   return `${(m / 1000).toFixed(1)} km`;
-}
-
-function normalizeWebsite(url: string) {
-  const trimmed = url.trim();
-  if (!trimmed) return "";
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
-  return `https://${trimmed}`;
-}
-
-function toWhatsAppLink(raw: string, text: string) {
-  const digits = raw.replace(/[^\d+]/g, "");
-  const phone = digits.startsWith("+") ? digits : `+44${digits.replace(/^0/, "")}`;
-  const msg = encodeURIComponent(text);
-  return `https://wa.me/${phone.replace("+", "")}?text=${msg}`;
 }
 
 export default function CleanerCard({
@@ -55,102 +44,110 @@ export default function CleanerCard({
   searchLat = null,
   searchLng = null,
 }: Props) {
-  const distanceLabel = useMemo(() => fmtDistance(cleaner.distance_m), [cleaner.distance_m]);
+  const displayName = cleaner.business_name || "Cleaner";
 
-  async function log(event: "click_message" | "click_phone" | "click_website") {
-    await recordEventBeacon({
-      cleanerId: cleaner.id,
-      event,
-      categoryId,
-      areaId,
-      meta: {
-        postcode_hint: postcodeHint ?? null,
-        search_lat: searchLat ?? null,
-        search_lng: searchLng ?? null,
-      },
-    });
+  const logo = useMemo(() => {
+    return cleaner.logo_url || "";
+  }, [cleaner.logo_url]);
+
+  async function logClick(event: "click_message" | "click_phone" | "click_website") {
+    try {
+      const sessionId = getOrCreateSessionId();
+      await recordEventBeacon({
+        cleanerId: cleaner.id,
+        event,
+        sessionId,
+        categoryId: categoryId ?? null,
+        areaId: areaId ?? null,
+        meta: {
+          postcode_hint: postcodeHint ?? null,
+          search_lat: searchLat ?? null,
+          search_lng: searchLng ?? null,
+        },
+      });
+    } catch {
+      // ignore
+    }
   }
 
-  const msgText = `Hi! I found you on Clean.ly${postcodeHint ? ` (search: ${postcodeHint})` : ""}. Can I get a quote?`;
+  const phoneHref = cleaner.phone ? `tel:${cleaner.phone}` : null;
+  const websiteHref = cleaner.website || null;
 
-  const onMessage = async () => {
-    if (!cleaner.whatsapp) return;
-    try { await log("click_message"); } catch {}
-    window.open(toWhatsAppLink(cleaner.whatsapp, msgText), "_blank", "noopener,noreferrer");
-  };
-
-  const onPhone = async () => {
-    if (!cleaner.phone) return;
-    try { await log("click_phone"); } catch {}
-    window.location.href = `tel:${cleaner.phone}`;
-  };
-
-  const onWebsite = async () => {
-    if (!cleaner.website) return;
-    try { await log("click_website"); } catch {}
-    window.open(normalizeWebsite(cleaner.website), "_blank", "noopener,noreferrer");
-  };
+  // WhatsApp: prefer whatsapp field, fallback to phone if present
+  const wa = (cleaner.whatsapp || "").trim();
+  const whatsappHref = wa
+    ? wa.startsWith("http")
+      ? wa
+      : `https://wa.me/${wa.replace(/[^\d]/g, "")}`
+    : cleaner.phone
+    ? `https://wa.me/${cleaner.phone.replace(/[^\d]/g, "")}`
+    : null;
 
   return (
-    <div className="rounded-2xl border border-black/10 bg-white p-5 shadow-sm">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4 min-w-0">
-          <div className="h-24 w-24 rounded-2xl bg-gray-100 overflow-hidden shrink-0">
-            {cleaner.logo_url ? (
-              <img
-                src={cleaner.logo_url}
-                alt={cleaner.business_name ?? "Cleaner"}
-                className="h-full w-full object-cover"
-                loading="lazy"
-              />
-            ) : null}
-          </div>
+    <div className="rounded-2xl border border-black/10 bg-white shadow-sm p-6 flex items-center gap-6">
+      <div className="h-28 w-28 rounded-2xl overflow-hidden bg-gray-100 flex items-center justify-center shrink-0">
+        {logo ? (
+          <img src={logo} alt={displayName} className="h-full w-full object-cover" />
+        ) : (
+          <div className="text-gray-400 text-sm">No logo</div>
+        )}
+      </div>
 
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-xl font-bold truncate">{cleaner.business_name ?? "Unnamed cleaner"}</h3>
-              {distanceLabel ? <span className="text-sm text-gray-500 shrink-0">{distanceLabel}</span> : null}
-            </div>
-
-            {showPayments && cleaner.payment_methods?.length ? (
-              <div className="mt-2 text-sm text-gray-700 truncate">
-                <span className="font-medium">Payments:</span> {cleaner.payment_methods.join(", ")}
-              </div>
-            ) : null}
-          </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-3">
+          <div className="text-xl font-bold truncate">{displayName}</div>
+          {cleaner.distance_m != null && (
+            <div className="text-sm text-gray-500">{km(cleaner.distance_m)}</div>
+          )}
         </div>
 
-        <div className="flex flex-col gap-2 w-40 shrink-0">
-          <button
-            onClick={onMessage}
-            disabled={!cleaner.whatsapp}
-            className={`h-10 rounded-full text-sm font-semibold ${
-              cleaner.whatsapp ? "bg-red-500 text-white hover:bg-red-600" : "bg-gray-200 text-gray-500 cursor-not-allowed"
-            }`}
-          >
-            Message
-          </button>
+        {showPayments && cleaner.payment_methods?.length ? (
+          <div className="mt-2 text-sm text-gray-600">
+            Payments: {cleaner.payment_methods.join(", ")}
+          </div>
+        ) : null}
+      </div>
 
-          <button
-            onClick={onPhone}
-            disabled={!cleaner.phone}
-            className={`h-10 rounded-full text-sm font-semibold border ${
-              cleaner.phone ? "border-blue-300 text-blue-700 hover:bg-blue-50" : "border-gray-200 text-gray-500 cursor-not-allowed"
-            }`}
-          >
-            Phone
-          </button>
+      <div className="flex flex-col gap-2 w-44 shrink-0">
+        {/* MESSAGE */}
+        <button
+          type="button"
+          className="h-10 rounded-full bg-red-500 text-white font-semibold hover:bg-red-600"
+          onClick={async () => {
+            // message = whatsapp if present, else phone fallback
+            await logClick("click_message");
+            if (whatsappHref) window.open(whatsappHref, "_blank", "noopener,noreferrer");
+            else if (phoneHref) window.location.href = phoneHref;
+          }}
+        >
+          Message
+        </button>
 
-          <button
-            onClick={onWebsite}
-            disabled={!cleaner.website}
-            className={`h-10 rounded-full text-sm font-semibold border ${
-              cleaner.website ? "border-gray-200 text-gray-800 hover:bg-gray-50" : "border-gray-200 text-gray-500 cursor-not-allowed"
-            }`}
-          >
-            Website
-          </button>
-        </div>
+        {/* PHONE */}
+        <button
+          type="button"
+          className="h-10 rounded-full border border-blue-300 text-blue-700 font-semibold hover:bg-blue-50"
+          disabled={!phoneHref}
+          onClick={async () => {
+            await logClick("click_phone");
+            if (phoneHref) window.location.href = phoneHref;
+          }}
+        >
+          Phone
+        </button>
+
+        {/* WEBSITE */}
+        <button
+          type="button"
+          className="h-10 rounded-full border border-gray-200 text-gray-900 font-semibold hover:bg-gray-50"
+          disabled={!websiteHref}
+          onClick={async () => {
+            await logClick("click_website");
+            if (websiteHref) window.open(websiteHref, "_blank", "noopener,noreferrer");
+          }}
+        >
+          Website
+        </button>
       </div>
     </div>
   );
