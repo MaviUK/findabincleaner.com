@@ -53,8 +53,12 @@ export default function ResultsList({
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
-          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
+          payment_methods: toArr(
+            c.payment_methods ?? c.payment_methods_accepted ?? c.payments
+          ),
+          service_types: toArr(
+            c.service_types ?? c.services ?? c.service_types_supported
+          ),
         };
 
         return (
@@ -63,12 +67,12 @@ export default function ResultsList({
             cleaner={cleaner}
             postcodeHint={postcode}
             showPayments
-            /* IMPORTANT: gives clicks the correct area */
+            /* ✅ correct area attribution for clicks */
             areaId={c.area_id ?? null}
-            /* Fallback so DB can determine area if areaId missing */
+            /* ✅ fallback point if needed */
             searchLat={searchLat}
             searchLng={searchLng}
-            /* ✅ THE FIX: gives clicks the correct industry */
+            /* ✅ FIX: pass category so clicks show under "This industry" */
             categoryId={c.category_id ?? null}
           />
         );
