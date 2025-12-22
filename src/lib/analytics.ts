@@ -1,116 +1,66 @@
 // src/lib/analytics.ts
-import { supabase } from "./supabase";
+type RecordEventArgs = {
+  cleanerId: string;
+  event: "impression" | "click_message" | "click_phone" | "click_website";
+  sessionId?: string | null;
+  categoryId?: string | null;
+  areaId?: string | null;
+  meta?: Record<string, any>;
+};
 
-type Json =
-  | string
-  | number
-  | boolean
-  | null
-  | { [key: string]: Json }
-  | Json[];
+const SESSION_KEY = "cleanly_session_id";
 
-export type AnalyticsEvent =
-  | "impression"
-  | "click_message"
-  | "click_phone"
-  | "click_website";
+/**
+ * Always call the Netlify Function directly to avoid SPA redirect rules.
+ * This removes the 300 redirect problem.
+ */
+function recordEventUrl() {
+  // e.g. https://findabincleaner.netlify.app/.netlify/functions/record_event
+  return `${window.location.origin}/.netlify/functions/record_event`;
+}
 
-export function getOrCreateSessionId(): string {
+export function getOrCreateSessionId() {
   try {
-    const key = "cl_session_id";
-    const existing = localStorage.getItem(key);
+    const existing = localStorage.getItem(SESSION_KEY);
     if (existing) return existing;
-
     const id = crypto.randomUUID();
-    localStorage.setItem(key, id);
+    localStorage.setItem(SESSION_KEY, id);
     return id;
   } catch {
+    // fallback if localStorage blocked
     return crypto.randomUUID();
   }
 }
 
-type RecordEventArgs = {
-  cleanerId: string;
-  event: AnalyticsEvent;
-  sessionId?: string;
-  areaId?: string | null;
-  categoryId?: string | null;
-  meta?: Record<string, Json>;
-};
-
-type RecordEventFromPointArgs = {
-  cleanerId: string;
-  lat: number;
-  lng: number;
-  event: AnalyticsEvent;
-  sessionId?: string;
-  categoryId?: string | null;
-  meta?: Record<string, Json>;
-};
-
 /**
- * Area-based RPC. If areaId is missing, we DO NOT throw (so click logging doesn’t die).
- * Caller should use recordEventFromPointBeacon when possible.
+ * Reliable "beacon-like" POST.
+ * - keepalive lets it send while navigating away.
+ * - no sendBeacon (some browsers/extensions block it).
  */
-export async function recordEvent({
-  cleanerId,
-  areaId,
-  event,
-  sessionId,
-  categoryId,
-  meta,
-}: RecordEventArgs) {
-  const sid = sessionId ?? getOrCreateSessionId();
-
-  // If we don’t have an areaId, we can’t use this RPC.
-  // Return silently rather than throwing.
-  if (!areaId) return;
-
-  const payload: any = {
-    p_cleaner_id: cleanerId,
-    p_area_id: areaId,
-    p_event: event,
-    p_session_id: sid,
-    p_meta: meta ?? {},
-    p_category_id: categoryId ?? null,
-  };
-
-  const { error } = await supabase.rpc("record_event", payload);
-  if (error) throw error;
-}
-
-/**
- * Point-based RPC.
- */
-export async function recordEventFromPointBeacon({
-  cleanerId,
-  lat,
-  lng,
-  event,
-  sessionId,
-  categoryId,
-  meta,
-}: RecordEventFromPointArgs) {
-  const sid = sessionId ?? getOrCreateSessionId();
-
-  const payload: any = {
-    p_cleaner_id: cleanerId,
-    p_lat: lat,
-    p_lng: lng,
-    p_event: event,
-    p_session_id: sid,
-    p_meta: meta ?? {},
-    p_category_id: categoryId ?? null,
-  };
-
-  const { error } = await supabase.rpc("record_event_from_point", payload);
-  if (error) throw error;
-}
-
-/** Keep old names so imports don’t break */
 export async function recordEventBeacon(args: RecordEventArgs) {
-  return recordEvent(args);
-}
-export async function recordEventFromPoint(args: RecordEventFromPointArgs) {
-  return recordEventFromPointBeacon(args);
+  const payload = {
+    cleaner_id: args.cleanerId,
+    event: args.event,
+    session_id: args.sessionId ?? getOrCreateSessionId(),
+    category_id: args.categoryId ?? null,
+    area_id: args.areaId ?? null,
+    meta: args.meta ?? {},
+  };
+
+  const url = recordEventUrl();
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+    // Important for page navigation events:
+    keepalive: true,
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`record_event failed ${res.status}: ${txt}`);
+  }
+
+  return true;
 }
