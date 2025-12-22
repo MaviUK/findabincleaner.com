@@ -128,6 +128,7 @@
 
 
 [[redirects]]
-  from = "/api/record_event"
-  to = "/.netlify/functions/record_event"
-  status = 200
+from = "/api/record_event"
+to = "/.netlify/functions/record_event"
+status = 200
+
