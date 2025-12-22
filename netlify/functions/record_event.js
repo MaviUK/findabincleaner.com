@@ -3,17 +3,16 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  // IMPORTANT: service role so inserts always work server-side
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE
 );
 
 export async function handler(event) {
-  // Basic CORS
+  // CORS
   const headers = {
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
-    "access-control-allow-methods": "POST, OPTIONS",
-    "content-type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Content-Type": "application/json",
   };
 
   if (event.httpMethod === "OPTIONS") {
@@ -24,7 +23,7 @@ export async function handler(event) {
     return {
       statusCode: 405,
       headers,
-      body: JSON.stringify({ error: "Method not allowed" }),
+      body: JSON.stringify({ ok: false, error: "Method not allowed" }),
     };
   }
 
@@ -38,7 +37,10 @@ export async function handler(event) {
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ error: "Missing cleaner_id or event" }),
+        body: JSON.stringify({
+          ok: false,
+          error: "Missing cleaner_id or event",
+        }),
       };
     }
 
@@ -57,7 +59,7 @@ export async function handler(event) {
       return {
         statusCode: 500,
         headers,
-        body: JSON.stringify({ error: error.message }),
+        body: JSON.stringify({ ok: false, error: error.message, row }),
       };
     }
 
@@ -70,7 +72,7 @@ export async function handler(event) {
     return {
       statusCode: 500,
       headers,
-      body: JSON.stringify({ error: e?.message || "Unknown error" }),
+      body: JSON.stringify({ ok: false, error: String(e) }),
     };
   }
 }
