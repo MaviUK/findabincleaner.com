@@ -9,6 +9,7 @@ import {
   getOrCreateSessionId,
 } from "../lib/analytics";
 
+// Broad type to match Settings/ResultsList usage
 export type Cleaner = {
   id: string;
   business_name: string;
@@ -41,7 +42,7 @@ export type CleanerCardProps = {
   searchLat?: number | null;
   searchLng?: number | null;
 
-  /** ✅ Industry id (required for per-industry analytics) */
+  /** ✅ category id for per-industry analytics */
   categoryId?: string | null;
 };
 
@@ -118,48 +119,47 @@ export default function CleanerCard({
     return normalizeWebsite(cleaner.website);
   }, [cleaner.website]);
 
-  /** Core logger: always include categoryId; use areaId if available else point */
+  // ✅ Normalize categoryId so we don’t accidentally pass "" (empty string)
+  const categoryFilter = (categoryId ?? "").trim() || null;
+
   function logClick(event: "click_message" | "click_website" | "click_phone") {
-    try {
-      if (areaId) {
-        recordEventBeacon({
-          cleanerId: cleaner.id,
-          areaId,
-          categoryId: categoryId ?? null,
-          event,
-          sessionId,
-        });
-        return;
-      }
-
-      if (
-        typeof searchLat === "number" &&
-        Number.isFinite(searchLat) &&
-        typeof searchLng === "number" &&
-        Number.isFinite(searchLng)
-      ) {
-        recordEventFromPointBeacon({
-          cleanerId: cleaner.id,
-          lat: searchLat,
-          lng: searchLng,
-          categoryId: categoryId ?? null,
-          event,
-          sessionId,
-        });
-        return;
-      }
-
-      // last resort: no area and no point
+    // Prefer explicit areaId; fall back to point if needed
+    if (areaId) {
       recordEventBeacon({
         cleanerId: cleaner.id,
-        areaId: null,
-        categoryId: categoryId ?? null,
+        areaId,
+        categoryId: categoryFilter,
         event,
         sessionId,
       });
-    } catch (e) {
-      console.warn("logClick failed", e);
+      return;
     }
+
+    if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        categoryId: categoryFilter,
+        event,
+        sessionId,
+      });
+      return;
+    }
+
+    // Last resort
+    recordEventBeacon({
+      cleanerId: cleaner.id,
+      areaId: null,
+      categoryId: categoryFilter,
+      event,
+      sessionId,
+    });
   }
 
   return (
@@ -278,15 +278,12 @@ export default function CleanerCard({
           </div>
         </div>
 
-        {/* Desktop actions */}
+        {/* Desktop actions column */}
         <div className="self-stretch flex flex-col items-end justify-center gap-2 shrink-0">
           <button
             type="button"
-            onPointerDown={() => logClick("click_message")}
-            onClick={() => {
-              logClick("click_message");
-              setShowEnquiry(true);
-            }}
+            onMouseDown={() => logClick("click_message")}
+            onClick={() => setShowEnquiry(true)}
             className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
           >
             Message
@@ -307,7 +304,7 @@ export default function CleanerCard({
                 <a
                   href={`tel:${digitsOnly(cleaner.phone)}`}
                   className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                  onPointerDown={() => logClick("click_phone")}
+                  onMouseDown={() => logClick("click_phone")}
                   onClick={() => setShowPhone(false)}
                   title="Tap to call"
                 >
@@ -323,9 +320,7 @@ export default function CleanerCard({
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center justify-center rounded-full h-10 w-40 text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
-              onPointerDown={() => logClick("click_website")}
               onClick={(e) => {
-                // ensure log always fires, then open
                 e.preventDefault();
                 logClick("click_website");
                 window.open(websiteHref, "_blank", "noopener,noreferrer");
@@ -337,7 +332,7 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* MOBILE DETAILS */}
+      {/* DETAILS SECTION (mobile collapsible) */}
       <div
         id={`card-details-${cleaner.id}`}
         className={`sm:hidden transition-[grid-template-rows,opacity] duration-200 ${
@@ -374,11 +369,8 @@ export default function CleanerCard({
           <div className="pt-3 grid grid-cols-1 gap-2">
             <button
               type="button"
-              onPointerDown={() => logClick("click_message")}
-              onClick={() => {
-                logClick("click_message");
-                setShowEnquiry(true);
-              }}
+              onMouseDown={() => logClick("click_message")}
+              onClick={() => setShowEnquiry(true)}
               className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-[#F44336] text-white hover:bg-[#E53935] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#F44336]/60"
             >
               Message
@@ -399,7 +391,7 @@ export default function CleanerCard({
                   <a
                     href={`tel:${digitsOnly(cleaner.phone)}`}
                     className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-[#1D4ED8]/50"
-                    onPointerDown={() => logClick("click_phone")}
+                    onMouseDown={() => logClick("click_phone")}
                     onClick={() => setShowPhone(false)}
                     title="Tap to call"
                   >
@@ -415,7 +407,6 @@ export default function CleanerCard({
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center justify-center rounded-full h-11 w-full text-sm font-semibold bg-white text-[#0B1B2A] ring-1 ring-black/10 hover:ring-black/20"
-                onPointerDown={() => logClick("click_website")}
                 onClick={(e) => {
                   e.preventDefault();
                   logClick("click_website");
@@ -455,12 +446,11 @@ export default function CleanerCard({
           }}
           hasPlaces={hasPlaces}
           autocompleteRef={autocompleteRef}
-          // analytics context
           areaId={areaId}
           sessionId={sessionId}
           searchLat={searchLat}
           searchLng={searchLng}
-          categoryId={categoryId}
+          categoryId={categoryFilter}
         />
       )}
     </div>
@@ -530,49 +520,48 @@ function EnquiryModal(props: {
   } = props;
 
   function logClickModal(event: "click_message" | "click_website" | "click_phone") {
-    try {
-      if (areaId) {
-        recordEventBeacon({
-          cleanerId: cleaner.id,
-          areaId,
-          categoryId: categoryId ?? null,
-          event,
-          sessionId,
-        });
-        return;
-      }
-
-      if (
-        typeof searchLat === "number" &&
-        Number.isFinite(searchLat) &&
-        typeof searchLng === "number" &&
-        Number.isFinite(searchLng)
-      ) {
-        recordEventFromPointBeacon({
-          cleanerId: cleaner.id,
-          lat: searchLat,
-          lng: searchLng,
-          categoryId: categoryId ?? null,
-          event,
-          sessionId,
-        });
-        return;
-      }
-
+    if (areaId) {
       recordEventBeacon({
         cleanerId: cleaner.id,
-        areaId: null,
-        categoryId: categoryId ?? null,
+        areaId,
+        categoryId,
         event,
         sessionId,
       });
-    } catch (e) {
-      console.warn("logClickModal failed", e);
+      return;
     }
+    if (
+      typeof searchLat === "number" &&
+      isFinite(searchLat) &&
+      typeof searchLng === "number" &&
+      isFinite(searchLng)
+    ) {
+      recordEventFromPointBeacon({
+        cleanerId: cleaner.id,
+        lat: searchLat,
+        lng: searchLng,
+        categoryId,
+        event,
+        sessionId,
+      });
+      return;
+    }
+    recordEventBeacon({
+      cleanerId: cleaner.id,
+      areaId: null,
+      categoryId,
+      event,
+      sessionId,
+    });
   }
 
   return (
-    <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-labelledby="enquiry-title">
+    <div
+      className="fixed inset-0 z-40"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="enquiry-title"
+    >
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="absolute inset-0 z-50 flex sm:items-center sm:justify-center sm:p-6">
         <div className="relative w-full sm:max-w-xl bg-white shadow-xl ring-1 ring-black/10 sm:rounded-2xl sm:max-h-[calc(100vh-4rem)] h-[100dvh] sm:h-auto rounded-none sm:rounded-2xl flex flex-col overflow-hidden">
@@ -597,7 +586,10 @@ function EnquiryModal(props: {
             </div>
           </div>
 
-          <form className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4" onSubmit={(e) => e.preventDefault()}>
+          <form
+            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4"
+            onSubmit={(e) => e.preventDefault()}
+          >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-sm font-medium">Name</label>
@@ -701,8 +693,7 @@ function EnquiryModal(props: {
                   target="_blank"
                   rel="noreferrer"
                   className="inline-flex items-center justify-center rounded-full h-11 px-5 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                  onPointerDown={() => logClickModal("click_message")}
-                  onClick={() => logClickModal("click_message")}
+                  onMouseDown={() => logClickModal("click_message")}
                 >
                   Send via WhatsApp
                 </a>
@@ -711,11 +702,12 @@ function EnquiryModal(props: {
               <button
                 type="button"
                 disabled={!!submitting}
-                onPointerDown={() => logClickModal("click_message")}
                 onClick={async () => {
                   setError(null);
                   if (!name.trim()) return setError("Please add your name.");
                   if (!message.trim()) return setError("Please add a short message.");
+
+                  logClickModal("click_message");
 
                   try {
                     setSubmitting("email");
@@ -743,7 +735,6 @@ function EnquiryModal(props: {
                 {submitting === "email" ? "Sending…" : "Send via Email"}
               </button>
             </div>
-
             <p className="text-xs text-night-600 pt-2">
               We’ll include your details in the message so {cleaner.business_name} can reply.
             </p>
@@ -800,7 +791,14 @@ function isFiniteNumber(x: unknown): x is number {
 
 function buildWhatsAppUrl(
   wa: string,
-  data: { business: string; name: string; address: string; phone: string; email: string; message: string }
+  data: {
+    business: string;
+    name: string;
+    address: string;
+    phone: string;
+    email: string;
+    message: string;
+  }
 ) {
   const base = normalizeWhatsApp(wa);
   const text =
