@@ -20,12 +20,8 @@ type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   showPayments?: boolean;
-
-  /** ✅ these are used for analytics attribution */
   areaId?: string | null;
   categoryId?: string | null;
-
-  /** ✅ fallback area lookup needs these (optional) */
   searchLat?: number | null;
   searchLng?: number | null;
 };
@@ -44,7 +40,6 @@ function normalizeWebsite(url: string) {
 }
 
 function toWhatsAppLink(raw: string, text: string) {
-  // raw can be "+447..." or "075..." etc.
   const digits = raw.replace(/[^\d+]/g, "");
   const phone = digits.startsWith("+") ? digits : `+44${digits.replace(/^0/, "")}`;
   const msg = encodeURIComponent(text);
@@ -62,48 +57,37 @@ export default function CleanerCard({
 }: Props) {
   const distanceLabel = useMemo(() => fmtDistance(cleaner.distance_m), [cleaner.distance_m]);
 
-  const hasWhatsApp = Boolean(cleaner.whatsapp);
-  const hasPhone = Boolean(cleaner.phone);
-  const hasWebsite = Boolean(cleaner.website);
-
   async function log(event: "click_message" | "click_phone" | "click_website") {
-    try {
-      await recordEventBeacon({
-        cleanerId: cleaner.id,
-        event,
-        categoryId: categoryId ?? null,
-        areaId: areaId ?? null,
-        meta: {
-          postcode_hint: postcodeHint ?? null,
-          search_lat: searchLat ?? null,
-          search_lng: searchLng ?? null,
-        },
-      });
-    } catch (e) {
-      // don’t block UX if analytics fails
-      console.warn("recordEventBeacon failed:", e);
-    }
+    await recordEventBeacon({
+      cleanerId: cleaner.id,
+      event,
+      categoryId,
+      areaId,
+      meta: {
+        postcode_hint: postcodeHint ?? null,
+        search_lat: searchLat ?? null,
+        search_lng: searchLng ?? null,
+      },
+    });
   }
 
-  const msgText = `Hi! I found you on Clean.ly${
-    postcodeHint ? ` (search: ${postcodeHint})` : ""
-  }. Can I get a quote?`;
+  const msgText = `Hi! I found you on Clean.ly${postcodeHint ? ` (search: ${postcodeHint})` : ""}. Can I get a quote?`;
 
   const onMessage = async () => {
     if (!cleaner.whatsapp) return;
-    await log("click_message");
+    try { await log("click_message"); } catch {}
     window.open(toWhatsAppLink(cleaner.whatsapp, msgText), "_blank", "noopener,noreferrer");
   };
 
   const onPhone = async () => {
     if (!cleaner.phone) return;
-    await log("click_phone");
+    try { await log("click_phone"); } catch {}
     window.location.href = `tel:${cleaner.phone}`;
   };
 
   const onWebsite = async () => {
     if (!cleaner.website) return;
-    await log("click_website");
+    try { await log("click_website"); } catch {}
     window.open(normalizeWebsite(cleaner.website), "_blank", "noopener,noreferrer");
   };
 
@@ -124,39 +108,24 @@ export default function CleanerCard({
 
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h3 className="text-xl font-bold truncate">
-                {cleaner.business_name ?? "Unnamed cleaner"}
-              </h3>
-              {distanceLabel ? (
-                <span className="text-sm text-gray-500 shrink-0">{distanceLabel}</span>
-              ) : null}
+              <h3 className="text-xl font-bold truncate">{cleaner.business_name ?? "Unnamed cleaner"}</h3>
+              {distanceLabel ? <span className="text-sm text-gray-500 shrink-0">{distanceLabel}</span> : null}
             </div>
-
-            {(cleaner.rating_avg != null || cleaner.rating_count != null) && (
-              <div className="text-sm text-gray-600 mt-1">
-                {cleaner.rating_avg != null ? cleaner.rating_avg.toFixed(1) : "—"}★{" "}
-                {cleaner.rating_count != null ? `(${cleaner.rating_count})` : ""}
-              </div>
-            )}
 
             {showPayments && cleaner.payment_methods?.length ? (
               <div className="mt-2 text-sm text-gray-700 truncate">
-                <span className="font-medium">Payments:</span>{" "}
-                {cleaner.payment_methods.join(", ")}
+                <span className="font-medium">Payments:</span> {cleaner.payment_methods.join(", ")}
               </div>
             ) : null}
           </div>
         </div>
 
-        {/* Actions */}
         <div className="flex flex-col gap-2 w-40 shrink-0">
           <button
             onClick={onMessage}
-            disabled={!hasWhatsApp}
+            disabled={!cleaner.whatsapp}
             className={`h-10 rounded-full text-sm font-semibold ${
-              hasWhatsApp
-                ? "bg-red-500 text-white hover:bg-red-600"
-                : "bg-gray-200 text-gray-500 cursor-not-allowed"
+              cleaner.whatsapp ? "bg-red-500 text-white hover:bg-red-600" : "bg-gray-200 text-gray-500 cursor-not-allowed"
             }`}
           >
             Message
@@ -164,11 +133,9 @@ export default function CleanerCard({
 
           <button
             onClick={onPhone}
-            disabled={!hasPhone}
+            disabled={!cleaner.phone}
             className={`h-10 rounded-full text-sm font-semibold border ${
-              hasPhone
-                ? "border-blue-300 text-blue-700 hover:bg-blue-50"
-                : "border-gray-200 text-gray-500 cursor-not-allowed"
+              cleaner.phone ? "border-blue-300 text-blue-700 hover:bg-blue-50" : "border-gray-200 text-gray-500 cursor-not-allowed"
             }`}
           >
             Phone
@@ -176,11 +143,9 @@ export default function CleanerCard({
 
           <button
             onClick={onWebsite}
-            disabled={!hasWebsite}
+            disabled={!cleaner.website}
             className={`h-10 rounded-full text-sm font-semibold border ${
-              hasWebsite
-                ? "border-gray-200 text-gray-800 hover:bg-gray-50"
-                : "border-gray-200 text-gray-500 cursor-not-allowed"
+              cleaner.website ? "border-gray-200 text-gray-800 hover:bg-gray-50" : "border-gray-200 text-gray-500 cursor-not-allowed"
             }`}
           >
             Website
