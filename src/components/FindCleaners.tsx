@@ -1,7 +1,7 @@
 // src/components/FindCleaners.tsx
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { supabase } from "../lib/supabase";
-import { recordEventFromPointBeacon, getOrCreateSessionId } from "../lib/analytics";
+import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
@@ -53,7 +53,7 @@ export type MatchOut = {
   area_name?: string | null;
   is_covering_sponsor?: boolean;
 
-  /** ✅ IMPORTANT: carry the category id through to cards so clicks log correctly */
+  /** ✅ IMPORTANT: carry category id so clicks can log "This industry" */
   category_id?: string | null;
 };
 
@@ -119,7 +119,7 @@ export default function FindCleaners({
     };
   }, [serviceSlug]);
 
-  async function lookup(ev?: React.FormEvent) {
+  async function lookup(ev?: FormEvent) {
     ev?.preventDefault();
     setError(null);
 
@@ -188,7 +188,7 @@ export default function FindCleaners({
       // ✅ category id for THIS serviceSlug (bin/window/general)
       const categoryId = categoryIdRef.current;
 
-      // 3) Normalize + attach category_id to each result (so clicks can use it)
+      // 3) Normalize + attach category_id so cards can log clicks correctly
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -204,8 +204,6 @@ export default function FindCleaners({
         area_id: m.area_id ?? null,
         area_name: m.area_name ?? null,
         is_covering_sponsor: Boolean(m.is_covering_sponsor),
-
-        // ✅ the fix
         category_id: categoryId,
       }));
 
@@ -217,13 +215,13 @@ export default function FindCleaners({
         return hasPhone || hasWhatsApp || hasWebsite;
       });
 
-      // 4) Record impressions (one per result) with categoryId written to column
+      // 4) Record impressions
+      // ✅ IMPORTANT: write analytics_events.area_id using the actual area_id from the RPC result
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
-        // simple de-dupe so we don't spam on re-renders
         const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
           5
         )}|${liveOnly.length}`;
@@ -232,33 +230,31 @@ export default function FindCleaners({
           lastImpressionKey.current = impressionKey;
 
           await Promise.all(
-  liveOnly.map((r, idx) =>
-    recordEventBeacon({
-      cleanerId: r.cleaner_id,
-      areaId: r.area_id ?? null,              // ✅ THIS populates analytics_events.area_id
-      categoryId: r.category_id ?? null,      // ✅ keeps category_id
-      event: "impression",
-      sessionId,
-      meta: {
-        search_id: searchId,
-        postcode: pc,
-        town,
-        locality: town,
-        service_slug: serviceSlug,
-        area_id: r.area_id ?? null,
-        area_name: r.area_name ?? null,
-        position: idx + 1,
-        is_sponsored: Boolean(r.is_covering_sponsor),
-        results_count: liveOnly.length,
-        sponsored_count: sponsoredCount,
-        // (optional) keep lat/lng if you want them for debugging
-        lat,
-        lng,
-      },
-    })
-  )
-);
-
+            liveOnly.map((r, idx) =>
+              recordEventBeacon({
+                cleanerId: r.cleaner_id,
+                areaId: r.area_id ?? null, // ✅ this fixes Stats-by-Area grouping
+                categoryId: r.category_id ?? null, // ✅ this fixes "This industry"
+                event: "impression",
+                sessionId,
+                meta: {
+                  search_id: searchId,
+                  postcode: pc,
+                  town,
+                  locality: town,
+                  service_slug: serviceSlug,
+                  area_id: r.area_id ?? null,
+                  area_name: r.area_name ?? null,
+                  position: idx + 1,
+                  is_sponsored: Boolean(r.is_covering_sponsor),
+                  results_count: liveOnly.length,
+                  sponsored_count: sponsoredCount,
+                  lat,
+                  lng,
+                },
+              })
+            )
+          );
         }
       } catch (e) {
         console.warn("recordEvent(impression) error", e);
@@ -306,4 +302,3 @@ export default function FindCleaners({
     </div>
   );
 }
-
