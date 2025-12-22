@@ -1,7 +1,13 @@
 // src/lib/analytics.ts
+export type AnalyticsEvent =
+  | "impression"
+  | "click_message"
+  | "click_phone"
+  | "click_website";
+
 type RecordEventInput = {
   cleanerId: string;
-  event: "impression" | "click_message" | "click_phone" | "click_website";
+  event: AnalyticsEvent;
   sessionId?: string | null;
   categoryId?: string | null;
   areaId?: string | null;
@@ -22,7 +28,7 @@ export function getOrCreateSessionId(): string {
   }
 }
 
-export async function recordEventBeacon(input: RecordEventInput): Promise<void> {
+export async function recordEvent(input: RecordEventInput): Promise<void> {
   const payload = {
     cleaner_id: input.cleanerId,
     event: input.event,
@@ -34,18 +40,19 @@ export async function recordEventBeacon(input: RecordEventInput): Promise<void> 
 
   const url = `${window.location.origin}/api/record_event`;
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    keepalive: true,
-    body: JSON.stringify(payload),
-  });
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      keepalive: true,
+      body: JSON.stringify(payload),
+    });
 
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    console.error("record_event failed:", res.status, txt, payload);
-  } else {
-    // helpful while debugging
-    // console.log("record_event ok:", payload.event);
+    if (!res.ok) {
+      const txt = await res.text().catch(() => "");
+      console.error("record_event failed:", res.status, txt, payload);
+    }
+  } catch (e) {
+    console.error("record_event fetch error:", e, payload);
   }
 }
