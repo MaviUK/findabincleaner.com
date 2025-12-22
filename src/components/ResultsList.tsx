@@ -18,11 +18,19 @@ type Props = {
   cleaners: any[];
   postcode: string;
   locality?: string;
+
+  /** lat/lng from the postcode lookup */
   searchLat?: number | null;
   searchLng?: number | null;
 };
 
-export default function ResultsList({ cleaners, postcode, locality, searchLat = null, searchLng = null }: Props) {
+export default function ResultsList({
+  cleaners,
+  postcode,
+  locality,
+  searchLat = null,
+  searchLng = null,
+}: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
     return (
