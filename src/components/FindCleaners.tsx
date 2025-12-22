@@ -1,13 +1,16 @@
 // src/components/FindCleaners.tsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { recordEventFromPointBeacon, getOrCreateSessionId } from "../lib/analytics";
+import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
+
+  /** lets the parent clear previous results immediately when a new search starts */
   onSearchStart?: () => void;
+
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -49,6 +52,8 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
+
+  /** carry category id to cards so clicks log with category_id */
   category_id?: string | null;
 };
 
@@ -60,7 +65,10 @@ function toArray(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -68,20 +76,26 @@ function toArray(v: unknown): string[] {
 const FRIENDLY_BAD_POSTCODE =
   "Hmm… we couldn’t recognise that postcode.\nDouble-check it or try a nearby postcode.";
 
-export default function FindCleaners({ onSearchComplete, onSearchStart, serviceSlug }: FindCleanersProps) {
+export default function FindCleaners({
+  onSearchComplete,
+  onSearchStart,
+  serviceSlug,
+}: FindCleanersProps) {
   const [postcode, setPostcode] = useState("");
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  // Prevent firing impression events multiple times for identical searches
   const lastImpressionKey = useRef<string>("");
+
+  // Cache the service_categories.id for the current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      categoryIdRef.current = null;
+    async function loadCategoryId() {
       try {
         const { data, error } = await supabase
           .from("service_categories")
@@ -89,13 +103,14 @@ export default function FindCleaners({ onSearchComplete, onSearchStart, serviceS
           .eq("slug", serviceSlug)
           .maybeSingle();
 
-        if (!cancelled) {
-          categoryIdRef.current = error ? null : data?.id ?? null;
-        }
+        if (!cancelled) categoryIdRef.current = error ? null : data?.id ?? null;
       } catch {
         if (!cancelled) categoryIdRef.current = null;
       }
-    })();
+    }
+
+    categoryIdRef.current = null;
+    void loadCategoryId();
 
     return () => {
       cancelled = true;
@@ -118,36 +133,47 @@ export default function FindCleaners({ onSearchComplete, onSearchStart, serviceS
     try {
       setLoading(true);
 
-      // 1) Geocode
-      const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`);
+      // 1) Geocode postcode
+      const res = await fetch(
+        `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
+      );
+
       if (!res.ok) {
-        if (res.status === 404 || res.status === 400) setError(FRIENDLY_BAD_POSTCODE);
-        else setError("Couldn’t look up that postcode. Please try again.");
+        onSearchStart?.();
+        if (res.status === 404 || res.status === 400) {
+          setError(FRIENDLY_BAD_POSTCODE);
+          return;
+        }
+        setError("Couldn’t look up that postcode. Please try again.");
         return;
       }
 
-      const data = await res.json();
-      if (data.status !== 200 || !data.result) {
+      const geo = await res.json();
+      if (geo.status !== 200 || !geo.result) {
+        onSearchStart?.();
         setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
 
-      const lat = Number(data.result.latitude);
-      const lng = Number(data.result.longitude);
-      const town =
-        data.result.post_town ||
-        data.result.admin_district ||
-        data.result.parliamentary_constituency ||
-        data.result.region ||
+      const lat: number = Number(geo.result.latitude);
+      const lng: number = Number(geo.result.longitude);
+      const town: string =
+        geo.result.post_town ||
+        geo.result.admin_district ||
+        geo.result.parliamentary_constituency ||
+        geo.result.region ||
         "";
 
-      // 2) Search
-      const { data: rows, error: rpcErr } = await supabase.rpc("search_cleaners_by_location", {
-        p_category_slug: serviceSlug,
-        p_lat: lat,
-        p_lng: lng,
-        p_limit: 50,
-      });
+      // 2) Search via RPC
+      const { data: rows, error: rpcErr } = await supabase.rpc(
+        "search_cleaners_by_location",
+        {
+          p_category_slug: serviceSlug,
+          p_lat: lat,
+          p_lng: lng,
+          p_limit: 50,
+        }
+      );
 
       if (rpcErr) {
         setError(rpcErr.message);
@@ -155,9 +181,9 @@ export default function FindCleaners({ onSearchComplete, onSearchStart, serviceS
       }
 
       const list = (rows || []) as MatchIn[];
-      const categoryId = categoryIdRef.current;
+      const categoryId = categoryIdRef.current; // category for this service tab
 
-      // 3) Normalize
+      // 3) Normalize + attach category_id
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -176,48 +202,55 @@ export default function FindCleaners({ onSearchComplete, onSearchStart, serviceS
         category_id: categoryId,
       }));
 
-      const liveOnly = normalized.filter((r) => Boolean(r.phone) || Boolean(r.whatsapp) || Boolean(r.website));
+      // Live-only filter
+      const liveOnly = normalized.filter((r) => {
+        return Boolean(r.phone) || Boolean(r.whatsapp) || Boolean(r.website);
+      });
 
-      // 4) Record impressions (you SHOULD see /api/record_event in Network)
+      // 4) Record impressions (writes REAL category_id + area_id columns)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
         const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
-        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(5)}|${liveOnly.length}`;
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
+          5
+        )}|${liveOnly.length}`;
+
         if (lastImpressionKey.current !== impressionKey) {
           lastImpressionKey.current = impressionKey;
 
           await Promise.all(
             liveOnly.map((r, idx) =>
-              recordEventFromPointBeacon({
+              recordEventBeacon({
                 cleanerId: r.cleaner_id,
                 event: "impression",
                 sessionId,
                 categoryId: r.category_id ?? null,
-                areaId: r.area_id ?? null,
-                lat,
-                lng,
+                areaId: r.area_id ?? null, // ✅ THIS fixes “area_id is null” in column
                 meta: {
                   search_id: searchId,
                   postcode: pc,
                   town,
                   locality: town,
                   service_slug: serviceSlug,
-                  area_name: r.area_name ?? null,
                   position: idx + 1,
                   is_sponsored: Boolean(r.is_covering_sponsor),
                   results_count: liveOnly.length,
                   sponsored_count: sponsoredCount,
+                  area_name: r.area_name ?? null,
+                  lat,
+                  lng,
                 },
               })
             )
           );
         }
       } catch (e) {
-        console.warn("recordEvent(impression) error", e);
+        console.warn("recordEvent(impression) failed", e);
       }
 
+      // 5) Update UI / bubble up
       if (!onSearchComplete) setResults(liveOnly);
       onSearchComplete?.(liveOnly, pc, town, lat, lng);
     } catch (e: any) {
