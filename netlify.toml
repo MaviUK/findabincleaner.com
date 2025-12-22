@@ -125,3 +125,9 @@
   from = "/*"
   to   = "/index.html"
   status = 200
+
+
+[[redirects]]
+  from = "/api/record_event"
+  to = "/.netlify/functions/record_event"
+  status = 200
