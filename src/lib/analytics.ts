@@ -1,66 +1,84 @@
 // src/lib/analytics.ts
-type RecordEventArgs = {
+type RecordEventInput = {
   cleanerId: string;
   event: "impression" | "click_message" | "click_phone" | "click_website";
-  sessionId?: string | null;
+  sessionId?: string;
   categoryId?: string | null;
   areaId?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   meta?: Record<string, any>;
 };
 
-const SESSION_KEY = "cleanly_session_id";
-
-/**
- * Always call the Netlify Function directly to avoid SPA redirect rules.
- * This removes the 300 redirect problem.
- */
-function recordEventUrl() {
-  // e.g. https://findabincleaner.netlify.app/.netlify/functions/record_event
-  return `${window.location.origin}/.netlify/functions/record_event`;
-}
-
+/** Stable per-device session id */
 export function getOrCreateSessionId() {
-  try {
-    const existing = localStorage.getItem(SESSION_KEY);
-    if (existing) return existing;
-    const id = crypto.randomUUID();
-    localStorage.setItem(SESSION_KEY, id);
-    return id;
-  } catch {
-    // fallback if localStorage blocked
-    return crypto.randomUUID();
+  const key = "cl_session_id";
+  let v = localStorage.getItem(key);
+  if (!v) {
+    v = crypto.randomUUID();
+    localStorage.setItem(key, v);
   }
+  return v;
+}
+
+function endpoint() {
+  // Uses your netlify redirect:
+  // /api/record_event -> /.netlify/functions/record_event
+  return "/api/record_event";
 }
 
 /**
- * Reliable "beacon-like" POST.
- * - keepalive lets it send while navigating away.
- * - no sendBeacon (some browsers/extensions block it).
+ * Main sender. Uses sendBeacon when possible, otherwise fetch.
+ * IMPORTANT: We do NOT require auth/cookies for this.
  */
-export async function recordEventBeacon(args: RecordEventArgs) {
-  const payload = {
-    cleaner_id: args.cleanerId,
-    event: args.event,
-    session_id: args.sessionId ?? getOrCreateSessionId(),
-    category_id: args.categoryId ?? null,
-    area_id: args.areaId ?? null,
-    meta: args.meta ?? {},
+export async function recordEventBeacon(input: RecordEventInput) {
+  const body = {
+    cleaner_id: input.cleanerId,
+    event: input.event,
+    session_id: input.sessionId ?? getOrCreateSessionId(),
+    category_id: input.categoryId ?? null,
+    area_id: input.areaId ?? null,
+    lat: input.lat ?? null,
+    lng: input.lng ?? null,
+    meta: input.meta ?? {},
   };
 
-  const url = recordEventUrl();
+  const url = endpoint();
+  const payload = JSON.stringify(body);
 
+  // Try beacon first (best for click tracking)
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([payload], { type: "application/json" });
+      const ok = navigator.sendBeacon(url, blob);
+      if (ok) return;
+    }
+  } catch {
+    // ignore and fall back to fetch
+  }
+
+  // Fallback to fetch
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload),
-    // Important for page navigation events:
+    headers: { "Content-Type": "application/json" },
+    body: payload,
     keepalive: true,
   });
 
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
-    throw new Error(`record_event failed ${res.status}: ${txt}`);
+    throw new Error(`record_event failed: ${res.status} ${txt}`);
   }
+}
 
-  return true;
+/**
+ * If you have a lat/lng and want to store it as columns too.
+ * (Some backends use these to resolve area_id server-side.)
+ */
+export function recordEventFromPointBeacon(input: Omit<RecordEventInput, "lat" | "lng"> & { lat: number; lng: number }) {
+  return recordEventBeacon({
+    ...input,
+    lat: input.lat,
+    lng: input.lng,
+  });
 }
