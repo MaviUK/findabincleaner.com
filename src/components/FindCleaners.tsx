@@ -1,5 +1,5 @@
 // src/components/FindCleaners.tsx
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { recordEventBeacon, getOrCreateSessionId } from "../lib/analytics";
 
@@ -7,10 +7,7 @@ export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
-
-  /** ✅ lets the parent clear previous results immediately when a new search starts */
   onSearchStart?: () => void;
-
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -52,9 +49,7 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-
-  /** ✅ IMPORTANT: carry category id so clicks can log "This industry" */
-  category_id?: string | null;
+  category_id?: string | null; // ✅ needed for clicks later
 };
 
 function toArray(v: unknown): string[] {
@@ -65,10 +60,7 @@ function toArray(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
 }
@@ -86,10 +78,9 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // Prevent firing impression events multiple times for identical searches
   const lastImpressionKey = useRef<string>("");
 
-  // Cache the service_categories.id for the current serviceSlug
+  // service_categories.id lookup
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -103,9 +94,7 @@ export default function FindCleaners({
           .eq("slug", serviceSlug)
           .maybeSingle();
 
-        if (!cancelled) {
-          categoryIdRef.current = error ? null : data?.id ?? null;
-        }
+        if (!cancelled) categoryIdRef.current = error ? null : data?.id ?? null;
       } catch {
         if (!cancelled) categoryIdRef.current = null;
       }
@@ -119,11 +108,10 @@ export default function FindCleaners({
     };
   }, [serviceSlug]);
 
-  async function lookup(ev?: FormEvent) {
+  async function lookup(ev?: React.FormEvent) {
     ev?.preventDefault();
     setError(null);
 
-    // ✅ clear previous results immediately when a new search starts
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -158,16 +146,16 @@ export default function FindCleaners({
         return;
       }
 
-      const lat: number = Number(data.result.latitude);
-      const lng: number = Number(data.result.longitude);
-      const town: string =
+      const lat = Number(data.result.latitude);
+      const lng = Number(data.result.longitude);
+      const town =
         data.result.post_town ||
         data.result.admin_district ||
         data.result.parliamentary_constituency ||
         data.result.region ||
         "";
 
-      // 2) Search via RPC (category slug overload)
+      // 2) RPC search
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
         {
@@ -184,11 +172,9 @@ export default function FindCleaners({
       }
 
       const list = (rows || []) as MatchIn[];
-
-      // ✅ category id for THIS serviceSlug (bin/window/general)
       const categoryId = categoryIdRef.current;
 
-      // 3) Normalize + attach category_id so cards can log clicks correctly
+      // 3) Normalize
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -204,19 +190,14 @@ export default function FindCleaners({
         area_id: m.area_id ?? null,
         area_name: m.area_name ?? null,
         is_covering_sponsor: Boolean(m.is_covering_sponsor),
-        category_id: categoryId,
+        category_id: categoryId, // ✅ carried forward to cards
       }));
 
-      // Optional “live only” filter
       const liveOnly = normalized.filter((r) => {
-        const hasPhone = Boolean(r.phone);
-        const hasWhatsApp = Boolean(r.whatsapp);
-        const hasWebsite = Boolean(r.website);
-        return hasPhone || hasWhatsApp || hasWebsite;
+        return Boolean(r.phone) || Boolean(r.whatsapp) || Boolean(r.website);
       });
 
-      // 4) Record impressions
-      // ✅ IMPORTANT: write analytics_events.area_id using the actual area_id from the RPC result
+      // 4) Record impressions (WRITE area_id column!)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
@@ -233,10 +214,10 @@ export default function FindCleaners({
             liveOnly.map((r, idx) =>
               recordEventBeacon({
                 cleanerId: r.cleaner_id,
-                areaId: r.area_id ?? null, // ✅ this fixes Stats-by-Area grouping
-                categoryId: r.category_id ?? null, // ✅ this fixes "This industry"
                 event: "impression",
                 sessionId,
+                categoryId: r.category_id ?? null,
+                areaId: r.area_id ?? null, // ✅ THIS FIXES YOUR NULL area_id
                 meta: {
                   search_id: searchId,
                   postcode: pc,
@@ -257,10 +238,10 @@ export default function FindCleaners({
           );
         }
       } catch (e) {
-        console.warn("recordEvent(impression) error", e);
+        console.warn("record impression failed", e);
       }
 
-      // 5) Update UI / bubble up
+      // 5) update UI / bubble up
       if (!onSearchComplete) setResults(liveOnly);
       onSearchComplete?.(liveOnly, pc, town, lat, lng);
     } catch (e: any) {
