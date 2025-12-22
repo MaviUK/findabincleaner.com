@@ -18,9 +18,19 @@ type Props = {
   cleaners: any[];
   postcode: string;
   locality?: string;
+
+  /** ✅ Pass these from the page that did the postcode → lat/lng lookup */
+  searchLat?: number | null;
+  searchLng?: number | null;
 };
 
-export default function ResultsList({ cleaners, postcode, locality }: Props) {
+export default function ResultsList({
+  cleaners,
+  postcode,
+  locality,
+  searchLat = null,
+  searchLng = null,
+}: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
     return (
@@ -38,14 +48,18 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
           id: c.id ?? c.cleaner_id,
           business_name: c.business_name,
           logo_url: c.logo_url,
+          distance_m: c.distance_meters ?? c.distance_m ?? null,
           website: c.website,
           phone: c.phone,
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          distance_m: c.distance_meters ?? c.distance_m ?? null,
-          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
-          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
+          payment_methods: toArr(
+            c.payment_methods ?? c.payment_methods_accepted ?? c.payments
+          ),
+          service_types: toArr(
+            c.service_types ?? c.services ?? c.service_types_supported
+          ),
         };
 
         return (
@@ -53,8 +67,11 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
             key={cleaner.id}
             cleaner={cleaner}
             postcodeHint={postcode}
-            areaId={c.area_id ?? null}          // ✅ IMPORTANT
-            categoryId={c.category_id ?? null}  // ✅ IMPORTANT
+            showPayments
+            areaId={c.area_id ?? null}
+            searchLat={searchLat}
+            searchLng={searchLng}
+            categoryId={c.category_id ?? null}
           />
         );
       })}
