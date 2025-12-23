@@ -160,12 +160,11 @@ export default function Landing() {
 
               <div className="mt-4">
                 <ResultsList
-                  cleaners={cleaners}
-                  postcode={postcode}
-                  locality={locality}
-                  searchLat={searchLat}
-                  searchLng={searchLng}
-                />
+  cleaners={cleaners}
+  postcode={postcode}
+  locality={locality}
+/>
+
               </div>
             </div>
           )}
