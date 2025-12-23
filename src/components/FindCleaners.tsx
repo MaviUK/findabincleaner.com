@@ -154,21 +154,21 @@ export default function FindCleaners({
         "";
 
       // 2) SAFE polygon-gated RPC (no area -> invisible; outside polygon -> invisible)
-      const { data, error } = await supabase.rpc("search_cleaners", {
+const { data: eligible, error: rpcErr } = await supabase.rpc("search_cleaners", {
   p_category_slug: serviceSlug,
   p_lat: lat,
   p_lng: lng,
 });
 
+if (rpcErr) {
+  setError(rpcErr.message);
+  return;
+}
 
-      if (rpcErr) {
-        setError(rpcErr.message);
-        return;
-      }
+const eligibleIds = (eligible || [])
+  .map((r: any) => r.cleaner_id)
+  .filter(Boolean);
 
-      const eligibleIds = (eligible || [])
-        .map((r: any) => r.cleaner_id)
-        .filter(Boolean);
 
       if (eligibleIds.length === 0) {
         const none: MatchOut[] = [];
@@ -301,4 +301,5 @@ export default function FindCleaners({
     </div>
   );
 }
+
 
