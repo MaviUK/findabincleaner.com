@@ -8,12 +8,27 @@ type Props = {
   locality?: string;
 };
 
+function isSponsored(c: any) {
+  // Be tolerant to different backend flag names
+  return !!(
+    c?.is_covering_sponsor ||
+    c?.is_sponsored ||
+    c?.sponsored ||
+    c?.isSponsor ||
+    c?.sponsor ||
+    c?.sponsor_active ||
+    c?.sponsorship_active ||
+    c?.priority === 1 ||
+    c?.rank === 1
+  );
+}
+
 export default function ResultsList({ cleaners, postcode }: Props) {
   if (!cleaners?.length) return null;
 
   const { sponsored, organic } = useMemo(() => {
-    const sponsored = (cleaners ?? []).filter((c) => !!c.is_covering_sponsor);
-    const organic = (cleaners ?? []).filter((c) => !c.is_covering_sponsor);
+    const sponsored = (cleaners ?? []).filter(isSponsored);
+    const organic = (cleaners ?? []).filter((c) => !isSponsored(c));
 
     // Deterministic shuffle: stable for same postcode + day
     const seedStr = `${(postcode || "").toUpperCase()}|${new Date()
@@ -30,15 +45,16 @@ export default function ResultsList({ cleaners, postcode }: Props) {
     return { sponsored, organic: shuffled };
   }, [cleaners, postcode]);
 
+  // #1 sponsored should be full width + highlighted
   const sponsoredFirst = sponsored[0] ?? null;
   const sponsoredRest = sponsored.length > 1 ? sponsored.slice(1) : [];
 
   const renderCard = (c: any) => {
-    const cleanerId = c.cleaner_id ?? c.id; // <- key fix
+    const cleanerId = c.cleaner_id ?? c.id;
 
     const cleaner = {
-      cleaner_id: cleanerId, // <- REQUIRED by your Cleaner type
-      id: cleanerId,         // keep for safety; some components use id
+      cleaner_id: cleanerId,
+      id: cleanerId,
       business_name: c.business_name ?? "Cleaner",
       logo_url: c.logo_url ?? null,
       distance_m: c.distance_meters ?? c.distance_m ?? null,
@@ -64,17 +80,34 @@ export default function ResultsList({ cleaners, postcode }: Props) {
 
   return (
     <div className="mt-4 space-y-4">
-      {/* First sponsored = full width */}
-      {sponsoredFirst && <div>{renderCard(sponsoredFirst)}</div>}
+      {/* Full-width + highlighted #1 sponsored */}
+      {sponsoredFirst && (
+        <div className="relative">
+          <div className="absolute -top-3 left-4 z-10 rounded-full bg-emerald-600 px-3 py-1 text-xs font-semibold text-white shadow">
+            Sponsored • #1 in this area
+          </div>
 
-      {/* Remaining sponsored = 2 per row */}
-      {sponsoredRest.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {sponsoredRest.map(renderCard)}
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-2 shadow-sm ring-2 ring-emerald-300">
+            {renderCard(sponsoredFirst)}
+          </div>
         </div>
       )}
 
-      {/* Organic = shuffled, 2 per row */}
+      {/* Remaining sponsored (still before organic) */}
+      {sponsoredRest.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {sponsoredRest.map((c) => (
+            <div
+              key={c.cleaner_id ?? c.id}
+              className="rounded-2xl border border-emerald-100 bg-emerald-50/30 p-2"
+            >
+              {renderCard(c)}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Organic results: 2-up */}
       {organic.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {organic.map(renderCard)}
