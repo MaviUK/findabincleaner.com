@@ -153,47 +153,67 @@ export default function FindCleaners({
         geo.result.region ||
         "";
 
-      // 2) RPC search
-      const { data: rows, error: rpcErr } = await supabase.rpc(
-        "search_cleaners_by_location",
-        {
-          p_category_slug: serviceSlug,
-          p_lat: lat,
-          p_lng: lng,
-          p_limit: 50,
-        }
-      );
+      // 2) SAFE polygon-gated RPC (no area -> invisible; outside polygon -> invisible)
+      const { data: eligible, error: rpcErr } = await supabase.rpc("search_cleaners", {
+        p_lat: lat,
+        p_lng: lng,
+      });
 
       if (rpcErr) {
         setError(rpcErr.message);
         return;
       }
 
-      const list = (rows || []) as MatchIn[];
+      const eligibleIds = (eligible || [])
+        .map((r: any) => r.cleaner_id)
+        .filter(Boolean);
+
+      if (eligibleIds.length === 0) {
+        const none: MatchOut[] = [];
+        if (!onSearchComplete) setResults(none);
+        onSearchComplete?.(none, pc, town, lat, lng);
+        return;
+      }
+
+      // 3) Fetch full cleaner details for the eligible IDs
+      // NOTE: this keeps the UI working (phone/website/whatsapp/etc).
+      // Area + sponsor flags will be wired back in once the RPC returns them safely.
+      const { data: cleaners, error: cleanersErr } = await supabase
+        .from("cleaners")
+        .select(
+          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count"
+        )
+        .in("id", eligibleIds);
+
+      if (cleanersErr) {
+        setError(cleanersErr.message);
+        return;
+      }
+
       const categoryId = categoryIdRef.current;
 
-      const normalized: MatchOut[] = list.map((m) => ({
-        cleaner_id: m.cleaner_id,
-        business_name: m.business_name ?? null,
-        logo_url: m.logo_url ?? null,
-        website: m.website ?? null,
-        phone: m.phone ?? null,
-        whatsapp: m.whatsapp ?? null,
-        payment_methods: toArray(m.payment_methods),
-        service_types: toArray(m.service_types),
-        rating_avg: m.rating_avg ?? null,
-        rating_count: m.rating_count ?? null,
-        distance_m: m.distance_meters ?? null,
-        area_id: m.area_id ?? null,
-        area_name: m.area_name ?? null,
-        is_covering_sponsor: Boolean(m.is_covering_sponsor),
+      const normalized: MatchOut[] = (cleaners || []).map((c: any) => ({
+        cleaner_id: c.id,
+        business_name: c.business_name ?? null,
+        logo_url: c.logo_url ?? null,
+        website: c.website ?? null,
+        phone: c.phone ?? null,
+        whatsapp: c.whatsapp ?? null,
+        payment_methods: toArray(c.payment_methods),
+        service_types: toArray(c.service_types),
+        rating_avg: c.rating_avg ?? null,
+        rating_count: c.rating_count ?? null,
+        distance_m: null,          // step-by-step: keep null for now
+        area_id: null,             // step-by-step: re-add via RPC later
+        area_name: null,           // step-by-step: re-add via RPC later
+        is_covering_sponsor: false,// step-by-step: re-add via RPC later
         category_id: categoryId,
       }));
 
       // live-only
       const liveOnly = normalized.filter((r) => r.phone || r.whatsapp || r.website);
 
-      // 3) Record impressions (FETCH so you SEE it in Network)
+      // 4) Record impressions (FETCH so you SEE it in Network)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
@@ -237,7 +257,7 @@ export default function FindCleaners({
         console.warn("impression logging failed", e);
       }
 
-      // 4) Update UI
+      // 5) Update UI
       if (!onSearchComplete) setResults(liveOnly);
       onSearchComplete?.(liveOnly, pc, town, lat, lng);
     } catch (e: any) {
