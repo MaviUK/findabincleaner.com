@@ -1,78 +1,79 @@
 // src/lib/analytics.ts
-export type AnalyticsEvent =
-  | "impression"
-  | "click_message"
-  | "click_phone"
-  | "click_website";
+type AnalyticsEventName = "impression" | "click_message" | "click_phone" | "click_website";
 
-export type RecordEventPayload = {
-  event: AnalyticsEvent;
+type RecordEventPayload = {
   cleanerId: string;
-  categoryId?: string | null;
+  event: AnalyticsEventName;
+
+  // Optional attribution
   areaId?: string | null;
+  categoryId?: string | null;
   sessionId?: string | null;
+
+  // Any extra context
   meta?: Record<string, any>;
 };
 
-/**
- * Uses FETCH (keepalive) so it ALWAYS shows in DevTools Network (Fetch/XHR)
- * and works on page navigations.
- *
- * Tries /api/record_event first (your netlify redirect),
- * falls back to /.netlify/functions/record_event if needed.
- */
-const PRIMARY_ENDPOINT = "/api/record_event";
-const FALLBACK_ENDPOINT = "/.netlify/functions/record_event";
+const SESSION_KEY = "clnly_session_id";
 
 export function getOrCreateSessionId(): string {
-  const key = "cl_session_id";
-  const existing = localStorage.getItem(key);
-  if (existing) return existing;
-  const id =
-    (globalThis.crypto?.randomUUID?.() ??
-      `${Date.now()}-${Math.random().toString(16).slice(2)}`) + "";
-  localStorage.setItem(key, id);
-  return id;
-}
-
-async function postJSON(url: string, body: any) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    // IMPORTANT: keepalive makes it survive navigation
-    keepalive: true,
-    credentials: "omit",
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`record_event ${res.status}: ${text || res.statusText}`);
-  }
-
-  // If your function returns JSON, fine; otherwise ignore.
   try {
-    return await res.json();
+    const existing = localStorage.getItem(SESSION_KEY);
+    if (existing) return existing;
+    const id =
+      (crypto as any)?.randomUUID?.() ??
+      `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    localStorage.setItem(SESSION_KEY, id);
+    return id;
   } catch {
-    return null;
+    // no localStorage (private mode etc.)
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 }
 
-export async function recordEventFetch(payload: RecordEventPayload) {
-  // shape expected by your function/db
-  const body = {
-    event: payload.event,
-    cleaner_id: payload.cleanerId,
-    category_id: payload.categoryId ?? null,
-    area_id: payload.areaId ?? null,
-    session_id: payload.sessionId ?? null,
-    meta: payload.meta ?? {},
-  };
-
+/**
+ * Primary: sendBeacon (doesn't block navigation)
+ * Fallback: fetch keepalive
+ */
+export async function recordEventBeacon(payload: RecordEventPayload): Promise<void> {
   try {
-    return await postJSON(PRIMARY_ENDPOINT, body);
+    const body = JSON.stringify(payload);
+
+    // Try sendBeacon first
+    if (typeof navigator !== "undefined" && "sendBeacon" in navigator) {
+      const ok = navigator.sendBeacon(
+        "/api/record_event",
+        new Blob([body], { type: "application/json" })
+      );
+      if (ok) return;
+      // if sendBeacon returns false, fall through to fetch
+    }
+
+    // Fallback to fetch
+    await fetch("/api/record_event", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      keepalive: true,
+    });
   } catch (e) {
-    // fallback helps if /api redirect config ever breaks
-    return await postJSON(FALLBACK_ENDPOINT, body);
+    // Never throw from analytics
+    console.warn("recordEventBeacon failed", e);
   }
+}
+
+/**
+ * Convenience: includes a lat/lng point in meta if you want it (optional).
+ * Keeping this because your codebase referenced it.
+ */
+export async function recordEventFromPointBeacon(args: RecordEventPayload & { lat?: number; lng?: number }) {
+  const { lat, lng, meta, ...rest } = args;
+  await recordEventBeacon({
+    ...rest,
+    meta: {
+      ...(meta || {}),
+      ...(typeof lat === "number" ? { lat } : {}),
+      ...(typeof lng === "number" ? { lng } : {}),
+    },
+  });
 }
