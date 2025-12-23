@@ -3,6 +3,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
+type Category = {
+  id: string;
+  name: string;
+  slug: string;
+};
+
 type Row30d = {
   area_id: string;
   area_name: string | null;
@@ -16,12 +22,13 @@ type Row30d = {
 
 type MonthRow = {
   month: string; // YYYY-MM
+  visits: number; // distinct meta.search_id
   impressions: number;
   clicks_message: number;
   clicks_website: number;
   clicks_phone: number;
   total_clicks: number;
-  ctr: string; // "12.3%"
+  ctr: string;
 };
 
 function useHashSearchParams() {
@@ -33,6 +40,17 @@ function useHashSearchParams() {
   }, [hash]);
 }
 
+function setHashQueryParam(key: string, value: string | null) {
+  const h = window.location.hash || "#/";
+  const qIndex = h.indexOf("?");
+  const base = qIndex >= 0 ? h.slice(0, qIndex) : h;
+  const params = new URLSearchParams(qIndex >= 0 ? h.slice(qIndex) : "");
+  if (value) params.set(key, value);
+  else params.delete(key);
+  const next = params.toString();
+  window.location.hash = next ? `${base}?${next}` : base;
+}
+
 function monthKey(d: Date) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
@@ -40,23 +58,173 @@ function monthKey(d: Date) {
 }
 
 function monthLabel(ym: string) {
-  // ym = YYYY-MM
   const [y, m] = ym.split("-").map((x) => Number(x));
   const dt = new Date(Date.UTC(y, (m || 1) - 1, 1));
   return dt.toLocaleString(undefined, { month: "short", year: "numeric" });
 }
 
 export default function Analytics() {
+  const qs = useHashSearchParams();
+  const urlCategoryId = (qs.get("category") ?? "").trim() || null;
+
+  const [cats, setCats] = useState<Category[]>([]);
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(urlCategoryId);
+
   const [rows30d, setRows30d] = useState<Row30d[]>([]);
   const [months, setMonths] = useState<MonthRow[]>([]);
+
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
-
   const [q, setQ] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
-  const qs = useHashSearchParams();
-  const categoryId = (qs.get("category") ?? "").trim() || null;
+  const activeCat = useMemo(() => {
+    if (!activeCategoryId) return null;
+    return cats.find((c) => c.id === activeCategoryId) || null;
+  }, [cats, activeCategoryId]);
+
+  async function loadIndustriesForCleaner(uid: string) {
+    // Find cleaner
+    const { data: cleaner, error: ce } = await supabase
+      .from("cleaners")
+      .select("id, created_at")
+      .eq("user_id", uid)
+      .maybeSingle();
+    if (ce) throw ce;
+    if (!cleaner) throw new Error("No cleaner profile found.");
+
+    // 🔥 IMPORTANT: this is the only “unknown” bit because I can’t see your schema here.
+    // We’ll try the most common patterns the dashboard uses:
+    //
+    // A) cleaner_categories table: (cleaner_id, category_id)
+    // B) cleaner_services table: (cleaner_id, category_id)
+    //
+    // If your dashboard uses something else, tell me the table name + columns and I’ll adjust.
+
+    // Try A) cleaner_categories
+    const tryA = await supabase
+      .from("cleaner_categories")
+      .select("category_id, service_categories(id,name,slug)")
+      .eq("cleaner_id", cleaner.id);
+
+    if (!tryA.error && Array.isArray(tryA.data) && tryA.data.length > 0) {
+      const mapped: Category[] = (tryA.data as any[])
+        .map((r) => r.service_categories)
+        .filter(Boolean);
+      return { cleaner, categories: dedupeCats(mapped) };
+    }
+
+    // Try B) cleaner_services
+    const tryB = await supabase
+      .from("cleaner_services")
+      .select("category_id, service_categories(id,name,slug)")
+      .eq("cleaner_id", cleaner.id);
+
+    if (!tryB.error && Array.isArray(tryB.data) && tryB.data.length > 0) {
+      const mapped: Category[] = (tryB.data as any[])
+        .map((r) => r.service_categories)
+        .filter(Boolean);
+      return { cleaner, categories: dedupeCats(mapped) };
+    }
+
+    // Fallback: show ALL categories (better than blank)
+    const { data: sc, error: se } = await supabase
+      .from("service_categories")
+      .select("id,name,slug")
+      .order("name", { ascending: true });
+    if (se) throw se;
+
+    return {
+      cleaner,
+      categories: dedupeCats(((sc as any[]) || []).map((x) => ({ id: x.id, name: x.name, slug: x.slug }))),
+    };
+  }
+
+  function dedupeCats(list: Category[]) {
+    const m = new Map<string, Category>();
+    for (const c of list) {
+      if (c?.id && !m.has(c.id)) m.set(c.id, c);
+    }
+
+    // Keep dashboard-like order if possible
+    const preferred = ["bin-cleaner", "window-cleaner", "cleaner"];
+    return Array.from(m.values()).sort((a, b) => {
+      const ai = preferred.indexOf(a.slug);
+      const bi = preferred.indexOf(b.slug);
+      if (ai === -1 && bi === -1) return a.name.localeCompare(b.name);
+      if (ai === -1) return 1;
+      if (bi === -1) return -1;
+      return ai - bi;
+    });
+  }
+
+  async function loadStats(cleanerId: string, cleanerCreatedAt: string | null, categoryId: string) {
+    // 1) 30d area stats
+    const { data: d30, error: e30 } = await supabase
+      .from("area_stats_30d")
+      .select(
+        "area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id, category_id"
+      )
+      .eq("cleaner_id", cleanerId)
+      .eq("category_id", categoryId)
+      .order("area_name", { ascending: true });
+
+    if (e30) throw e30;
+    setRows30d((d30 as Row30d[]) || []);
+
+    // 2) Monthly breakdown since joined
+    let qe = supabase
+      .from("analytics_events")
+      .select("created_at, event, meta")
+      .eq("cleaner_id", cleanerId)
+      .eq("category_id", categoryId);
+
+    if (cleanerCreatedAt) qe = qe.gte("created_at", cleanerCreatedAt);
+
+    const { data: evs, error: ee } = await qe.order("created_at", { ascending: true });
+    if (ee) throw ee;
+
+    const bucket = new Map<
+      string,
+      { impressions: number; msg: number; web: number; phone: number; searchIds: Set<string> }
+    >();
+
+    for (const e of (evs as any[]) || []) {
+      const key = monthKey(new Date(e.created_at));
+      const cur =
+        bucket.get(key) || { impressions: 0, msg: 0, web: 0, phone: 0, searchIds: new Set<string>() };
+
+      if (e.event === "impression") {
+        cur.impressions += 1;
+        const sid = e?.meta?.search_id;
+        if (typeof sid === "string" && sid.length > 0) cur.searchIds.add(sid);
+      }
+      if (e.event === "click_message") cur.msg += 1;
+      if (e.event === "click_website") cur.web += 1;
+      if (e.event === "click_phone") cur.phone += 1;
+
+      bucket.set(key, cur);
+    }
+
+    const monthRows: MonthRow[] = Array.from(bucket.entries())
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([month, v]) => {
+        const total = v.msg + v.web + v.phone;
+        const ctr = v.impressions ? `${((total / v.impressions) * 100).toFixed(1)}%` : "—";
+        return {
+          month,
+          visits: v.searchIds.size,
+          impressions: v.impressions,
+          clicks_message: v.msg,
+          clicks_website: v.web,
+          clicks_phone: v.phone,
+          total_clicks: total,
+          ctr,
+        };
+      });
+
+    setMonths(monthRows);
+  }
 
   async function loadAll() {
     try {
@@ -70,90 +238,32 @@ export default function Analytics() {
       const uid = session?.user?.id;
       if (!uid) throw new Error("You’re not signed in.");
 
-      // Find cleaner for this user
-      const { data: cleaner, error: ce } = await supabase
-        .from("cleaners")
-        .select("id, created_at")
-        .eq("user_id", uid)
-        .maybeSingle();
+      const { cleaner, categories } = await loadIndustriesForCleaner(uid);
 
-      if (ce) throw ce;
-      if (!cleaner) throw new Error("No cleaner profile found.");
+      setCats(categories);
 
-      // ---------- 1) Last 30 days (existing) ----------
-      let q30 = supabase
-        .from("area_stats_30d")
-        .select(
-          "area_id, area_name, impressions, clicks_message, clicks_website, clicks_phone, cleaner_id, category_id"
-        )
-        .eq("cleaner_id", cleaner.id);
+      // pick active tab:
+      // - if URL has category and it is in categories, use it
+      // - else default to first category
+      const validUrlCat =
+        urlCategoryId && categories.some((c) => c.id === urlCategoryId) ? urlCategoryId : null;
 
-      if (categoryId) q30 = q30.eq("category_id", categoryId);
+      const nextActive = validUrlCat || categories[0]?.id || null;
 
-      const { data: d30, error: e30 } = await q30.order("area_name", {
-        ascending: true,
-      });
-
-      if (e30) throw e30;
-      setRows30d((d30 as Row30d[]) || []);
-
-      // ---------- 2) Monthly breakdown since join ----------
-      // We aggregate from analytics_events.
-      // Only pull the columns we need to keep this light.
-      let qe = supabase
-        .from("analytics_events")
-        .select("created_at, event")
-        .eq("cleaner_id", cleaner.id);
-
-      if (categoryId) qe = qe.eq("category_id", categoryId);
-
-      // Pull from cleaner.created_at onwards (since they joined)
-      if (cleaner.created_at) {
-        qe = qe.gte("created_at", cleaner.created_at);
+      if (nextActive && nextActive !== activeCategoryId) {
+        setActiveCategoryId(nextActive);
+        setHashQueryParam("category", nextActive);
+        // we’ll continue; no harm
       }
 
-      // NOTE: if you have huge event volume, we can move this to a SQL view later.
-      const { data: evs, error: ee } = await qe.order("created_at", {
-        ascending: true,
-      });
-
-      if (ee) throw ee;
-
-      const bucket = new Map<
-        string,
-        { impressions: number; msg: number; web: number; phone: number }
-      >();
-
-      for (const e of evs || []) {
-        const dt = new Date(e.created_at);
-        const key = monthKey(dt);
-        const cur = bucket.get(key) || { impressions: 0, msg: 0, web: 0, phone: 0 };
-
-        if (e.event === "impression") cur.impressions += 1;
-        if (e.event === "click_message") cur.msg += 1;
-        if (e.event === "click_website") cur.web += 1;
-        if (e.event === "click_phone") cur.phone += 1;
-
-        bucket.set(key, cur);
+      if (!nextActive) {
+        setRows30d([]);
+        setMonths([]);
+        setLastUpdated(new Date());
+        return;
       }
 
-      const monthRows: MonthRow[] = Array.from(bucket.entries())
-        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-        .map(([month, v]) => {
-          const total = v.msg + v.web + v.phone;
-          const ctr = v.impressions ? `${((total / v.impressions) * 100).toFixed(1)}%` : "—";
-          return {
-            month,
-            impressions: v.impressions,
-            clicks_message: v.msg,
-            clicks_website: v.web,
-            clicks_phone: v.phone,
-            total_clicks: total,
-            ctr,
-          };
-        });
-
-      setMonths(monthRows);
+      await loadStats(cleaner.id, cleaner.created_at ?? null, nextActive);
       setLastUpdated(new Date());
     } catch (e: any) {
       console.error("Analytics load error:", e);
@@ -162,6 +272,15 @@ export default function Analytics() {
       setLoading(false);
     }
   }
+
+  // if hash category changes, switch tabs
+  useEffect(() => {
+    if (!urlCategoryId) return;
+    if (urlCategoryId !== activeCategoryId) {
+      setActiveCategoryId(urlCategoryId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlCategoryId]);
 
   useEffect(() => {
     loadAll();
@@ -180,7 +299,7 @@ export default function Analytics() {
       window.removeEventListener("focus", onFocus);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryId]);
+  }, [activeCategoryId]);
 
   const filtered30d = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -188,34 +307,8 @@ export default function Analytics() {
     return rows30d.filter((r) => (r.area_name || "").toLowerCase().includes(term));
   }, [rows30d, q]);
 
-  const totals30d = useMemo(() => {
-    const init = { impressions: 0, msg: 0, web: 0, phone: 0 };
-    return filtered30d.reduce((acc, r) => {
-      acc.impressions += r.impressions || 0;
-      acc.msg += r.clicks_message || 0;
-      acc.web += r.clicks_website || 0;
-      acc.phone += r.clicks_phone || 0;
-      return acc;
-    }, init);
-  }, [filtered30d]);
-
-  const totalsMonths = useMemo(() => {
-    const init = { impressions: 0, msg: 0, web: 0, phone: 0 };
-    return months.reduce((acc, r) => {
-      acc.impressions += r.impressions || 0;
-      acc.msg += r.clicks_message || 0;
-      acc.web += r.clicks_website || 0;
-      acc.phone += r.clicks_phone || 0;
-      return acc;
-    }, init);
-  }, [months]);
-
   if (loading) {
-    return (
-      <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-6">
-        Loading stats…
-      </div>
-    );
+    return <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-6">Loading stats…</div>;
   }
 
   if (err) {
@@ -231,14 +324,14 @@ export default function Analytics() {
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Full Stats</h1>
+          {activeCat && (
+            <div className="text-sm text-gray-600 mt-1">
+              Industry: <span className="font-semibold">{activeCat.name}</span>
+            </div>
+          )}
           {lastUpdated && (
             <div className="text-xs text-gray-500 mt-1">
               Last updated {lastUpdated.toLocaleTimeString()}
-            </div>
-          )}
-          {categoryId && (
-            <div className="text-xs text-gray-500 mt-1">
-              Filtered to industry: <span className="font-mono">{categoryId}</span>
             </div>
           )}
         </div>
@@ -250,23 +343,46 @@ export default function Analytics() {
             placeholder="Filter by area name…"
             className="border rounded px-3 py-2 w-64"
           />
-          <button
-            type="button"
-            onClick={loadAll}
-            className="border rounded px-3 py-2 text-sm"
-            title="Refresh"
-          >
+          <button type="button" onClick={loadAll} className="border rounded px-3 py-2 text-sm">
             Refresh
           </button>
         </div>
       </div>
 
-      {/* ---------- Monthly breakdown ---------- */}
+      {/* ✅ Industry tabs (business-active industries) */}
+      {cats.length > 0 && (
+        <div className="inline-flex flex-wrap gap-2">
+          {cats.map((c) => {
+            const active = c.id === activeCategoryId;
+            return (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => {
+                  setActiveCategoryId(c.id);
+                  setHashQueryParam("category", c.id);
+                }}
+                className={[
+                  "px-4 py-2 rounded-xl border text-sm font-semibold transition",
+                  "focus:outline-none focus:ring-2 focus:ring-emerald-500/40",
+                  active
+                    ? "bg-emerald-700 text-white border-emerald-700 shadow-sm"
+                    : "bg-white text-gray-900 border-gray-200 hover:border-gray-300",
+                ].join(" ")}
+              >
+                {c.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Monthly breakdown */}
       <div className="border rounded-2xl overflow-x-auto">
         <div className="px-4 py-3 border-b bg-gray-50">
           <div className="font-semibold">Monthly breakdown (since you joined)</div>
           <div className="text-xs text-gray-500">
-            Impressions + Clicks grouped by month
+            Visits = 1 unique search where your card appeared (distinct <span className="font-mono">meta.search_id</span>)
           </div>
         </div>
 
@@ -274,6 +390,7 @@ export default function Analytics() {
           <thead>
             <tr className="text-left border-b bg-white">
               <th className="py-2 px-3">Month</th>
+              <th className="py-2 px-3">Visits</th>
               <th className="py-2 px-3">Impressions</th>
               <th className="py-2 px-3">Clicks (Msg)</th>
               <th className="py-2 px-3">Clicks (Web)</th>
@@ -286,6 +403,7 @@ export default function Analytics() {
             {months.map((m) => (
               <tr key={m.month} className="border-b">
                 <td className="py-2 px-3">{monthLabel(m.month)}</td>
+                <td className="py-2 px-3">{m.visits}</td>
                 <td className="py-2 px-3">{m.impressions}</td>
                 <td className="py-2 px-3">{m.clicks_message}</td>
                 <td className="py-2 px-3">{m.clicks_website}</td>
@@ -297,46 +415,19 @@ export default function Analytics() {
 
             {months.length === 0 && (
               <tr>
-                <td className="py-6 px-3 text-gray-500" colSpan={7}>
-                  No historical events yet.
+                <td className="py-6 px-3 text-gray-500" colSpan={8}>
+                  No history yet for this industry.
                 </td>
               </tr>
             )}
           </tbody>
-
-          {months.length > 0 && (
-            <tfoot>
-              <tr className="border-t bg-gray-50 font-medium">
-                <td className="py-2 px-3">Total</td>
-                <td className="py-2 px-3">{totalsMonths.impressions}</td>
-                <td className="py-2 px-3">{totalsMonths.msg}</td>
-                <td className="py-2 px-3">{totalsMonths.web}</td>
-                <td className="py-2 px-3">{totalsMonths.phone}</td>
-                <td className="py-2 px-3">
-                  {totalsMonths.msg + totalsMonths.web + totalsMonths.phone}
-                </td>
-                <td className="py-2 px-3">
-                  {totalsMonths.impressions
-                    ? `${(
-                        ((totalsMonths.msg + totalsMonths.web + totalsMonths.phone) /
-                          totalsMonths.impressions) *
-                        100
-                      ).toFixed(1)}%`
-                    : "—"}
-                </td>
-              </tr>
-            </tfoot>
-          )}
         </table>
       </div>
 
-      {/* ---------- Last 30 days by area ---------- */}
+      {/* Last 30 days by area */}
       <div className="border rounded-2xl overflow-x-auto">
         <div className="px-4 py-3 border-b bg-gray-50">
           <div className="font-semibold">Stats by Area (Last 30 days)</div>
-          <div className="text-xs text-gray-500">
-            This matches your dashboard “Last 30 days” cards.
-          </div>
         </div>
 
         <table className="min-w-full text-sm">
@@ -375,41 +466,16 @@ export default function Analytics() {
             {filtered30d.length === 0 && (
               <tr>
                 <td className="py-6 px-3 text-gray-500" colSpan={7}>
-                  {q.trim()
-                    ? "No areas match your filter."
-                    : "No 30-day stats yet for this filter."}
+                  {q.trim() ? "No areas match your filter." : "No 30-day stats yet for this industry."}
                 </td>
               </tr>
             )}
           </tbody>
-
-          {filtered30d.length > 0 && (
-            <tfoot>
-              <tr className="border-t bg-gray-50 font-medium">
-                <td className="py-2 px-3">Total</td>
-                <td className="py-2 px-3">{totals30d.impressions}</td>
-                <td className="py-2 px-3">{totals30d.msg}</td>
-                <td className="py-2 px-3">{totals30d.web}</td>
-                <td className="py-2 px-3">{totals30d.phone}</td>
-                <td className="py-2 px-3">{totals30d.msg + totals30d.web + totals30d.phone}</td>
-                <td className="py-2 px-3">
-                  {totals30d.impressions
-                    ? `${(
-                        ((totals30d.msg + totals30d.web + totals30d.phone) /
-                          totals30d.impressions) *
-                        100
-                      ).toFixed(1)}%`
-                    : "—"}
-                </td>
-              </tr>
-            </tfoot>
-          )}
         </table>
       </div>
 
       <p className="text-xs text-gray-500">
-        Monthly breakdown is built from raw analytics events. The “Last 30 days” table comes from{" "}
-        <span className="font-mono">area_stats_30d</span>.
+        Tabs show only industries your business is active in (same concept as the dashboard).
       </p>
     </div>
   );
