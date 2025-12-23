@@ -2,37 +2,64 @@
 export type AnalyticsEvent =
   | "impression"
   | "click_message"
-  | "click_website"
-  | "click_phone";
+  | "click_phone"
+  | "click_website";
 
-export function getOrCreateSessionId(): string {
-  try {
-    const key = "cl_session_id";
-    const existing = localStorage.getItem(key);
-    if (existing) return existing;
-    const id = crypto.randomUUID();
-    localStorage.setItem(key, id);
-    return id;
-  } catch {
-    // fallback
-    return crypto.randomUUID();
-  }
-}
-
-function endpoint() {
-  // always use the Netlify redirect
-  return "/api/record_event";
-}
-
-export async function recordEvent(payload: {
+export type RecordEventPayload = {
   event: AnalyticsEvent;
   cleanerId: string;
   categoryId?: string | null;
   areaId?: string | null;
   sessionId?: string | null;
   meta?: Record<string, any>;
-  uniq?: string | null;
-}): Promise<void> {
+};
+
+/**
+ * Uses FETCH (keepalive) so it ALWAYS shows in DevTools Network (Fetch/XHR)
+ * and works on page navigations.
+ *
+ * Tries /api/record_event first (your netlify redirect),
+ * falls back to /.netlify/functions/record_event if needed.
+ */
+const PRIMARY_ENDPOINT = "/api/record_event";
+const FALLBACK_ENDPOINT = "/.netlify/functions/record_event";
+
+export function getOrCreateSessionId(): string {
+  const key = "cl_session_id";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const id =
+    (globalThis.crypto?.randomUUID?.() ??
+      `${Date.now()}-${Math.random().toString(16).slice(2)}`) + "";
+  localStorage.setItem(key, id);
+  return id;
+}
+
+async function postJSON(url: string, body: any) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    // IMPORTANT: keepalive makes it survive navigation
+    keepalive: true,
+    credentials: "omit",
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`record_event ${res.status}: ${text || res.statusText}`);
+  }
+
+  // If your function returns JSON, fine; otherwise ignore.
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+export async function recordEventFetch(payload: RecordEventPayload) {
+  // shape expected by your function/db
   const body = {
     event: payload.event,
     cleaner_id: payload.cleanerId,
@@ -40,85 +67,12 @@ export async function recordEvent(payload: {
     area_id: payload.areaId ?? null,
     session_id: payload.sessionId ?? null,
     meta: payload.meta ?? {},
-    uniq: payload.uniq ?? null,
   };
 
-  const res = await fetch(endpoint(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    keepalive: true,
-  });
-
-  if (!res.ok) {
-    const txt = await res.text().catch(() => "");
-    console.warn("record_event failed", res.status, txt);
-  }
-}
-
-/**
- * Best effort: use sendBeacon if available; fallback to fetch(keepalive).
- */
-export function recordEventBeacon(payload: {
-  event: AnalyticsEvent;
-  cleanerId: string;
-  categoryId?: string | null;
-  areaId?: string | null;
-  sessionId?: string | null;
-  meta?: Record<string, any>;
-  uniq?: string | null;
-}): void {
-  const body = JSON.stringify({
-    event: payload.event,
-    cleaner_id: payload.cleanerId,
-    category_id: payload.categoryId ?? null,
-    area_id: payload.areaId ?? null,
-    session_id: payload.sessionId ?? null,
-    meta: payload.meta ?? {},
-    uniq: payload.uniq ?? null,
-  });
-
   try {
-    if (navigator.sendBeacon) {
-      const ok = navigator.sendBeacon(endpoint(), new Blob([body], { type: "application/json" }));
-      if (ok) return;
-    }
-  } catch {}
-
-  // fallback
-  void fetch(endpoint(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body,
-    keepalive: true,
-  }).catch(() => {});
-}
-
-/**
- * Convenience helper: you give it a point (lat/lng) and we store in meta too.
- */
-export function recordEventFromPointBeacon(payload: {
-  event: AnalyticsEvent;
-  cleanerId: string;
-  categoryId?: string | null;
-  areaId?: string | null;
-  sessionId?: string | null;
-  lat?: number;
-  lng?: number;
-  meta?: Record<string, any>;
-  uniq?: string | null;
-}): void {
-  recordEventBeacon({
-    event: payload.event,
-    cleanerId: payload.cleanerId,
-    categoryId: payload.categoryId ?? null,
-    areaId: payload.areaId ?? null,
-    sessionId: payload.sessionId ?? null,
-    uniq: payload.uniq ?? null,
-    meta: {
-      ...(payload.meta ?? {}),
-      ...(typeof payload.lat === "number" ? { lat: payload.lat } : {}),
-      ...(typeof payload.lng === "number" ? { lng: payload.lng } : {}),
-    },
-  });
+    return await postJSON(PRIMARY_ENDPOINT, body);
+  } catch (e) {
+    // fallback helps if /api redirect config ever breaks
+    return await postJSON(FALLBACK_ENDPOINT, body);
+  }
 }
