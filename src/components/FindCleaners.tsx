@@ -1,13 +1,16 @@
 // src/components/FindCleaners.tsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { getOrCreateSessionId, recordEvent } from "../lib/analytics";
+import { recordEventFromPointBeacon, getOrCreateSessionId } from "../lib/analytics";
 
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
 export type FindCleanersProps = {
   serviceSlug: ServiceSlug;
+
+  /** lets the parent clear previous results immediately when a new search starts */
   onSearchStart?: () => void;
+
   onSearchComplete?: (
     results: MatchOut[],
     postcode: string,
@@ -49,7 +52,9 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-  category_id?: string | null; // ✅ pass through for click logging
+
+  // ✅ carried through so CleanerCard can log clicks with category_id
+  category_id?: string | null;
 };
 
 function toArray(v: unknown): string[] {
@@ -78,17 +83,16 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // prevent duplicate impression spam for identical searches
+  // De-dupe within a single search render cycle
   const lastImpressionKey = useRef<string>("");
 
-  // cache category id for serviceSlug
+  // Cache service_categories.id for the current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      categoryIdRef.current = null;
+    async function loadCategoryId() {
       try {
         const { data, error } = await supabase
           .from("service_categories")
@@ -96,11 +100,16 @@ export default function FindCleaners({
           .eq("slug", serviceSlug)
           .maybeSingle();
 
-        if (!cancelled) categoryIdRef.current = error ? null : data?.id ?? null;
+        if (!cancelled) {
+          categoryIdRef.current = error ? null : data?.id ?? null;
+        }
       } catch {
         if (!cancelled) categoryIdRef.current = null;
       }
-    })();
+    }
+
+    categoryIdRef.current = null;
+    void loadCategoryId();
 
     return () => {
       cancelled = true;
@@ -111,6 +120,10 @@ export default function FindCleaners({
     ev?.preventDefault();
     setError(null);
 
+    // ✅ IMPORTANT: allow impressions to record each time user searches
+    lastImpressionKey.current = "";
+
+    // clear UI immediately
     onSearchStart?.();
     if (!onSearchComplete) setResults([]);
 
@@ -123,34 +136,38 @@ export default function FindCleaners({
     try {
       setLoading(true);
 
-      // 1) Geocode
+      // 1) Geocode postcode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
 
       if (!res.ok) {
         onSearchStart?.();
-        setError(res.status === 404 || res.status === 400 ? FRIENDLY_BAD_POSTCODE : "Couldn’t look up that postcode. Please try again.");
+        if (res.status === 404 || res.status === 400) {
+          setError(FRIENDLY_BAD_POSTCODE);
+          return;
+        }
+        setError("Couldn’t look up that postcode. Please try again.");
         return;
       }
 
-      const geo = await res.json();
-      if (geo.status !== 200 || !geo.result) {
+      const data = await res.json();
+      if (data.status !== 200 || !data.result) {
         onSearchStart?.();
         setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
 
-      const lat = Number(geo.result.latitude);
-      const lng = Number(geo.result.longitude);
-      const town =
-        geo.result.post_town ||
-        geo.result.admin_district ||
-        geo.result.parliamentary_constituency ||
-        geo.result.region ||
+      const lat: number = Number(data.result.latitude);
+      const lng: number = Number(data.result.longitude);
+      const town: string =
+        data.result.post_town ||
+        data.result.admin_district ||
+        data.result.parliamentary_constituency ||
+        data.result.region ||
         "";
 
-      // 2) RPC search
+      // 2) Search via RPC
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
         {
@@ -167,8 +184,10 @@ export default function FindCleaners({
       }
 
       const list = (rows || []) as MatchIn[];
+
       const categoryId = categoryIdRef.current;
 
+      // 3) Normalize + attach category_id
       const normalized: MatchOut[] = list.map((m) => ({
         cleaner_id: m.cleaner_id,
         business_name: m.business_name ?? null,
@@ -187,35 +206,37 @@ export default function FindCleaners({
         category_id: categoryId,
       }));
 
-      const liveOnly = normalized.filter((r) => r.phone || r.whatsapp || r.website);
+      // Optional “live only” filter
+      const liveOnly = normalized.filter((r) => {
+        const hasPhone = Boolean(r.phone);
+        const hasWhatsApp = Boolean(r.whatsapp);
+        const hasWebsite = Boolean(r.website);
+        return hasPhone || hasWhatsApp || hasWebsite;
+      });
 
-      // 3) IMPRESSIONS -> MUST show /api/record_event in Network
+      // 4) Record impressions (one per result)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
+        const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
-        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(5)}|${liveOnly.length}`;
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
+          5
+        )}|${liveOnly.length}`;
+
         if (lastImpressionKey.current !== impressionKey) {
-          async function lookup(ev?: React.FormEvent) {
-  ev?.preventDefault();
-  setError(null);
-
-  // ✅ IMPORTANT: allow impressions to record each time user searches
-  lastImpressionKey.current = "";
-
-  onSearchStart?.();
-  ...
-}
-
+          lastImpressionKey.current = impressionKey;
 
           await Promise.all(
             liveOnly.map((r, idx) =>
-              recordEvent({
+              recordEventFromPointBeacon({
                 cleanerId: r.cleaner_id,
                 event: "impression",
                 sessionId,
                 categoryId: r.category_id ?? null,
                 areaId: r.area_id ?? null,
+                lat,
+                lng,
                 meta: {
                   search_id: searchId,
                   postcode: pc,
@@ -227,20 +248,20 @@ export default function FindCleaners({
                   position: idx + 1,
                   is_sponsored: Boolean(r.is_covering_sponsor),
                   results_count: liveOnly.length,
-                  lat,
-                  lng,
+                  sponsored_count: sponsoredCount,
                 },
               })
             )
           );
         }
       } catch (e) {
-        console.warn("impression logging failed:", e);
+        console.warn("recordEvent(impression) error", e);
       }
 
+      // 5) Update UI / bubble up
       if (!onSearchComplete) setResults(liveOnly);
       onSearchComplete?.(liveOnly, pc, town, lat, lng);
-    } catch (e) {
+    } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError("Something went wrong. Please try again.");
     } finally {
@@ -274,9 +295,10 @@ export default function FindCleaners({
       )}
 
       {!onSearchComplete && results.length > 0 && (
-        <div className="text-sm text-gray-600">Found {results.length} cleaners.</div>
+        <div className="text-sm text-gray-600">
+          Found {results.length} cleaners.
+        </div>
       )}
     </div>
   );
 }
-
