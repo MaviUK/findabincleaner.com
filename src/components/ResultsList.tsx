@@ -1,55 +1,21 @@
 // src/components/ResultsList.tsx
 import { useMemo } from "react";
-import CleanerCard, { Cleaner } from "./CleanerCard";
-
-function toArr(v: unknown): string[] {
-  if (!v) return [];
-  if (Array.isArray(v)) return v as string[];
-  if (typeof v === "string") {
-    try {
-      const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed as string[];
-    } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
+import CleanerCard from "./CleanerCard";
 
 type Props = {
   cleaners: any[];
   postcode: string;
   locality?: string;
-  /** Pass these from the page that did the postcode → lat/lng lookup */
-  searchLat?: number | null;
-  searchLng?: number | null;
 };
 
-export default function ResultsList({
-  cleaners,
-  postcode,
-  locality,
-  searchLat = null,
-  searchLng = null,
-}: Props) {
-  if (!cleaners?.length) {
-    const pc = postcode?.toUpperCase?.() || "your area";
-    return (
-      <p className="text-center text-gray-600 mt-6">
-        No cleaners found near {pc}
-        {locality ? `, in ${locality}` : ""}.
-      </p>
-    );
-  }
+export default function ResultsList({ cleaners, postcode, locality }: Props) {
+  if (!cleaners?.length) return null;
 
-  // --- Ordering rules ---
-  // 1) Any covering sponsors always appear first
-  // 2) Everyone else is shuffled (random order) for fairness
   const { sponsored, organic } = useMemo(() => {
     const sponsored = (cleaners ?? []).filter((c) => !!c.is_covering_sponsor);
     const organic = (cleaners ?? []).filter((c) => !c.is_covering_sponsor);
 
-    // Deterministic shuffle: stable for a given postcode + current date (so it
-    // doesn't re-randomise on every re-render), but changes day-to-day and per postcode.
+    // Deterministic shuffle: stable for same postcode + day
     const seedStr = `${(postcode || "").toUpperCase()}|${new Date()
       .toISOString()
       .slice(0, 10)}`;
@@ -64,27 +30,23 @@ export default function ResultsList({
     return { sponsored, organic: shuffled };
   }, [cleaners, postcode]);
 
-  // First paid result is full-width; remaining paid results are 2-up.
   const sponsoredFirst = sponsored[0] ?? null;
   const sponsoredRest = sponsored.length > 1 ? sponsored.slice(1) : [];
 
   const renderCard = (c: any) => {
-    const cleaner: Cleaner = {
+    // Build the minimum cleaner shape CleanerCard expects
+    const cleaner = {
       id: c.id ?? c.cleaner_id,
-      business_name: c.business_name,
-      logo_url: c.logo_url,
+      business_name: c.business_name ?? "Cleaner",
+      logo_url: c.logo_url ?? null,
       distance_m: c.distance_meters ?? c.distance_m ?? null,
-      website: c.website,
-      phone: c.phone,
-      whatsapp: c.whatsapp,
+      website: c.website ?? null,
+      phone: c.phone ?? null,
+      whatsapp: c.whatsapp ?? null,
       rating_avg: c.rating_avg ?? null,
       rating_count: c.rating_count ?? null,
-      payment_methods: toArr(
-        c.payment_methods ?? c.payment_methods_accepted ?? c.payments
-      ),
-      service_types: toArr(
-        c.service_types ?? c.services ?? c.service_types_supported
-      ),
+      payment_methods: normaliseArr(c.payment_methods),
+      service_types: normaliseArr(c.service_types),
     };
 
     return (
@@ -94,25 +56,23 @@ export default function ResultsList({
         postcodeHint={postcode}
         showPayments
         areaId={c.area_id ?? null}
-        searchLat={searchLat}
-        searchLng={searchLng}
       />
     );
   };
 
   return (
     <div className="mt-4 space-y-4">
-      {/* Sponsored results: first position is always full width */}
+      {/* First position (paid) = full width */}
       {sponsoredFirst && <div>{renderCard(sponsoredFirst)}</div>}
 
-      {/* Any additional sponsored listings: still above organic, but 2-up on desktop */}
+      {/* Remaining paid = still above organic, but 2 per row */}
       {sponsoredRest.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {sponsoredRest.map(renderCard)}
         </div>
       )}
 
-      {/* Organic results: shuffled, displayed 2-up on desktop */}
+      {/* Organic = random order, 2 per row */}
       {organic.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {organic.map(renderCard)}
@@ -122,8 +82,20 @@ export default function ResultsList({
   );
 }
 
+function normaliseArr(v: any): string[] {
+  if (!v) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+    return v.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
 function hashString(str: string) {
-  // Small string hash → 32-bit int
   let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
