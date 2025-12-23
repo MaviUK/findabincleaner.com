@@ -196,7 +196,17 @@ export default function FindCleaners({
 
         const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(5)}|${liveOnly.length}`;
         if (lastImpressionKey.current !== impressionKey) {
-          lastImpressionKey.current = impressionKey;
+          async function lookup(ev?: React.FormEvent) {
+  ev?.preventDefault();
+  setError(null);
+
+  // ✅ IMPORTANT: allow impressions to record each time user searches
+  lastImpressionKey.current = "";
+
+  onSearchStart?.();
+  ...
+}
+
 
           await Promise.all(
             liveOnly.map((r, idx) =>
@@ -269,3 +279,4 @@ export default function FindCleaners({
     </div>
   );
 }
+
