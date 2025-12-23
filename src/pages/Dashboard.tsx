@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
+import AreaBreakdown30d from "../components/AreaBreakdown30d";
 
 type Cleaner = {
   id: string;
@@ -182,11 +183,7 @@ export default function Dashboard() {
   }
 
   if (loading) {
-    return (
-      <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">
-        Loading…
-      </main>
-    );
+    return <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8">Loading…</main>;
   }
 
   if (err) {
@@ -210,11 +207,8 @@ export default function Dashboard() {
   }
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
-
   const industryKey = `${cleaner.id}:${activeCategoryId ?? "none"}`;
-
-  // ✅ NEW: keep Analytics deep link on the same industry tab
-  const analyticsLink = activeCategoryId ? `/analytics?category=${activeCategoryId}` : "/analytics";
+  const breakdownKey = `areaBreakdown:${industryKey}`;
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -251,15 +245,11 @@ export default function Dashboard() {
       {needsOnboard ? (
         <section className="card">
           <div className="card-pad space-y-4">
-            <p className="muted">
-              Welcome! Add your logo, business name, and address to complete your profile.
-            </p>
+            <p className="muted">Welcome! Add your logo, business name, and address to complete your profile.</p>
             <CleanerOnboard
               userId={userId}
               cleaner={cleaner}
-              onSaved={(patch) =>
-                setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))
-              }
+              onSaved={(patch) => setCleaner((prev) => (prev ? ({ ...prev, ...patch } as Cleaner) : prev))}
             />
           </div>
         </section>
@@ -339,19 +329,28 @@ export default function Dashboard() {
 
               {activeCategoryId ? (
                 <div className="space-y-6" key={industryKey}>
+                  {/* Analytics */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Analytics</h3>
+                      <span className="text-sm text-gray-500">This industry</span>
                     </div>
 
-                    {/* ✅ Pass cleanerId + categoryId properly */}
                     <AnalyticsOverview
                       key={`analytics:${industryKey}`}
                       cleanerId={cleaner.id}
                       categoryId={activeCategoryId}
                     />
+
+                    {/* ✅ NEW: Breakdown by area for this industry */}
+                    <AreaBreakdown30d
+                      key={breakdownKey}
+                      cleanerId={cleaner.id}
+                      categoryId={activeCategoryId}
+                    />
                   </div>
 
+                  {/* Service Areas */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Your Service Areas</h3>
