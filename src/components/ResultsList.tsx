@@ -19,7 +19,7 @@ type Props = {
   postcode: string;
   locality?: string;
 
-  // ✅ keep these so Landing.tsx compiles
+  // ✅ keep these and actually use them
   searchLat?: number | null;
   searchLng?: number | null;
 };
@@ -28,6 +28,8 @@ export default function ResultsList({
   cleaners,
   postcode,
   locality,
+  searchLat = null,
+  searchLng = null,
 }: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
@@ -52,12 +54,8 @@ export default function ResultsList({
           whatsapp: c.whatsapp,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          payment_methods: toArr(
-            c.payment_methods ?? c.payment_methods_accepted ?? c.payments
-          ),
-          service_types: toArr(
-            c.service_types ?? c.services ?? c.service_types_supported
-          ),
+          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
+          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
         };
 
         return (
@@ -68,6 +66,8 @@ export default function ResultsList({
             showPayments
             areaId={c.area_id ?? null}
             categoryId={c.category_id ?? null}
+            searchLat={searchLat}
+            searchLng={searchLng}
           />
         );
       })}
