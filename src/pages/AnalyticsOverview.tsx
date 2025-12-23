@@ -1,103 +1,178 @@
-// src/components/AnalyticsOverview.tsx
-import { useEffect, useMemo, useState } from "react";
-import { supabase } from "../lib/supabase";
+// src/lib/analytics.ts
+import { supabase } from "./supabase";
 
-type Row = {
-  impressions: number;
-  clicks_message: number;
-  clicks_website: number;
-  clicks_phone: number;
-};
+type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json }
+  | Json[];
 
-export default function AnalyticsOverview(props: {
-  cleanerId: string;
-  categoryId: string | null;
-}) {
-  const { cleanerId, categoryId } = props;
+export type AnalyticsEvent =
+  | "impression"
+  | "click_message"
+  | "click_phone"
+  | "click_website";
 
-  const [row, setRow] = useState<Row | null>(null);
-  const [loading, setLoading] = useState(true);
+export function getOrCreateSessionId(): string {
+  try {
+    const key = "cl_session_id";
+    const existing = localStorage.getItem(key);
+    if (existing) return existing;
 
-  const label = useMemo(() => (categoryId ? "This industry" : "All industries"), [categoryId]);
-
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      setLoading(true);
-
-      let q = supabase
-        .from("area_stats_30d")
-        .select("impressions, clicks_message, clicks_website, clicks_phone")
-        .eq("cleaner_id", cleanerId);
-
-      // If your view includes category_id, filter it.
-      // If it doesn't exist yet, the query will error — in that case you need to add category_id to the view.
-      if (categoryId) q = q.eq("category_id", categoryId);
-
-      const { data, error } = await q;
-
-      if (!alive) return;
-
-      if (error) {
-        console.warn("AnalyticsOverview load error:", error);
-        setRow({ impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 });
-        setLoading(false);
-        return;
-      }
-
-      const agg = (data || []).reduce(
-        (acc: Row, r: any) => ({
-          impressions: acc.impressions + (r.impressions || 0),
-          clicks_message: acc.clicks_message + (r.clicks_message || 0),
-          clicks_website: acc.clicks_website + (r.clicks_website || 0),
-          clicks_phone: acc.clicks_phone + (r.clicks_phone || 0),
-        }),
-        { impressions: 0, clicks_message: 0, clicks_website: 0, clicks_phone: 0 }
-      );
-
-      setRow(agg);
-      setLoading(false);
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, [cleanerId, categoryId]);
-
-  if (loading) return <div className="p-4 border rounded-xl">Loading analytics…</div>;
-  if (!row) return null;
-
-  const totalClicks = row.clicks_message + row.clicks_website + row.clicks_phone;
-  const ctr = row.impressions ? `${((totalClicks / row.impressions) * 100).toFixed(1)}%` : "—";
-
-  return (
-    <div className="p-4 border rounded-xl">
-      <div className="flex items-baseline justify-between">
-        <h3 className="text-lg font-semibold">Last 30 days</h3>
-        <span className="text-sm text-gray-500">{label}</span>
-      </div>
-
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
-  <Stat label="Impressions" value={totals.impressions} />
-  <Stat label="Clicks (Message)" value={totals.clicks_message} />
-  <Stat label="Clicks (Website)" value={totals.clicks_website} />
-  <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
-  <Stat label="Total CTR" value={ctr} />
-</div>
-
-      <div className="mt-4 text-sm text-gray-700">
-        <span className="font-medium">Total CTR:</span> {ctr}
-      </div>
-    </div>
-  );
+    const id = crypto.randomUUID();
+    localStorage.setItem(key, id);
+    return id;
+  } catch {
+    return crypto.randomUUID();
+  }
 }
 
-function Stat({ label, value }: { label: string; value: number | string }) {
-  return (
-    <div className="p-3 rounded-lg bg-gray-50 border">
-      <div className="text-2xl font-semibold">{value}</div>
-      <div className="text-sm text-gray-600">{label}</div>
-    </div>
-  );
+type RecordEventArgs = {
+  cleanerId: string;
+  event: AnalyticsEvent;
+  sessionId?: string;
+  areaId?: string | null;
+  categoryId?: string | null;
+  meta?: Record<string, Json>;
+};
+
+type RecordEventFromPointArgs = {
+  cleanerId: string;
+  lat: number;
+  lng: number;
+  event: AnalyticsEvent;
+  sessionId?: string;
+  categoryId?: string | null;
+  meta?: Record<string, Json>;
+};
+
+/**
+ * INTERNAL: send a POST to Supabase REST RPC with keepalive (so it survives navigation)
+ */
+function postRpcKeepalive(rpcName: string, body: any) {
+  // supabase-js v2 exposes these
+  const anyClient: any = supabase as any;
+  const supabaseUrl: string | undefined = anyClient?.supabaseUrl;
+  const supabaseKey: string | undefined = anyClient?.supabaseKey;
+
+  if (!supabaseUrl || !supabaseKey) {
+    // fallback: best effort (may get cancelled on nav)
+    // still useful for local testing
+    return supabase.rpc(rpcName, body);
+  }
+
+  const url = `${supabaseUrl}/rest/v1/rpc/${rpcName}`;
+  const payload = JSON.stringify(body);
+
+  // If browser supports beacon, use it (most reliable during unload/nav)
+  if (typeof navigator !== "undefined" && typeof navigator.sendBeacon === "function") {
+    const blob = new Blob([payload], { type: "application/json" });
+    navigator.sendBeacon(url, blob);
+    return;
+  }
+
+  // Otherwise use fetch keepalive
+  fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: supabaseKey,
+      Authorization: `Bearer ${supabaseKey}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal",
+    },
+    body: payload,
+    keepalive: true,
+    mode: "cors",
+    credentials: "omit",
+  }).catch(() => {
+    // ignore errors (analytics should never break UX)
+  });
+}
+
+/**
+ * Writes via area-based RPC.
+ * If you want a "reliable" call before navigation, use recordEventBeacon().
+ */
+export async function recordEvent({
+  cleanerId,
+  areaId,
+  event,
+  sessionId,
+  categoryId,
+  meta,
+}: RecordEventArgs) {
+  const sid = sessionId ?? getOrCreateSessionId();
+
+  if (!areaId) {
+    throw new Error("recordEvent requires areaId. Use recordEventFromPointBeacon instead.");
+  }
+
+  const payload: any = {
+    p_cleaner_id: cleanerId,
+    p_area_id: areaId,
+    p_event: event,
+    p_session_id: sid,
+    p_meta: meta ?? {},
+    p_category_id: categoryId ?? null,
+  };
+
+  const { error } = await supabase.rpc("record_event", payload);
+  if (error) throw error;
+}
+
+/**
+ * Reliable "beacon-like" event logger for area-based events.
+ * This is what you should call from clicks before opening new tabs.
+ */
+export function recordEventBeacon(args: RecordEventArgs) {
+  const sid = args.sessionId ?? getOrCreateSessionId();
+
+  // If areaId is missing, still record (area_id will be null)
+  const payload: any = {
+    p_cleaner_id: args.cleanerId,
+    p_area_id: args.areaId ?? null,
+    p_event: args.event,
+    p_session_id: sid,
+    p_meta: args.meta ?? {},
+    p_category_id: args.categoryId ?? null,
+  };
+
+  postRpcKeepalive("record_event", payload);
+}
+
+/**
+ * Point-based RPC (DB finds area from lat/lng).
+ */
+export async function recordEventFromPointBeacon({
+  cleanerId,
+  lat,
+  lng,
+  event,
+  sessionId,
+  categoryId,
+  meta,
+}: RecordEventFromPointArgs) {
+  const sid = sessionId ?? getOrCreateSessionId();
+
+  const payload: any = {
+    p_cleaner_id: cleanerId,
+    p_lat: lat,
+    p_lng: lng,
+    p_event: event,
+    p_session_id: sid,
+    p_meta: meta ?? {},
+    p_category_id: categoryId ?? null,
+  };
+
+  // reliable send (survives navigation)
+  postRpcKeepalive("record_event_from_point", payload);
+}
+
+/**
+ * Compatibility wrapper (if anything imports recordEventFromPoint)
+ */
+export async function recordEventFromPoint(args: RecordEventFromPointArgs) {
+  return recordEventFromPointBeacon(args);
 }
