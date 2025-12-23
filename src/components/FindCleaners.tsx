@@ -19,19 +19,12 @@ export type FindCleanersProps = {
 
 type MatchIn = {
   cleaner_id: string;
-  business_name: string | null;
-  logo_url: string | null;
-  website: string | null;
-  phone: string | null;
-  whatsapp?: string | null;
-  payment_methods?: unknown;
-  service_types?: unknown;
-  rating_avg?: number | null;
-  rating_count?: number | null;
+  // These are optional because different RPCs return different shapes
   distance_meters?: number | null;
+  distance_m?: number | null;
   area_id?: string | null;
   area_name?: string | null;
-  is_covering_sponsor?: boolean | null;
+  is_covering_sponsor?: boolean | string | number | null;
 };
 
 export type MatchOut = {
@@ -66,6 +59,28 @@ function toArray(v: unknown): string[] {
       .filter(Boolean);
   }
   return [];
+}
+
+function truthy(v: any) {
+  return v === true || v === 1 || v === "1" || v === "true" || v === "t" || v === "yes";
+}
+
+// deterministic shuffle so the list is “random” but stable per postcode/day
+function hashString(str: string) {
+  let h = 2166136261;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+function mulberry32(a: number) {
+  return function () {
+    let t = (a += 0x6d2b79f5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 const FRIENDLY_BAD_POSTCODE =
@@ -153,22 +168,25 @@ export default function FindCleaners({
         geo.result.region ||
         "";
 
-      // 2) SAFE polygon-gated RPC (no area -> invisible; outside polygon -> invisible)
-const { data: eligible, error: rpcErr } = await supabase.rpc("search_cleaners", {
-  p_category_slug: serviceSlug,
-  p_lat: lat,
-  p_lng: lng,
-});
+      // 2) Polygon-gated RPC
+      // IMPORTANT: we expect this RPC to return at least cleaner_id,
+      // and ideally: area_id, area_name, distance_meters, is_covering_sponsor
+      const { data: eligible, error: rpcErr } = await supabase.rpc("search_cleaners", {
+        p_category_slug: serviceSlug,
+        p_lat: lat,
+        p_lng: lng,
+      });
 
-if (rpcErr) {
-  setError(rpcErr.message);
-  return;
-}
+      if (rpcErr) {
+        setError(rpcErr.message);
+        return;
+      }
 
-const eligibleIds = (eligible || [])
-  .map((r: any) => r.cleaner_id)
-  .filter(Boolean);
+      const eligibleRows: MatchIn[] = (eligible || []) as any[];
 
+      const eligibleIds = eligibleRows
+        .map((r) => r.cleaner_id)
+        .filter(Boolean);
 
       if (eligibleIds.length === 0) {
         const none: MatchOut[] = [];
@@ -177,9 +195,27 @@ const eligibleIds = (eligible || [])
         return;
       }
 
+      // Build a lookup map so we can attach sponsor/area/distance returned by the RPC
+      const metaByCleanerId = new Map<
+        string,
+        { area_id: string | null; area_name: string | null; distance_m: number | null; is_covering_sponsor: boolean }
+      >();
+
+      for (const r of eligibleRows) {
+        const id = r.cleaner_id;
+        if (!id) continue;
+
+        metaByCleanerId.set(id, {
+          area_id: r.area_id ?? null,
+          area_name: r.area_name ?? null,
+          distance_m:
+            (typeof r.distance_meters === "number" ? r.distance_meters : null) ??
+            (typeof r.distance_m === "number" ? r.distance_m : null),
+          is_covering_sponsor: truthy(r.is_covering_sponsor),
+        });
+      }
+
       // 3) Fetch full cleaner details for the eligible IDs
-      // NOTE: this keeps the UI working (phone/website/whatsapp/etc).
-      // Area + sponsor flags will be wired back in once the RPC returns them safely.
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
@@ -194,42 +230,64 @@ const eligibleIds = (eligible || [])
 
       const categoryId = categoryIdRef.current;
 
-      const normalized: MatchOut[] = (cleaners || []).map((c: any) => ({
-        cleaner_id: c.id,
-        business_name: c.business_name ?? null,
-        logo_url: c.logo_url ?? null,
-        website: c.website ?? null,
-        phone: c.phone ?? null,
-        whatsapp: c.whatsapp ?? null,
-        payment_methods: toArray(c.payment_methods),
-        service_types: toArray(c.service_types),
-        rating_avg: c.rating_avg ?? null,
-        rating_count: c.rating_count ?? null,
-        distance_m: null,          // step-by-step: keep null for now
-        area_id: null,             // step-by-step: re-add via RPC later
-        area_name: null,           // step-by-step: re-add via RPC later
-        is_covering_sponsor: false,// step-by-step: re-add via RPC later
-        category_id: categoryId,
-      }));
+      const normalized: MatchOut[] = (cleaners || []).map((c: any) => {
+        const meta = metaByCleanerId.get(c.id) ?? {
+          area_id: null,
+          area_name: null,
+          distance_m: null,
+          is_covering_sponsor: false,
+        };
+
+        return {
+          cleaner_id: c.id,
+          business_name: c.business_name ?? null,
+          logo_url: c.logo_url ?? null,
+          website: c.website ?? null,
+          phone: c.phone ?? null,
+          whatsapp: c.whatsapp ?? null,
+          payment_methods: toArray(c.payment_methods),
+          service_types: toArray(c.service_types),
+          rating_avg: c.rating_avg ?? null,
+          rating_count: c.rating_count ?? null,
+          distance_m: meta.distance_m ?? null,
+          area_id: meta.area_id ?? null,
+          area_name: meta.area_name ?? null,
+          is_covering_sponsor: Boolean(meta.is_covering_sponsor),
+          category_id: categoryId,
+        };
+      });
 
       // live-only
       const liveOnly = normalized.filter((r) => r.phone || r.whatsapp || r.website);
+
+      // 3.5) Order for display: sponsors first, organic shuffled (stable per postcode/day)
+      const seedStr = `${pc}|${serviceSlug}|${new Date().toISOString().slice(0, 10)}`;
+      const rng = mulberry32(hashString(seedStr));
+
+      const sponsored = liveOnly.filter((x) => x.is_covering_sponsor);
+      const organic = liveOnly.filter((x) => !x.is_covering_sponsor);
+
+      const organicShuffled = [...organic];
+      for (let i = organicShuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(rng() * (i + 1));
+        [organicShuffled[i], organicShuffled[j]] = [organicShuffled[j], organicShuffled[i]];
+      }
+
+      const ordered = [...sponsored, ...organicShuffled];
 
       // 4) Record impressions (FETCH so you SEE it in Network)
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
-        const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
+        const sponsoredCount = ordered.filter((x) => x.is_covering_sponsor).length;
 
-        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
-          5
-        )}|${liveOnly.length}`;
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(5)}|${ordered.length}`;
 
         if (lastImpressionKey.current !== impressionKey) {
           lastImpressionKey.current = impressionKey;
 
           await Promise.all(
-            liveOnly.map((r, idx) =>
+            ordered.map((r, idx) =>
               recordEventFetch({
                 event: "impression",
                 cleanerId: r.cleaner_id,
@@ -246,7 +304,7 @@ const eligibleIds = (eligible || [])
                   area_name: r.area_name ?? null,
                   position: idx + 1,
                   is_sponsored: Boolean(r.is_covering_sponsor),
-                  results_count: liveOnly.length,
+                  results_count: ordered.length,
                   sponsored_count: sponsoredCount,
                   lat,
                   lng,
@@ -260,8 +318,8 @@ const eligibleIds = (eligible || [])
       }
 
       // 5) Update UI
-      if (!onSearchComplete) setResults(liveOnly);
-      onSearchComplete?.(liveOnly, pc, town, lat, lng);
+      if (!onSearchComplete) setResults(ordered);
+      onSearchComplete?.(ordered, pc, town, lat, lng);
     } catch (e: any) {
       console.error("FindCleaners lookup error:", e);
       setError("Something went wrong. Please try again.");
@@ -301,5 +359,3 @@ const eligibleIds = (eligible || [])
     </div>
   );
 }
-
-
