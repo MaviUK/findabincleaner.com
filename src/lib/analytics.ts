@@ -1,58 +1,75 @@
 // src/lib/analytics.ts
-export type AnalyticsEvent =
-  | "impression"
-  | "click_message"
-  | "click_phone"
-  | "click_website";
-
-type RecordEventInput = {
+type RecordEventArgs = {
   cleanerId: string;
-  event: AnalyticsEvent;
+  event: "impression" | "click_message" | "click_website" | "click_phone";
   sessionId?: string | null;
   categoryId?: string | null;
   areaId?: string | null;
+  lat?: number | null;
+  lng?: number | null;
   meta?: Record<string, any>;
 };
 
-const SESSION_KEY = "cleanly_session_id";
-
 export function getOrCreateSessionId(): string {
-  try {
-    const existing = localStorage.getItem(SESSION_KEY);
-    if (existing) return existing;
-    const id = crypto.randomUUID();
-    localStorage.setItem(SESSION_KEY, id);
-    return id;
-  } catch {
-    return crypto.randomUUID();
+  const key = "cleanly_session_id";
+  let id = localStorage.getItem(key);
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem(key, id);
   }
+  return id;
 }
 
-export async function recordEvent(input: RecordEventInput): Promise<void> {
+async function postKeepAlive(url: string, body: any) {
+  // Prefer sendBeacon because it survives navigation best
+  try {
+    if (navigator.sendBeacon) {
+      const blob = new Blob([JSON.stringify(body)], { type: "application/json" });
+      const ok = navigator.sendBeacon(url, blob);
+      if (ok) return;
+    }
+  } catch {
+    // ignore and fall back to fetch
+  }
+
+  // Fallback to fetch with keepalive
+  await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    keepalive: true,
+  });
+}
+
+export async function recordEventBeacon(args: RecordEventArgs) {
   const payload = {
-    cleaner_id: input.cleanerId,
-    event: input.event,
-    session_id: input.sessionId ?? null,
-    category_id: input.categoryId ?? null,
-    area_id: input.areaId ?? null,
-    meta: input.meta ?? {},
+    event: args.event,
+    cleaner_id: args.cleanerId,
+    session_id: args.sessionId ?? null,
+    category_id: args.categoryId ?? null,
+    area_id: args.areaId ?? null,
+    meta: args.meta ?? {},
   };
 
-  const url = `${window.location.origin}/api/record_event`;
+  await postKeepAlive("/api/record_event", payload);
+}
 
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      keepalive: true,
-      body: JSON.stringify(payload),
-    });
+/**
+ * Variant that also sends lat/lng so the backend can determine area_id if missing.
+ */
+export async function recordEventFromPointBeacon(args: RecordEventArgs) {
+  const payload = {
+    event: args.event,
+    cleaner_id: args.cleanerId,
+    session_id: args.sessionId ?? null,
+    category_id: args.categoryId ?? null,
+    area_id: args.areaId ?? null,
+    meta: {
+      ...(args.meta ?? {}),
+      lat: args.lat ?? null,
+      lng: args.lng ?? null,
+    },
+  };
 
-    if (!res.ok) {
-      const txt = await res.text().catch(() => "");
-      console.error("record_event failed:", res.status, txt, payload);
-    }
-  } catch (e) {
-    console.error("record_event fetch error:", e, payload);
-  }
+  await postKeepAlive("/api/record_event", payload);
 }
