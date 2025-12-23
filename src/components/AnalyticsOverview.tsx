@@ -106,16 +106,14 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
         </span>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
-        <Stat label="Impressions" value={totals.impressions} />
-        <Stat label="Clicks (Message)" value={totals.clicks_message} />
-        <Stat label="Clicks (Website)" value={totals.clicks_website} />
-        <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
-      </div>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
+  <Stat label="Impressions" value={totals.impressions} />
+  <Stat label="Clicks (Message)" value={totals.clicks_message} />
+  <Stat label="Clicks (Website)" value={totals.clicks_website} />
+  <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
+  <Stat label="Total CTR" value={ctr} />
+</div>
 
-      <div className="mt-4 text-sm text-gray-700">
-        <span className="font-medium">Total CTR:</span> {ctr}
-      </div>
 
       {/* ✅ Collapsible breakdown */}
       <details className="mt-4 rounded-lg border bg-white">
@@ -132,7 +130,7 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
   );
 }
 
-function Stat({ label, value }: { label: string; value: number }) {
+function Stat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="p-3 rounded-lg bg-gray-50 border">
       <div className="text-2xl font-semibold">{value}</div>
