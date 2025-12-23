@@ -5,7 +5,6 @@ import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
-import AreaBreakdown30d from "../components/AreaBreakdown30d";
 
 type Cleaner = {
   id: string;
@@ -338,13 +337,6 @@ export default function Dashboard() {
 
                     <AnalyticsOverview
                       key={`analytics:${industryKey}`}
-                      cleanerId={cleaner.id}
-                      categoryId={activeCategoryId}
-                    />
-
-                    {/* ✅ NEW: Breakdown by area for this industry */}
-                    <AreaBreakdown30d
-                      key={breakdownKey}
                       cleanerId={cleaner.id}
                       categoryId={activeCategoryId}
                     />
