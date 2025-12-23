@@ -1,6 +1,7 @@
 // src/components/AnalyticsOverview.tsx
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
+import AreaBreakdown30d from "./AreaBreakdown30d";
 
 type Totals = {
   impressions: number;
@@ -40,7 +41,6 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
       setLoading(true);
 
       try {
-        // Helper: count events for this cleaner + (optional) category in last 30 days
         async function countEvent(event: string) {
           let q = supabase
             .from("analytics_events")
@@ -116,6 +116,18 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
       <div className="mt-4 text-sm text-gray-700">
         <span className="font-medium">Total CTR:</span> {ctr}
       </div>
+
+      {/* ✅ Collapsible breakdown */}
+      <details className="mt-4 rounded-lg border bg-white">
+        <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium flex items-center justify-between">
+          <span>Stats by Area</span>
+          <span className="text-xs text-gray-500">Click to expand</span>
+        </summary>
+
+        <div className="p-3 pt-0">
+          <AreaBreakdown30d cleanerId={cleanerId} categoryId={categoryFilter} />
+        </div>
+      </details>
     </div>
   );
 }
