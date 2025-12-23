@@ -8,7 +8,7 @@ type Props = {
   locality?: string;
 };
 
-export default function ResultsList({ cleaners, postcode, locality }: Props) {
+export default function ResultsList({ cleaners, postcode }: Props) {
   if (!cleaners?.length) return null;
 
   const { sponsored, organic } = useMemo(() => {
@@ -34,9 +34,11 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
   const sponsoredRest = sponsored.length > 1 ? sponsored.slice(1) : [];
 
   const renderCard = (c: any) => {
-    // Build the minimum cleaner shape CleanerCard expects
+    const cleanerId = c.cleaner_id ?? c.id; // <- key fix
+
     const cleaner = {
-      id: c.id ?? c.cleaner_id,
+      cleaner_id: cleanerId, // <- REQUIRED by your Cleaner type
+      id: cleanerId,         // keep for safety; some components use id
       business_name: c.business_name ?? "Cleaner",
       logo_url: c.logo_url ?? null,
       distance_m: c.distance_meters ?? c.distance_m ?? null,
@@ -51,8 +53,8 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
 
     return (
       <CleanerCard
-        key={cleaner.id}
-        cleaner={cleaner}
+        key={cleanerId}
+        cleaner={cleaner as any}
         postcodeHint={postcode}
         showPayments
         areaId={c.area_id ?? null}
@@ -62,17 +64,17 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
 
   return (
     <div className="mt-4 space-y-4">
-      {/* First position (paid) = full width */}
+      {/* First sponsored = full width */}
       {sponsoredFirst && <div>{renderCard(sponsoredFirst)}</div>}
 
-      {/* Remaining paid = still above organic, but 2 per row */}
+      {/* Remaining sponsored = 2 per row */}
       {sponsoredRest.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {sponsoredRest.map(renderCard)}
         </div>
       )}
 
-      {/* Organic = random order, 2 per row */}
+      {/* Organic = shuffled, 2 per row */}
       {organic.length > 0 && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           {organic.map(renderCard)}
