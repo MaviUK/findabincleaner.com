@@ -1,7 +1,7 @@
 // src/components/FindCleaners.tsx
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
-import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
+import { getOrCreateSessionId, recordEventBeacon } from "../lib/analytics";
 
 export type ServiceSlug = "bin-cleaner" | "window-cleaner" | "cleaner";
 
@@ -49,7 +49,7 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-  category_id?: string | null; // IMPORTANT: used by cards + analytics
+  category_id?: string | null;
 };
 
 function toArray(v: unknown): string[] {
@@ -81,10 +81,9 @@ export default function FindCleaners({
   const [results, setResults] = useState<MatchOut[]>([]);
   const [error, setError] = useState<string | null>(null);
 
-  // stop duplicate impressions for the exact same search+result count
   const lastImpressionKey = useRef<string>("");
 
-  // service_categories.id lookup (so analytics filters work)
+  // cache category id for current serviceSlug
   const categoryIdRef = useRef<string | null>(null);
 
   useEffect(() => {
@@ -124,7 +123,6 @@ export default function FindCleaners({
     try {
       setLoading(true);
 
-      // 1) Geocode
       const res = await fetch(
         `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
       );
@@ -138,22 +136,22 @@ export default function FindCleaners({
         return;
       }
 
-      const geo = await res.json();
-      if (geo.status !== 200 || !geo.result) {
+      const data = await res.json();
+      if (data.status !== 200 || !data.result) {
         setError(FRIENDLY_BAD_POSTCODE);
         return;
       }
 
-      const lat: number = Number(geo.result.latitude);
-      const lng: number = Number(geo.result.longitude);
+      const lat: number = Number(data.result.latitude);
+      const lng: number = Number(data.result.longitude);
       const town: string =
-        geo.result.post_town ||
-        geo.result.admin_district ||
-        geo.result.parliamentary_constituency ||
-        geo.result.region ||
+        data.result.post_town ||
+        data.result.admin_district ||
+        data.result.parliamentary_constituency ||
+        data.result.region ||
         "";
 
-      // 2) RPC search
+      // RPC
       const { data: rows, error: rpcErr } = await supabase.rpc(
         "search_cleaners_by_location",
         {
@@ -190,13 +188,18 @@ export default function FindCleaners({
         category_id: categoryId,
       }));
 
-      // live-only
-      const liveOnly = normalized.filter((r) => r.phone || r.whatsapp || r.website);
+      // only show listings with at least one contact option
+      const liveOnly = normalized.filter((r) => {
+        return Boolean(r.phone || r.whatsapp || r.website);
+      });
 
-      // 3) Record impressions (FETCH so you SEE it in Network)
+      // record impressions
       try {
         const sessionId = getOrCreateSessionId();
-        const searchId = crypto.randomUUID();
+        const searchId =
+          (crypto as any)?.randomUUID?.() ??
+          `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
         const sponsoredCount = liveOnly.filter((x) => x.is_covering_sponsor).length;
 
         const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
@@ -208,17 +211,16 @@ export default function FindCleaners({
 
           await Promise.all(
             liveOnly.map((r, idx) =>
-              recordEventFetch({
-                event: "impression",
+              recordEventBeacon({
                 cleanerId: r.cleaner_id,
                 areaId: r.area_id ?? null,
                 categoryId: r.category_id ?? null,
+                event: "impression",
                 sessionId,
                 meta: {
                   search_id: searchId,
                   postcode: pc,
                   town,
-                  locality: town,
                   service_slug: serviceSlug,
                   area_id: r.area_id ?? null,
                   area_name: r.area_name ?? null,
@@ -234,10 +236,9 @@ export default function FindCleaners({
           );
         }
       } catch (e) {
-        console.warn("impression logging failed", e);
+        console.warn("record impressions failed", e);
       }
 
-      // 4) Update UI
       if (!onSearchComplete) setResults(liveOnly);
       onSearchComplete?.(liveOnly, pc, town, lat, lng);
     } catch (e: any) {
