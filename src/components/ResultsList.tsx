@@ -1,76 +1,51 @@
 // src/components/ResultsList.tsx
-import CleanerCard, { Cleaner } from "./CleanerCard";
-
-function toArr(v: unknown): string[] {
-  if (!v) return [];
-  if (Array.isArray(v)) return v as string[];
-  if (typeof v === "string") {
-    try {
-      const parsed = JSON.parse(v);
-      if (Array.isArray(parsed)) return parsed as string[];
-    } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
+import CleanerCard, { type Cleaner } from "./CleanerCard";
 
 type Props = {
   cleaners: any[];
-  postcode: string;
+  postcode?: string;
   locality?: string;
-
-  // ✅ keep these and actually use them
-  searchLat?: number | null;
-  searchLng?: number | null;
 };
 
-export default function ResultsList({
-  cleaners,
-  postcode,
-  locality,
-  searchLat = null,
-  searchLng = null,
-}: Props) {
-  if (!cleaners?.length) {
-    const pc = postcode?.toUpperCase?.() || "your area";
-    return (
-      <p className="text-center text-gray-600 mt-6">
-        No cleaners found near {pc}
-        {locality ? `, in ${locality}` : ""}.
-      </p>
-    );
-  }
+export default function ResultsList({ cleaners, postcode, locality }: Props) {
+  const list = (cleaners || []) as any[];
 
   return (
-    <div className="space-y-4 mt-4">
-      {cleaners.map((c) => {
+    <div className="space-y-3">
+      {list.map((c, idx) => {
+        // Normalize whatever your RPC returns into the CleanerCard "Cleaner" type
         const cleaner: Cleaner = {
-          id: c.id ?? c.cleaner_id,
-          business_name: c.business_name,
-          logo_url: c.logo_url,
-          distance_m: c.distance_meters ?? c.distance_m ?? null,
-          website: c.website,
-          phone: c.phone,
-          whatsapp: c.whatsapp,
+          cleaner_id: c.cleaner_id ?? c.id ?? "", // prefer cleaner_id
+          business_name: c.business_name ?? c.name ?? null,
+          logo_url: c.logo_url ?? null,
+          website: c.website ?? null,
+          phone: c.phone ?? null,
+          whatsapp: c.whatsapp ?? null,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          payment_methods: toArr(c.payment_methods ?? c.payment_methods_accepted ?? c.payments),
-          service_types: toArr(c.service_types ?? c.services ?? c.service_types_supported),
+          distance_m: c.distance_m ?? c.distance_meters ?? null,
+          area_id: c.area_id ?? null,
+          category_id: c.category_id ?? null,
         };
+
+        // Safety: skip broken rows
+        if (!cleaner.cleaner_id) return null;
 
         return (
           <CleanerCard
-            key={cleaner.id}
+            key={`${cleaner.cleaner_id}-${idx}`}
             cleaner={cleaner}
-            postcodeHint={postcode}
-            showPayments
-            areaId={c.area_id ?? null}
-            categoryId={c.category_id ?? null}
-            searchLat={searchLat}
-            searchLng={searchLng}
+            postcodeHint={postcode || locality || ""}
+            showPayments={true}
           />
         );
       })}
+
+      {list.length === 0 && (
+        <div className="rounded-xl border border-black/10 bg-white p-4 text-sm text-gray-600">
+          No results yet — try searching a postcode.
+        </div>
+      )}
     </div>
   );
 }
