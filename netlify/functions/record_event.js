@@ -1,79 +1,58 @@
 // netlify/functions/record_event.js
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
-
 export const handler = async (event) => {
-  // CORS
-  const headers = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
-    "Content-Type": "application/json",
-    "Cache-Control": "no-store",
-  };
-
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers, body: "" };
-  }
-
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers,
-      body: JSON.stringify({ error: "Method not allowed" }),
-    };
-  }
-
   try {
-    const body = JSON.parse(event.body || "{}");
-
-    // expected payload
-    const {
-      event: ev,
-      cleaner_id,
-      category_id = null,
-      area_id = null,
-      session_id = null,
-      meta = {},
-      uniq = null,
-    } = body;
-
-    if (!ev || !cleaner_id) {
-      return {
-        statusCode: 400,
-        headers,
-        body: JSON.stringify({ error: "Missing event or cleaner_id" }),
-      };
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, body: "Method Not Allowed" };
     }
 
-    const { error } = await supabaseAdmin.from("analytics_events").insert({
-      event: ev,
+    const SUPABASE_URL = process.env.SUPABASE_URL;
+    const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE;
+
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE) {
+      return { statusCode: 500, body: "Missing Supabase env vars" };
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE);
+
+    const body = JSON.parse(event.body || "{}");
+
+    const cleaner_id = body.cleanerId;
+    const area_id = body.areaId ?? null;
+    const category_id = body.categoryId ?? null;
+    const session_id = body.sessionId ?? null;
+    const ev = body.event;
+    const meta = body.meta ?? {};
+
+    if (!cleaner_id || !ev) {
+      return { statusCode: 400, body: "Missing cleanerId or event" };
+    }
+
+    // IMPORTANT: your DB uses a USER-DEFINED enum "event"
+    // so ev MUST match allowed values.
+    const allowed = ["impression", "click_message", "click_phone", "click_website"];
+    if (!allowed.includes(ev)) {
+      return { statusCode: 400, body: "Invalid event" };
+    }
+
+    const { error } = await supabase.from("analytics_events").insert({
       cleaner_id,
-      category_id,
       area_id,
+      category_id,
       session_id,
+      event: ev,
       meta,
-      uniq,
     });
 
     if (error) {
-      return {
-        statusCode: 500,
-        headers,
-        body: JSON.stringify({ error: error.message }),
-      };
+      console.error("analytics_events insert error:", error);
+      return { statusCode: 500, body: error.message };
     }
 
-    return { statusCode: 200, headers, body: JSON.stringify({ ok: true }) };
+    return { statusCode: 200, body: "ok" };
   } catch (e) {
-    return {
-      statusCode: 500,
-      headers,
-      body: JSON.stringify({ error: e?.message || "Unknown error" }),
-    };
+    console.error("record_event error:", e);
+    return { statusCode: 500, body: "Server error" };
   }
 };
