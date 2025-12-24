@@ -56,4 +56,4 @@ export const handler = async (event) => {
     console.error("record_event error:", e);
     return { statusCode: 500, body: "Server error" };
   }
-};
+}; 
