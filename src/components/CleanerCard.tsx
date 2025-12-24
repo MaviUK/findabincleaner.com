@@ -26,6 +26,12 @@ type Cleaner = {
 type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
+  showPayments?: boolean; // <-- add this so other files compile
+  areaId?: string | null;
+  categoryId?: string | null;
+  position?: number;
+};
+
 
   // explicitly passed so analytics never “loses” them
   areaId?: string | null;
@@ -112,10 +118,12 @@ function IconGlobe(props: { className?: string }) {
 export default function CleanerCard({
   cleaner,
   postcodeHint,
+  showPayments, // unused for now
   areaId,
   categoryId,
   position,
 }: Props) {
+
   const [showModal, setShowModal] = useState(false);
 
   const websiteHref = useMemo(() => {
