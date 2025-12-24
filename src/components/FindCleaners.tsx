@@ -33,6 +33,7 @@ export type MatchOut = {
   website: string | null;
   phone: string | null;
   whatsapp: string | null;
+  email: string | null; // ✅ add this
   payment_methods: string[];
   service_types: string[];
   rating_avg: number | null;
@@ -41,8 +42,9 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-  category_id?: string | null; // used by cards + analytics
+  category_id?: string | null;
 };
+
 
 function toArray(v: unknown): string[] {
   if (!v) return [];
@@ -318,3 +320,4 @@ export default function FindCleaners({
     </div>
   );
 }
+
