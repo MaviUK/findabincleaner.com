@@ -45,22 +45,17 @@ export default function CleanerCard({ cleaner, areaId, categoryId, position }: P
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // ✅ fire-and-forget click logging (do NOT await)
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
       void recordEventFetch({
         event,
         cleanerId: cleaner.cleaner_id,
-        areaId: areaId ?? cleaner.area_id ?? null,
-        categoryId: categoryId ?? cleaner.category_id ?? null,
+        areaId: areaId ?? null,
+        categoryId: categoryId ?? null, // ✅ do NOT fallback to cleaner.category_id (often missing)
         sessionId,
-        meta: {
-          position: position ?? null,
-          // you can add search_id later if you pass it down
-        },
+        meta: { position: position ?? null },
       });
     } catch (e) {
-      // shouldn't throw, but keep safe
       console.warn("record click failed", e);
     }
   }
