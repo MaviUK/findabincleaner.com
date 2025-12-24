@@ -40,7 +40,6 @@ async function postJSON(url: string, body: any) {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-    // IMPORTANT: keepalive makes it survive navigation
     keepalive: true,
     credentials: "omit",
   });
@@ -50,7 +49,6 @@ async function postJSON(url: string, body: any) {
     throw new Error(`record_event ${res.status}: ${text || res.statusText}`);
   }
 
-  // If your function returns JSON, fine; otherwise ignore.
   try {
     return await res.json();
   } catch {
@@ -59,7 +57,10 @@ async function postJSON(url: string, body: any) {
 }
 
 export async function recordEventFetch(payload: RecordEventPayload) {
-  // shape expected by your function/db
+  // ✅ guard: don't send invalid events
+  if (!payload.cleanerId) return null;
+
+  // shape expected by your function/db (snake_case)
   const body = {
     event: payload.event,
     cleaner_id: payload.cleanerId,
@@ -72,7 +73,6 @@ export async function recordEventFetch(payload: RecordEventPayload) {
   try {
     return await postJSON(PRIMARY_ENDPOINT, body);
   } catch (e) {
-    // fallback helps if /api redirect config ever breaks
     return await postJSON(FALLBACK_ENDPOINT, body);
   }
 }
