@@ -6,6 +6,10 @@ type Props = {
   cleaners: any[];
   postcode: string;
   locality?: string;
+
+  // ✅ NEW: pass the current search context down so clicks/impressions are attributed correctly
+  areaId?: string | null;
+  categoryId?: string | null;
 };
 
 function truthy(v: any) {
@@ -13,10 +17,8 @@ function truthy(v: any) {
 }
 
 function isSponsored(c: any) {
-  // Primary flag we expect from the RPC
   if (truthy(c?.is_covering_sponsor)) return true;
 
-  // Fallbacks in case the backend uses other names
   return !!(
     truthy(c?.is_sponsored) ||
     truthy(c?.sponsored) ||
@@ -58,7 +60,7 @@ function mulberry32(a: number) {
   };
 }
 
-export default function ResultsList({ cleaners, postcode, locality }: Props) {
+export default function ResultsList({ cleaners, postcode, locality, areaId, categoryId }: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
     return (
@@ -93,7 +95,6 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
       {ordered.map((c: any, idx: number) => {
         const cleanerId = c.cleaner_id ?? c.id;
 
-        // Minimal shape CleanerCard expects (and include required cleaner_id)
         const cleaner = {
           cleaner_id: cleanerId,
           id: cleanerId,
@@ -107,21 +108,27 @@ export default function ResultsList({ cleaners, postcode, locality }: Props) {
           rating_count: c.rating_count ?? null,
           payment_methods: toArr(c.payment_methods),
           service_types: toArr(c.service_types),
+
+          // keep these on the cleaner too, but we will pass explicit props as the source of truth
+          area_id: c.area_id ?? null,
+          category_id: c.category_id ?? null,
         };
 
+        // ✅ IMPORTANT: always pass the current search categoryId so clicks are attributed to the industry
         const card = (
           <CleanerCard
             key={cleanerId}
             cleaner={cleaner as any}
             postcodeHint={postcode}
             showPayments
-            areaId={c.area_id ?? null}
+            position={idx + 1}
+            areaId={areaId ?? c.area_id ?? null}
+            categoryId={categoryId ?? c.category_id ?? null}
           />
         );
 
         const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
 
-        // ✅ full width + highlight
         if (isFirstSponsored) {
           return (
             <div
