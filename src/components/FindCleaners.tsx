@@ -17,14 +17,13 @@ export type FindCleanersProps = {
   ) => void;
 };
 
-type MatchIn = {
+type RpcRow = {
   cleaner_id: string;
-  // These are optional because different RPCs return different shapes
-  distance_meters?: number | null;
-  distance_m?: number | null;
-  area_id?: string | null;
-  area_name?: string | null;
-  is_covering_sponsor?: boolean | string | number | null;
+  business_name: string | null;
+  area_id: string | null;
+  area_name: string | null;
+  is_covering_sponsor: boolean | null;
+  distance_meters: number | null;
 };
 
 export type MatchOut = {
@@ -42,7 +41,7 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-  category_id?: string | null; // IMPORTANT: used by cards + analytics
+  category_id?: string | null; // used by cards + analytics
 };
 
 function toArray(v: unknown): string[] {
@@ -61,26 +60,14 @@ function toArray(v: unknown): string[] {
   return [];
 }
 
-function truthy(v: any) {
-  return v === true || v === 1 || v === "1" || v === "true" || v === "t" || v === "yes";
-}
-
-// deterministic shuffle so the list is “random” but stable per postcode/day
-function hashString(str: string) {
-  let h = 2166136261;
-  for (let i = 0; i < str.length; i++) {
-    h ^= str.charCodeAt(i);
-    h = Math.imul(h, 16777619);
+function shuffle<T>(arr: T[]): T[] {
+  // Fisher–Yates shuffle (non-mutating)
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
   }
-  return h >>> 0;
-}
-function mulberry32(a: number) {
-  return function () {
-    let t = (a += 0x6d2b79f5);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
+  return a;
 }
 
 const FRIENDLY_BAD_POSTCODE =
@@ -168,26 +155,24 @@ export default function FindCleaners({
         geo.result.region ||
         "";
 
-      // 2) Polygon-gated RPC
-      // IMPORTANT: we expect this RPC to return at least cleaner_id,
-      // and ideally: area_id, area_name, distance_meters, is_covering_sponsor
-      const { data: eligible, error: rpcErr } = await supabase.rpc("search_cleaners", {
-        p_category_slug: serviceSlug,
-        p_lat: lat,
-        p_lng: lng,
-      });
+      // 2) RPC returns eligible cleaners + sponsor flags + matched area
+      const { data: rpcRows, error: rpcErr } = await supabase.rpc(
+        "search_cleaners",
+        {
+          p_category_slug: serviceSlug,
+          p_lat: lat,
+          p_lng: lng,
+        }
+      );
 
       if (rpcErr) {
         setError(rpcErr.message);
         return;
       }
 
-      const eligibleRows: MatchIn[] = (eligible || []) as any[];
+      const rows: RpcRow[] = (rpcRows || []) as any;
 
-      const eligibleIds = eligibleRows
-        .map((r) => r.cleaner_id)
-        .filter(Boolean);
-
+      const eligibleIds = rows.map((r) => r.cleaner_id).filter(Boolean);
       if (eligibleIds.length === 0) {
         const none: MatchOut[] = [];
         if (!onSearchComplete) setResults(none);
@@ -195,27 +180,7 @@ export default function FindCleaners({
         return;
       }
 
-      // Build a lookup map so we can attach sponsor/area/distance returned by the RPC
-      const metaByCleanerId = new Map<
-        string,
-        { area_id: string | null; area_name: string | null; distance_m: number | null; is_covering_sponsor: boolean }
-      >();
-
-      for (const r of eligibleRows) {
-        const id = r.cleaner_id;
-        if (!id) continue;
-
-        metaByCleanerId.set(id, {
-          area_id: r.area_id ?? null,
-          area_name: r.area_name ?? null,
-          distance_m:
-            (typeof r.distance_meters === "number" ? r.distance_meters : null) ??
-            (typeof r.distance_m === "number" ? r.distance_m : null),
-          is_covering_sponsor: truthy(r.is_covering_sponsor),
-        });
-      }
-
-      // 3) Fetch full cleaner details for the eligible IDs
+      // 3) Fetch full cleaner details for eligible IDs
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
@@ -228,19 +193,17 @@ export default function FindCleaners({
         return;
       }
 
+      // map rpc by cleaner_id so we keep sponsor + area fields
+      const rpcById = new Map<string, RpcRow>();
+      rows.forEach((r) => rpcById.set(r.cleaner_id, r));
+
       const categoryId = categoryIdRef.current;
 
       const normalized: MatchOut[] = (cleaners || []).map((c: any) => {
-        const meta = metaByCleanerId.get(c.id) ?? {
-          area_id: null,
-          area_name: null,
-          distance_m: null,
-          is_covering_sponsor: false,
-        };
-
+        const r = rpcById.get(c.id);
         return {
           cleaner_id: c.id,
-          business_name: c.business_name ?? null,
+          business_name: c.business_name ?? r?.business_name ?? null,
           logo_url: c.logo_url ?? null,
           website: c.website ?? null,
           phone: c.phone ?? null,
@@ -249,39 +212,33 @@ export default function FindCleaners({
           service_types: toArray(c.service_types),
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
-          distance_m: meta.distance_m ?? null,
-          area_id: meta.area_id ?? null,
-          area_name: meta.area_name ?? null,
-          is_covering_sponsor: Boolean(meta.is_covering_sponsor),
+          distance_m: r?.distance_meters ?? null,
+          area_id: r?.area_id ?? null,
+          area_name: r?.area_name ?? null,
+          is_covering_sponsor: Boolean(r?.is_covering_sponsor),
           category_id: categoryId,
         };
       });
 
       // live-only
-      const liveOnly = normalized.filter((r) => r.phone || r.whatsapp || r.website);
+      const liveOnly = normalized.filter(
+        (r) => r.phone || r.whatsapp || r.website
+      );
 
-      // 3.5) Order for display: sponsors first, organic shuffled (stable per postcode/day)
-      const seedStr = `${pc}|${serviceSlug}|${new Date().toISOString().slice(0, 10)}`;
-      const rng = mulberry32(hashString(seedStr));
-
+      // 4) Order: sponsored first (stable), then shuffle the rest randomly
       const sponsored = liveOnly.filter((x) => x.is_covering_sponsor);
-      const organic = liveOnly.filter((x) => !x.is_covering_sponsor);
+      const nonSponsored = liveOnly.filter((x) => !x.is_covering_sponsor);
+      const ordered = [...sponsored, ...shuffle(nonSponsored)];
 
-      const organicShuffled = [...organic];
-      for (let i = organicShuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(rng() * (i + 1));
-        [organicShuffled[i], organicShuffled[j]] = [organicShuffled[j], organicShuffled[i]];
-      }
-
-      const ordered = [...sponsored, ...organicShuffled];
-
-      // 4) Record impressions (FETCH so you SEE it in Network)
+      // 5) Record impressions
       try {
         const sessionId = getOrCreateSessionId();
         const searchId = crypto.randomUUID();
-        const sponsoredCount = ordered.filter((x) => x.is_covering_sponsor).length;
+        const sponsoredCount = sponsored.length;
 
-        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(5)}|${ordered.length}`;
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(5)}|${lng.toFixed(
+          5
+        )}|${ordered.length}`;
 
         if (lastImpressionKey.current !== impressionKey) {
           lastImpressionKey.current = impressionKey;
@@ -317,7 +274,7 @@ export default function FindCleaners({
         console.warn("impression logging failed", e);
       }
 
-      // 5) Update UI
+      // 6) Update UI
       if (!onSearchComplete) setResults(ordered);
       onSearchComplete?.(ordered, pc, town, lat, lng);
     } catch (e: any) {
@@ -354,7 +311,9 @@ export default function FindCleaners({
       )}
 
       {!onSearchComplete && results.length > 0 && (
-        <div className="text-sm text-gray-600">Found {results.length} cleaners.</div>
+        <div className="text-sm text-gray-600">
+          Found {results.length} cleaners.
+        </div>
       )}
     </div>
   );
