@@ -1,5 +1,5 @@
 // src/components/CleanerCard.tsx
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
 type Cleaner = {
@@ -45,13 +45,16 @@ export default function CleanerCard({
   position,
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
+  const [actionsOpen, setActionsOpen] = useState(false);
 
   const name = cleaner.business_name || "Cleaner";
   const websiteUrl = cleaner.website ? normalizeUrl(cleaner.website) : "";
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  async function logClick(event: "click_message" | "click_phone" | "click_website") {
+  async function logClick(
+    event: "click_message" | "click_phone" | "click_website"
+  ) {
     try {
       await recordEventFetch({
         event,
@@ -68,6 +71,8 @@ export default function CleanerCard({
       console.warn("record click failed", e);
     }
   }
+
+  const hasAnyAction = Boolean(whatsapp || phone || websiteUrl);
 
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
@@ -91,16 +96,33 @@ export default function CleanerCard({
                 {(cleaner.distance_m / 1000).toFixed(1)} km
               </div>
             )}
+
+            {/* Mobile expand toggle */}
+            {hasAnyAction && (
+              <div className="mt-3 sm:hidden">
+                <button
+                  type="button"
+                  onClick={() => setActionsOpen((v) => !v)}
+                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50"
+                  aria-expanded={actionsOpen}
+                >
+                  {actionsOpen ? "Hide" : "Actions"}
+                  <span className="text-base leading-none">
+                    {actionsOpen ? "▴" : "▾"}
+                  </span>
+                </button>
+              </div>
+            )}
           </div>
 
-          <div className="shrink-0 flex flex-col gap-2 w-44">
+          {/* Desktop actions (always visible) */}
+          <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
             {/* MESSAGE */}
             <button
               type="button"
-              className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600"
+              className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
               onClick={async () => {
                 await logClick("click_message");
-                // If you want WhatsApp deep link:
                 if (whatsapp) {
                   const wa = whatsapp.replace(/[^\d+]/g, "");
                   window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
@@ -108,6 +130,8 @@ export default function CleanerCard({
                   window.location.href = `tel:${phone}`;
                 }
               }}
+              disabled={!whatsapp && !phone}
+              title={!whatsapp && !phone ? "No contact details provided" : undefined}
             >
               Message
             </button>
@@ -115,7 +139,7 @@ export default function CleanerCard({
             {/* PHONE */}
             <button
               type="button"
-              className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50"
+              className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
               onClick={async () => {
                 await logClick("click_phone");
                 if (phone) window.location.href = `tel:${phone}`;
@@ -126,13 +150,14 @@ export default function CleanerCard({
               Phone
             </button>
 
-            {/* WEBSITE (real external link, NEVER react-router) */}
+            {/* WEBSITE */}
             <button
               type="button"
-              className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50"
+              className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
               onClick={async () => {
                 await logClick("click_website");
-                if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                if (websiteUrl)
+                  window.open(websiteUrl, "_blank", "noopener,noreferrer");
               }}
               disabled={!websiteUrl}
               title={!websiteUrl ? "No website provided" : undefined}
@@ -141,6 +166,63 @@ export default function CleanerCard({
             </button>
           </div>
         </div>
+
+        {/* Mobile actions (collapsed by default) */}
+        {hasAnyAction && (
+          <div className={`${actionsOpen ? "block" : "hidden"} sm:hidden mt-3`}>
+            <div className="flex flex-col gap-2">
+              {/* MESSAGE */}
+              <button
+                type="button"
+                className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
+                onClick={async () => {
+                  await logClick("click_message");
+                  if (whatsapp) {
+                    const wa = whatsapp.replace(/[^\d+]/g, "");
+                    window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
+                  } else if (phone) {
+                    window.location.href = `tel:${phone}`;
+                  }
+                }}
+                disabled={!whatsapp && !phone}
+                title={
+                  !whatsapp && !phone ? "No contact details provided" : undefined
+                }
+              >
+                Message
+              </button>
+
+              {/* PHONE */}
+              <button
+                type="button"
+                className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
+                onClick={async () => {
+                  await logClick("click_phone");
+                  if (phone) window.location.href = `tel:${phone}`;
+                }}
+                disabled={!phone}
+                title={!phone ? "No phone number provided" : undefined}
+              >
+                Phone
+              </button>
+
+              {/* WEBSITE */}
+              <button
+                type="button"
+                className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
+                onClick={async () => {
+                  await logClick("click_website");
+                  if (websiteUrl)
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                }}
+                disabled={!websiteUrl}
+                title={!websiteUrl ? "No website provided" : undefined}
+              >
+                Website
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
