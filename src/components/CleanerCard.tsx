@@ -123,16 +123,17 @@ export default function CleanerCard({
     const session_id = getOrCreateSessionId();
     try {
       await recordEventFetch({
-        event,
-        cleaner_id: cleaner.cleaner_id,
-        area_id: areaId ?? cleaner.area_id ?? null,
-        category_id: categoryId ?? cleaner.category_id ?? null,
-        session_id,
-        meta: {
-          position: position ?? null,
-          ...meta,
-        },
-      });
+  event,
+  cleanerId: cleaner.cleaner_id,
+  areaId: areaId ?? cleaner.area_id ?? null,
+  categoryId: categoryId ?? cleaner.category_id ?? null,
+  sessionId: session_id,
+  meta: {
+    position: position ?? null,
+    ...meta,
+  },
+});
+
     } catch {
       // ignore
     }
