@@ -33,7 +33,6 @@ export type MatchOut = {
   website: string | null;
   phone: string | null;
   whatsapp: string | null;
-  email: string | null; // ✅ added
   payment_methods: string[];
   service_types: string[];
   rating_avg: number | null;
@@ -185,9 +184,8 @@ export default function FindCleaners({
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
-  "id, business_name, logo_url, website, phone, whatsapp, contact_email, payment_methods, service_types, rating_avg, rating_count"
-)
-
+          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count"
+        )
         .in("id", eligibleIds);
 
       if (cleanersErr) {
@@ -210,7 +208,6 @@ export default function FindCleaners({
           website: c.website ?? null,
           phone: c.phone ?? null,
           whatsapp: c.whatsapp ?? null,
-          email: c.contact_email ?? c.email ?? null, // ✅ added
           payment_methods: toArray(c.payment_methods),
           service_types: toArray(c.service_types),
           rating_avg: c.rating_avg ?? null,
@@ -223,9 +220,9 @@ export default function FindCleaners({
         };
       });
 
-      // live-only (include email now)
+      // live-only
       const liveOnly = normalized.filter(
-        (r) => r.phone || r.whatsapp || r.website || r.email
+        (r) => r.phone || r.whatsapp || r.website
       );
 
       // 4) Order: sponsored first (stable), then shuffle the rest randomly
@@ -321,4 +318,3 @@ export default function FindCleaners({
     </div>
   );
 }
-
