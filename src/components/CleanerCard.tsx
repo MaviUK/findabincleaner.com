@@ -123,7 +123,8 @@ export default function CleanerCard({
     return normalizeUrl(cleaner.website);
   }, [cleaner.website]);
 
-  async function log(event: string, meta?: Record<string, any>) {
+  async function log(event: any, meta?: Record<string, any>) {
+    
     // recordEventFetch in your project expects ONE argument
     const session_id = getOrCreateSessionId();
     try {
