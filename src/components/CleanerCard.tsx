@@ -12,31 +12,25 @@ type Cleaner = {
   whatsapp?: string | null;
   email?: string | null;
 
-  // optional attribution carried through from FindCleaners
+  // carried through from FindCleaners
   area_id?: string | null;
   area_name?: string | null;
   category_id?: string | null;
 
   is_covering_sponsor?: boolean;
-
-  // optional
   distance_m?: number | null;
 };
 
 type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
-  showPayments?: boolean; // <-- add this so other files compile
+
+  // keep compatibility with existing callers (ResultsList / Settings)
+  showPayments?: boolean;
+
+  // analytics attribution
   areaId?: string | null;
   categoryId?: string | null;
-  position?: number;
-};
-
-
-  // explicitly passed so analytics never “loses” them
-  areaId?: string | null;
-  categoryId?: string | null;
-
   position?: number;
 };
 
@@ -61,9 +55,9 @@ function isEmailValid(v: string) {
 }
 
 /* -------------------- Inline SVG icons (no lucide-react) -------------------- */
-function IconMessage(props: { className?: string }) {
+function IconMessage({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={props.className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path
         d="M21 12c0 4.418-4.03 8-9 8a10.8 10.8 0 0 1-3.4-.54L3 21l1.7-4.2A7.4 7.4 0 0 1 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z"
         fill="none"
@@ -75,9 +69,9 @@ function IconMessage(props: { className?: string }) {
   );
 }
 
-function IconPhone(props: { className?: string }) {
+function IconPhone({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={props.className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path
         d="M22 16.9v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.72c.12.86.3 1.7.54 2.5a2 2 0 0 1-.45 2.11L8 9.5a16 16 0 0 0 6 6l1.17-1.19a2 2 0 0 1 2.11-.45c.8.24 1.64.42 2.5.54A2 2 0 0 1 22 16.9Z"
         fill="none"
@@ -89,21 +83,16 @@ function IconPhone(props: { className?: string }) {
   );
 }
 
-function IconGlobe(props: { className?: string }) {
+function IconGlobe({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" className={props.className} aria-hidden="true">
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
       <path
         d="M12 22a10 10 0 1 0-10-10 10 10 0 0 0 10 10Z"
         fill="none"
         stroke="currentColor"
         strokeWidth="2"
       />
-      <path
-        d="M2 12h20"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-      />
+      <path d="M2 12h20" fill="none" stroke="currentColor" strokeWidth="2" />
       <path
         d="M12 2c2.5 2.7 4 6.2 4 10s-1.5 7.3-4 10c-2.5-2.7-4-6.2-4-10s1.5-7.3 4-10Z"
         fill="none"
@@ -118,12 +107,11 @@ function IconGlobe(props: { className?: string }) {
 export default function CleanerCard({
   cleaner,
   postcodeHint,
-  showPayments, // unused for now
+  showPayments, // intentionally unused (compat prop)
   areaId,
   categoryId,
   position,
 }: Props) {
-
   const [showModal, setShowModal] = useState(false);
 
   const websiteHref = useMemo(() => {
@@ -132,8 +120,6 @@ export default function CleanerCard({
   }, [cleaner.website]);
 
   async function log(event: any, meta?: Record<string, any>) {
-    
-    // recordEventFetch in your project expects ONE argument
     const session_id = getOrCreateSessionId();
     try {
       await recordEventFetch({
@@ -148,7 +134,7 @@ export default function CleanerCard({
         },
       });
     } catch {
-      // fire-and-forget: ignore
+      // ignore
     }
   }
 
@@ -268,7 +254,7 @@ function MessageModal({
   cleaner: Cleaner;
   postcodeHint?: string;
   onClose: () => void;
-  onLog: (event: string, meta?: Record<string, any>) => Promise<void>;
+  onLog: (event: any, meta?: Record<string, any>) => Promise<void>;
   areaId: string | null;
   categoryId: string | null;
 }) {
@@ -280,11 +266,8 @@ function MessageModal({
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // Google places autocomplete (optional)
   const autocompleteRef = useRef<any>(null);
-  const hasPlaces =
-    typeof window !== "undefined" &&
-    (window as any).google?.maps?.places;
+  const hasPlaces = typeof window !== "undefined" && (window as any).google?.maps?.places;
 
   const valid =
     name.trim() &&
@@ -347,8 +330,6 @@ function MessageModal({
         category_id: categoryId,
       });
 
-      // IMPORTANT: your Netlify redirects show /api/record_event exists,
-      // so keep email function as /.netlify/functions/sendEnquiryEmail (or add a redirect).
       const res = await fetch("/.netlify/functions/sendEnquiryEmail", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -399,7 +380,6 @@ function MessageModal({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <Field label="Name" value={name} onChange={setName} />
               <Field label="Phone" value={phone} onChange={setPhone} />
-
               <Field label="Email" value={email} onChange={setEmail} type="email" />
 
               <div className="sm:col-span-2">
