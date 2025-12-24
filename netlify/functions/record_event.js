@@ -18,19 +18,20 @@ export const handler = async (event) => {
 
     const body = JSON.parse(event.body || "{}");
 
-    const cleaner_id = body.cleanerId;
-    const area_id = body.areaId ?? null;
-    const category_id = body.categoryId ?? null;
-    const session_id = body.sessionId ?? null;
+    // ✅ accept both snake_case (frontend) and camelCase (older callers)
+    const cleaner_id = body.cleaner_id ?? body.cleanerId;
+    const area_id = body.area_id ?? body.areaId ?? null;
+    const category_id = body.category_id ?? body.categoryId ?? null;
+    const session_id = body.session_id ?? body.sessionId ?? null;
+
     const ev = body.event;
     const meta = body.meta ?? {};
 
     if (!cleaner_id || !ev) {
-      return { statusCode: 400, body: "Missing cleanerId or event" };
+      return { statusCode: 400, body: "Missing cleaner_id or event" };
     }
 
     // IMPORTANT: your DB uses a USER-DEFINED enum "event"
-    // so ev MUST match allowed values.
     const allowed = ["impression", "click_message", "click_phone", "click_website"];
     if (!allowed.includes(ev)) {
       return { statusCode: 400, body: "Invalid event" };
