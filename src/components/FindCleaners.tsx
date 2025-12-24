@@ -33,7 +33,7 @@ export type MatchOut = {
   website: string | null;
   phone: string | null;
   whatsapp: string | null;
-  email: string | null; // ✅ add this
+  email: string | null; // ✅ added
   payment_methods: string[];
   service_types: string[];
   rating_avg: number | null;
@@ -42,9 +42,8 @@ export type MatchOut = {
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
-  category_id?: string | null;
+  category_id?: string | null; // used by cards + analytics
 };
-
 
 function toArray(v: unknown): string[] {
   if (!v) return [];
@@ -186,7 +185,7 @@ export default function FindCleaners({
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
-          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count"
+          "id, business_name, logo_url, website, phone, whatsapp, email, payment_methods, service_types, rating_avg, rating_count"
         )
         .in("id", eligibleIds);
 
@@ -210,6 +209,7 @@ export default function FindCleaners({
           website: c.website ?? null,
           phone: c.phone ?? null,
           whatsapp: c.whatsapp ?? null,
+          email: c.email ?? null, // ✅ added
           payment_methods: toArray(c.payment_methods),
           service_types: toArray(c.service_types),
           rating_avg: c.rating_avg ?? null,
@@ -222,9 +222,9 @@ export default function FindCleaners({
         };
       });
 
-      // live-only
+      // live-only (include email now)
       const liveOnly = normalized.filter(
-        (r) => r.phone || r.whatsapp || r.website
+        (r) => r.phone || r.whatsapp || r.website || r.email
       );
 
       // 4) Order: sponsored first (stable), then shuffle the rest randomly
@@ -320,4 +320,3 @@ export default function FindCleaners({
     </div>
   );
 }
-
