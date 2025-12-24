@@ -14,13 +14,6 @@ export type RecordEventPayload = {
   meta?: Record<string, any>;
 };
 
-/**
- * Uses FETCH (keepalive) so it ALWAYS shows in DevTools Network (Fetch/XHR)
- * and works on page navigations.
- *
- * Tries /api/record_event first (your netlify redirect),
- * falls back to /.netlify/functions/record_event if needed.
- */
 const PRIMARY_ENDPOINT = "/api/record_event";
 const FALLBACK_ENDPOINT = "/.netlify/functions/record_event";
 
@@ -35,11 +28,34 @@ export function getOrCreateSessionId(): string {
   return id;
 }
 
-async function postJSON(url: string, body: any) {
+function buildBody(payload: RecordEventPayload) {
+  return {
+    event: payload.event,
+    cleaner_id: payload.cleanerId,
+    category_id: payload.categoryId ?? null,
+    area_id: payload.areaId ?? null,
+    session_id: payload.sessionId ?? null,
+    meta: payload.meta ?? {},
+  };
+}
+
+// ✅ Use Beacon for clicks (most reliable), fallback to fetch keepalive
+async function postEvent(url: string, body: any, preferBeacon: boolean) {
+  const json = JSON.stringify(body);
+
+  if (preferBeacon && navigator.sendBeacon) {
+    const ok = navigator.sendBeacon(
+      url,
+      new Blob([json], { type: "application/json" })
+    );
+    if (ok) return { ok: true, via: "beacon" };
+    // fall through to fetch if beacon fails
+  }
+
   const res = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
+    body: json,
     keepalive: true,
     credentials: "omit",
   });
@@ -49,30 +65,21 @@ async function postJSON(url: string, body: any) {
     throw new Error(`record_event ${res.status}: ${text || res.statusText}`);
   }
 
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
+  return { ok: true, via: "fetch" };
 }
 
 export async function recordEventFetch(payload: RecordEventPayload) {
-  // ✅ guard: don't send invalid events
   if (!payload.cleanerId) return null;
 
-  // shape expected by your function/db (snake_case)
-  const body = {
-    event: payload.event,
-    cleaner_id: payload.cleanerId,
-    category_id: payload.categoryId ?? null,
-    area_id: payload.areaId ?? null,
-    session_id: payload.sessionId ?? null,
-    meta: payload.meta ?? {},
-  };
+  const body = buildBody(payload);
+  const preferBeacon =
+    payload.event === "click_message" ||
+    payload.event === "click_phone" ||
+    payload.event === "click_website";
 
   try {
-    return await postJSON(PRIMARY_ENDPOINT, body);
-  } catch (e) {
-    return await postJSON(FALLBACK_ENDPOINT, body);
+    return await postEvent(PRIMARY_ENDPOINT, body, preferBeacon);
+  } catch {
+    return await postEvent(FALLBACK_ENDPOINT, body, preferBeacon);
   }
 }
