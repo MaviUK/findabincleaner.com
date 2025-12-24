@@ -1,5 +1,5 @@
 // src/components/CleanerCard.tsx
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
 type Cleaner = {
@@ -11,7 +11,6 @@ type Cleaner = {
   whatsapp?: string | null;
   distance_m?: number | null;
 
-  // carried through from FindCleaners
   area_id?: string | null;
   area_name?: string | null;
   category_id?: string | null;
@@ -23,12 +22,9 @@ type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   showPayments?: boolean;
-
-  // explicitly passed so analytics never “loses” them
   areaId?: string | null;
   categoryId?: string | null;
-
-  position?: number; // for meta
+  position?: number;
 };
 
 function normalizeUrl(u: string) {
@@ -45,7 +41,6 @@ export default function CleanerCard({
   position,
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
-  const [actionsOpen, setActionsOpen] = useState(false);
 
   const name = cleaner.business_name || "Cleaner";
   const websiteUrl = cleaner.website ? normalizeUrl(cleaner.website) : "";
@@ -62,62 +57,95 @@ export default function CleanerCard({
         areaId: areaId ?? cleaner.area_id ?? null,
         categoryId: categoryId ?? cleaner.category_id ?? null,
         sessionId,
-        meta: {
-          position: position ?? null,
-        },
+        meta: { position: position ?? null },
       });
     } catch (e) {
-      // don't break UX if analytics fails
       console.warn("record click failed", e);
     }
   }
 
-  const hasAnyAction = Boolean(whatsapp || phone || websiteUrl);
-
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
+      {/* Logo */}
       <div className="h-20 w-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
-        {cleaner.logo_url ? (
+        {cleaner.logo_url && (
           <img
             src={cleaner.logo_url}
             alt={name}
             className="h-full w-full object-cover"
             loading="lazy"
           />
-        ) : null}
+        )}
       </div>
 
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3">
+          {/* Info */}
           <div className="min-w-0">
-            <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
+            <div className="text-lg font-bold text-gray-900 truncate">
+              {name}
+            </div>
+
             {typeof cleaner.distance_m === "number" && (
               <div className="text-xs text-gray-500 mt-1">
                 {(cleaner.distance_m / 1000).toFixed(1)} km
               </div>
             )}
 
-            {/* Mobile expand toggle */}
-            {hasAnyAction && (
-              <div className="mt-3 sm:hidden">
-                <button
-                  type="button"
-                  onClick={() => setActionsOpen((v) => !v)}
-                  className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs font-semibold text-gray-800 hover:bg-gray-50"
-                  aria-expanded={actionsOpen}
-                >
-                  {actionsOpen ? "Hide" : "Actions"}
-                  <span className="text-base leading-none">
-                    {actionsOpen ? "▴" : "▾"}
-                  </span>
-                </button>
-              </div>
-            )}
+            {/* MOBILE ICON ACTIONS */}
+            <div className="flex gap-3 mt-3 sm:hidden">
+              {/* Message */}
+              <button
+                type="button"
+                className="h-10 w-10 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 disabled:opacity-40"
+                onClick={async () => {
+                  await logClick("click_message");
+                  if (whatsapp) {
+                    const wa = whatsapp.replace(/[^\d+]/g, "");
+                    window.open(`https://wa.me/${wa}`, "_blank");
+                  } else if (phone) {
+                    window.location.href = `tel:${phone}`;
+                  }
+                }}
+                disabled={!whatsapp && !phone}
+                title="Message"
+              >
+                💬
+              </button>
+
+              {/* Phone */}
+              <button
+                type="button"
+                className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
+                onClick={async () => {
+                  await logClick("click_phone");
+                  if (phone) window.location.href = `tel:${phone}`;
+                }}
+                disabled={!phone}
+                title="Call"
+              >
+                📞
+              </button>
+
+              {/* Website */}
+              <button
+                type="button"
+                className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
+                onClick={async () => {
+                  await logClick("click_website");
+                  if (websiteUrl)
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                }}
+                disabled={!websiteUrl}
+                title="Website"
+              >
+                🌐
+              </button>
+            </div>
           </div>
 
-          {/* Desktop actions (always visible) */}
+          {/* DESKTOP ACTIONS */}
           <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
-            {/* MESSAGE */}
             <button
               type="button"
               className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
@@ -125,18 +153,16 @@ export default function CleanerCard({
                 await logClick("click_message");
                 if (whatsapp) {
                   const wa = whatsapp.replace(/[^\d+]/g, "");
-                  window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
+                  window.open(`https://wa.me/${wa}`, "_blank");
                 } else if (phone) {
                   window.location.href = `tel:${phone}`;
                 }
               }}
               disabled={!whatsapp && !phone}
-              title={!whatsapp && !phone ? "No contact details provided" : undefined}
             >
               Message
             </button>
 
-            {/* PHONE */}
             <button
               type="button"
               className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
@@ -145,12 +171,10 @@ export default function CleanerCard({
                 if (phone) window.location.href = `tel:${phone}`;
               }}
               disabled={!phone}
-              title={!phone ? "No phone number provided" : undefined}
             >
               Phone
             </button>
 
-            {/* WEBSITE */}
             <button
               type="button"
               className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
@@ -160,69 +184,11 @@ export default function CleanerCard({
                   window.open(websiteUrl, "_blank", "noopener,noreferrer");
               }}
               disabled={!websiteUrl}
-              title={!websiteUrl ? "No website provided" : undefined}
             >
               Website
             </button>
           </div>
         </div>
-
-        {/* Mobile actions (collapsed by default) */}
-        {hasAnyAction && (
-          <div className={`${actionsOpen ? "block" : "hidden"} sm:hidden mt-3`}>
-            <div className="flex flex-col gap-2">
-              {/* MESSAGE */}
-              <button
-                type="button"
-                className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
-                onClick={async () => {
-                  await logClick("click_message");
-                  if (whatsapp) {
-                    const wa = whatsapp.replace(/[^\d+]/g, "");
-                    window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
-                  } else if (phone) {
-                    window.location.href = `tel:${phone}`;
-                  }
-                }}
-                disabled={!whatsapp && !phone}
-                title={
-                  !whatsapp && !phone ? "No contact details provided" : undefined
-                }
-              >
-                Message
-              </button>
-
-              {/* PHONE */}
-              <button
-                type="button"
-                className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
-                onClick={async () => {
-                  await logClick("click_phone");
-                  if (phone) window.location.href = `tel:${phone}`;
-                }}
-                disabled={!phone}
-                title={!phone ? "No phone number provided" : undefined}
-              >
-                Phone
-              </button>
-
-              {/* WEBSITE */}
-              <button
-                type="button"
-                className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
-                onClick={async () => {
-                  await logClick("click_website");
-                  if (websiteUrl)
-                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
-                }}
-                disabled={!websiteUrl}
-                title={!websiteUrl ? "No website provided" : undefined}
-              >
-                Website
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
