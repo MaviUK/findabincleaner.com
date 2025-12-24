@@ -1,7 +1,8 @@
 // src/pages/Landing.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import FindCleaners, { type ServiceSlug } from "../components/FindCleaners";
 import ResultsList from "../components/ResultsList";
+import { supabase } from "../lib/supabase";
 
 type Cleaner = any;
 
@@ -31,6 +32,12 @@ const SERVICE_BUTTONS: {
   },
 ];
 
+type ServiceCategory = {
+  id: string;
+  slug: string;
+  name: string;
+};
+
 export default function Landing() {
   const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
@@ -41,10 +48,49 @@ export default function Landing() {
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
 
+  // ✅ NEW: categories lookup so we can log category_id correctly
+  const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>([]);
+
+  // ✅ NEW: current search “context” ids passed down for analytics attribution
+  const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
+  const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from("service_categories")
+        .select("id, slug, name")
+        .order("name", { ascending: true });
+
+      if (cancelled) return;
+      if (error) {
+        console.warn("Failed to load service_categories:", error);
+        setServiceCategories([]);
+        return;
+      }
+
+      setServiceCategories((data as any[]) || []);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // map current slug -> category id
+  const categoryIdForSlug = useMemo(() => {
+    const hit = serviceCategories.find((c) => c.slug === serviceSlug);
+    return hit?.id ?? null;
+  }, [serviceCategories, serviceSlug]);
+
+  // keep activeCategoryId in sync with the selected service
+  useEffect(() => {
+    setActiveCategoryId(categoryIdForSlug);
+  }, [categoryIdForSlug]);
+
   const activeService = useMemo(
-    () =>
-      SERVICE_BUTTONS.find((s) => s.slug === serviceSlug) ??
-      SERVICE_BUTTONS[0],
+    () => SERVICE_BUTTONS.find((s) => s.slug === serviceSlug) ?? SERVICE_BUTTONS[0],
     [serviceSlug]
   );
 
@@ -55,17 +101,14 @@ export default function Landing() {
       <section className="container mx-auto max-w-5xl px-4 py-10 sm:py-12">
         {/* Hero */}
         <div className="text-center">
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">
-            Welcome to
-          </h1>
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
             <span className="text-emerald-700">CLEAN</span>
             <span className="text-sky-600 font-normal normal-case">ly</span>
           </div>
 
           <p className="text-gray-600 mt-4 max-w-2xl mx-auto">
-            Pick a service, enter your postcode, and contact trusted local
-            cleaners in minutes.
+            Pick a service, enter your postcode, and contact trusted local cleaners in minutes.
           </p>
         </div>
 
@@ -76,12 +119,8 @@ export default function Landing() {
             {/* Service picker */}
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-gray-900">
-                  Service
-                </div>
-                <div className="text-xs text-gray-500 mt-1">
-                  {activeService.blurb}
-                </div>
+                <div className="text-sm font-semibold text-gray-900">Service</div>
+                <div className="text-xs text-gray-500 mt-1">{activeService.blurb}</div>
               </div>
 
               <div className="inline-flex flex-wrap justify-center sm:justify-end gap-2">
@@ -93,7 +132,9 @@ export default function Landing() {
                       type="button"
                       onClick={() => {
                         setServiceSlug(b.slug);
-                        setCleaners(null); // clear results when switching service
+                        setCleaners(null);
+                        setActiveAreaId(null); // reset area context
+                        // category context updated by effect above
                       }}
                       className={[
                         "px-4 py-2 rounded-xl border text-sm font-semibold transition",
@@ -115,13 +156,24 @@ export default function Landing() {
             <div className="mt-4">
               <FindCleaners
                 serviceSlug={serviceSlug}
-                onSearchStart={() => setCleaners(null)} // ✅ clears old results on new search
+                onSearchStart={() => {
+                  setCleaners(null);
+                  setActiveAreaId(null);
+                }}
                 onSearchComplete={(results, pc, town, lat, lng) => {
-                  setCleaners(results || []);
+                  const next = results || [];
+                  setCleaners(next);
+
                   setPostcode(pc || "");
                   setLocality(town || "");
+
                   setSearchLat(typeof lat === "number" ? lat : null);
                   setSearchLng(typeof lng === "number" ? lng : null);
+
+                  // ✅ Set active area from the results (first result’s area_id)
+                  // This is used so "Stats by Area" + click attribution has an area_id to group against.
+                  const firstAreaId = (next?.[0] as any)?.area_id ?? null;
+                  setActiveAreaId(firstAreaId);
                 }}
               />
             </div>
@@ -135,17 +187,14 @@ export default function Landing() {
             </div>
           </div>
 
-          {/* Results (✅ same width + alignment as search) */}
+          {/* Results */}
           {hasResults && (
             <div className="mt-6">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs tracking-widest text-gray-500">
-                    RESULTS
-                  </div>
+                  <div className="text-xs tracking-widest text-gray-500">RESULTS</div>
                   <div className="text-lg font-bold text-gray-900 truncate">
-                    {cleaners.length}{" "}
-                    {cleaners.length === 1 ? "business" : "businesses"}{" "}
+                    {cleaners.length} {cleaners.length === 1 ? "business" : "businesses"}{" "}
                     {postcode ? `near ${postcode.toUpperCase()}` : "near you"}
                     {locality ? ` • ${locality}` : ""}
                   </div>
@@ -160,11 +209,13 @@ export default function Landing() {
 
               <div className="mt-4">
                 <ResultsList
-  cleaners={cleaners}
-  postcode={postcode}
-  locality={locality}
-/>
-
+                  cleaners={cleaners}
+                  postcode={postcode}
+                  locality={locality}
+                  // ✅ crucial: ensures clicks log with correct ids
+                  categoryId={activeCategoryId}
+                  areaId={activeAreaId}
+                />
               </div>
             </div>
           )}
