@@ -61,14 +61,12 @@ export default async (req) => {
 
   try {
     // 1) Recompute remaining area for this service area + category + slot
-    const { data: previewData, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_category_id: categoryId,
-        p_slot: slot,
-      }
-    );
+    const { data: previewData, error: prevErr } = await sb
+  .from("sponsored_locks")
+  .update({ is_active: false })
+  .eq("is_active", true)
+  .lt("expires_at", new Date().toISOString());
+
     if (prevErr) throw prevErr;
 
     const row = Array.isArray(previewData) ? previewData[0] || {} : previewData || {};
