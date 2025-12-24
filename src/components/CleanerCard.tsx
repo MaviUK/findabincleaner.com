@@ -22,8 +22,11 @@ type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   showPayments?: boolean;
+
+  // explicitly passed so analytics never “loses” them
   areaId?: string | null;
   categoryId?: string | null;
+
   position?: number;
 };
 
@@ -34,12 +37,7 @@ function normalizeUrl(u: string) {
   return `https://${trimmed}`;
 }
 
-export default function CleanerCard({
-  cleaner,
-  areaId,
-  categoryId,
-  position,
-}: Props) {
+export default function CleanerCard({ cleaner, areaId, categoryId, position }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
   const name = cleaner.business_name || "Cleaner";
@@ -47,21 +45,33 @@ export default function CleanerCard({
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  async function logClick(
-    event: "click_message" | "click_phone" | "click_website"
-  ) {
+  // ✅ fire-and-forget click logging (do NOT await)
+  function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
-      await recordEventFetch({
+      void recordEventFetch({
         event,
         cleanerId: cleaner.cleaner_id,
         areaId: areaId ?? cleaner.area_id ?? null,
         categoryId: categoryId ?? cleaner.category_id ?? null,
         sessionId,
-        meta: { position: position ?? null },
+        meta: {
+          position: position ?? null,
+          // you can add search_id later if you pass it down
+        },
       });
     } catch (e) {
+      // shouldn't throw, but keep safe
       console.warn("record click failed", e);
     }
+  }
+
+  function openWhatsAppOrCall() {
+    if (whatsapp) {
+      const wa = whatsapp.replace(/[^\d+]/g, "");
+      window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
+      return;
+    }
+    if (phone) window.location.href = `tel:${phone}`;
   }
 
   return (
@@ -82,9 +92,7 @@ export default function CleanerCard({
         <div className="flex items-start justify-between gap-3">
           {/* Info */}
           <div className="min-w-0">
-            <div className="text-lg font-bold text-gray-900 truncate">
-              {name}
-            </div>
+            <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
             {typeof cleaner.distance_m === "number" && (
               <div className="text-xs text-gray-500 mt-1">
@@ -98,14 +106,9 @@ export default function CleanerCard({
               <button
                 type="button"
                 className="h-10 w-10 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 disabled:opacity-40"
-                onClick={async () => {
-                  await logClick("click_message");
-                  if (whatsapp) {
-                    const wa = whatsapp.replace(/[^\d+]/g, "");
-                    window.open(`https://wa.me/${wa}`, "_blank");
-                  } else if (phone) {
-                    window.location.href = `tel:${phone}`;
-                  }
+                onClick={() => {
+                  logClick("click_message");
+                  openWhatsAppOrCall();
                 }}
                 disabled={!whatsapp && !phone}
                 title="Message"
@@ -117,8 +120,8 @@ export default function CleanerCard({
               <button
                 type="button"
                 className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
-                onClick={async () => {
-                  await logClick("click_phone");
+                onClick={() => {
+                  logClick("click_phone");
                   if (phone) window.location.href = `tel:${phone}`;
                 }}
                 disabled={!phone}
@@ -131,10 +134,9 @@ export default function CleanerCard({
               <button
                 type="button"
                 className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
-                onClick={async () => {
-                  await logClick("click_website");
-                  if (websiteUrl)
-                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                onClick={() => {
+                  logClick("click_website");
+                  if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
                 }}
                 disabled={!websiteUrl}
                 title="Website"
@@ -149,14 +151,9 @@ export default function CleanerCard({
             <button
               type="button"
               className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
-              onClick={async () => {
-                await logClick("click_message");
-                if (whatsapp) {
-                  const wa = whatsapp.replace(/[^\d+]/g, "");
-                  window.open(`https://wa.me/${wa}`, "_blank");
-                } else if (phone) {
-                  window.location.href = `tel:${phone}`;
-                }
+              onClick={() => {
+                logClick("click_message");
+                openWhatsAppOrCall();
               }}
               disabled={!whatsapp && !phone}
             >
@@ -166,8 +163,8 @@ export default function CleanerCard({
             <button
               type="button"
               className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
-              onClick={async () => {
-                await logClick("click_phone");
+              onClick={() => {
+                logClick("click_phone");
                 if (phone) window.location.href = `tel:${phone}`;
               }}
               disabled={!phone}
@@ -178,10 +175,9 @@ export default function CleanerCard({
             <button
               type="button"
               className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
-              onClick={async () => {
-                await logClick("click_website");
-                if (websiteUrl)
-                  window.open(websiteUrl, "_blank", "noopener,noreferrer");
+              onClick={() => {
+                logClick("click_website");
+                if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
               }}
               disabled={!websiteUrl}
             >
