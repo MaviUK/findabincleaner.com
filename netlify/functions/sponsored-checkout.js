@@ -44,23 +44,23 @@ export default async (req) => {
   let lockId = null;
 
   try {
-    // 0) best-effort cleanup
+    // cleanup expired locks (best effort)
     await sb
       .from("sponsored_locks")
       .update({ is_active: false })
       .eq("is_active", true)
       .lt("expires_at", new Date().toISOString());
 
-    // 1) create lock (include category_id to prevent wrong-category collisions)
+    // create lock (now includes category_id)
     const expiresAt = new Date(Date.now() + LOCK_MINUTES * 60 * 1000).toISOString();
 
     const { data: lockRow, error: lockErr } = await sb
       .from("sponsored_locks")
       .insert({
         area_id: areaId,
+        category_id: categoryId,
         slot,
         business_id: businessId,
-        category_id: categoryId, // ✅ requires column; if you don't have it, add it
         expires_at: expiresAt,
         is_active: true,
       })
@@ -84,7 +84,7 @@ export default async (req) => {
 
     lockId = lockRow?.id ?? null;
 
-    // 2) availability check (source of truth)
+    // recompute remaining area (source of truth)
     const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_category_id: categoryId,
@@ -94,9 +94,9 @@ export default async (req) => {
 
     const row = Array.isArray(previewData) ? previewData[0] || {} : previewData || {};
     const availableKm2 = Number(row.available_km2 ?? 0) || 0;
-    const soldOutFlag = Boolean(row.sold_out) || availableKm2 <= EPS;
+    const soldOut = Boolean(row.sold_out) || availableKm2 <= EPS;
 
-    if (soldOutFlag) {
+    if (soldOut) {
       if (lockId) await sb.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
       return json(
         { ok: false, code: "no_remaining", message: "No purchasable area left for this industry." },
@@ -104,13 +104,13 @@ export default async (req) => {
       );
     }
 
-    // 3) pricing (floor £1.00)
+    // pricing (floor £1.00)
     const ratePerKm2 =
       Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
     const amountCents = Math.max(100, Math.round(availableKm2 * ratePerKm2 * 100));
 
-    // 4) load cleaner
+    // load cleaner and ensure Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
       .select("id, stripe_customer_id, business_name, email")
@@ -133,7 +133,7 @@ export default async (req) => {
       await sb.from("cleaners").update({ stripe_customer_id: stripeCustomerId }).eq("id", businessId);
     }
 
-    // 5) create stripe checkout session
+    // create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
@@ -162,7 +162,7 @@ export default async (req) => {
       cancel_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
     });
 
-    // 6) tie stripe session to lock
+    // tie stripe session to lock
     if (lockId) {
       await sb.from("sponsored_locks").update({ stripe_session_id: session.id }).eq("id", lockId);
     }
@@ -171,7 +171,7 @@ export default async (req) => {
   } catch (e) {
     console.error("[sponsored-checkout] error:", e);
 
-    // release lock on failure
+    // release lock on any failure
     if (lockId) {
       await sb.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
     }
