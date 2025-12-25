@@ -17,93 +17,69 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
-const ACTIVE_LIKE = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "paused",
-]);
-
 function normStatus(s) {
   return String(s || "").toLowerCase();
 }
 
 async function resolveContext({ meta, customerId }) {
-  const business_id =
-    meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
+  const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
   const slot = meta?.slot != null ? Number(meta.slot) : null;
   const category_id = meta?.category_id || meta?.categoryId || null;
+  const lock_id = meta?.lock_id || null;
 
   if (business_id && area_id && slot != null) {
-    return { business_id, area_id, slot, category_id: category_id || null };
+    return { business_id, area_id, slot, category_id: category_id || null, lock_id };
   }
 
-  // Fallback by customerId -> cleaners.stripe_customer_id
+  // fallback by customerId -> cleaners.stripe_customer_id
   if (customerId) {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("cleaners")
       .select("id")
       .eq("stripe_customer_id", customerId)
       .maybeSingle();
 
-    if (error) console.error("[webhook] resolveContext fallback error:", error);
-
     if (data?.id) {
-      return {
-        business_id: data.id,
-        area_id: null,
-        slot: null,
-        category_id: null,
-      };
+      return { business_id: data.id, area_id: null, slot: null, category_id: null, lock_id };
     }
   }
 
-  return { business_id: null, area_id: null, slot: null, category_id: null };
+  return { business_id: null, area_id: null, slot: null, category_id: null, lock_id };
 }
 
-async function computePurchasable({ area_id, category_id, slot }) {
-  if (!area_id || !category_id || slot == null) return null;
-
-  const { data, error } = await supabase.rpc("area_remaining_preview", {
-    p_area_id: area_id,
-    p_category_id: category_id,
-    p_slot: slot,
-  });
-
-  if (error) {
-    console.error("[webhook] computePurchasable rpc error:", error);
-    return null;
+async function cancelStripeSubscriptionSafe(subId, reason) {
+  if (!subId) return;
+  try {
+    console.warn("[webhook] canceling subscription:", subId, reason || "");
+    await stripe.subscriptions.cancel(subId);
+  } catch (e) {
+    console.error("[webhook] failed to cancel subscription:", subId, e);
   }
+}
 
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row) return null;
-
-  return {
-    available_km2: Number(row.available_km2 ?? 0) || 0,
-    sold_out: !!row.sold_out,
-    geojson: row.gj || null, // purchasable geojson
-  };
+async function releaseLockSafe(lockId) {
+  if (!lockId) return;
+  try {
+    await supabase
+      .from("sponsored_locks")
+      .update({ is_active: false })
+      .eq("id", lockId);
+  } catch (e) {
+    console.error("[webhook] failed to release lock:", lockId, e);
+  }
 }
 
 async function upsertSubscription(sub, meta = {}) {
-  const customerId =
-    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  const { business_id, area_id, slot, category_id } = await resolveContext({
+  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
     meta,
     customerId,
   });
 
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
-
-  // NEW: compute purchasable geometry at the time we process webhook
-  // (Best practice is to compute+lock at checkout time, but this will still
-  // correctly prevent overlaps & store geometry in the DB.)
-  const purch = await computePurchasable({ area_id, category_id, slot });
 
   const payload = {
     business_id,
@@ -121,40 +97,36 @@ async function upsertSubscription(sub, meta = {}) {
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
-
-    // NEW: store purchased amount + geometry
-    area_km2: purch ? purch.available_km2 : null,
-    sponsored_geom: purch?.geojson
-      ? // convert geojson -> geometry server-side
-        // we store geojson in a hidden json field and convert using SQL expression below
-        null
-      : null,
   };
-
-  // If we have purchasable geojson, set sponsored_geom using a SQL update after upsert
-  const sponsoredGeo = purch?.geojson ? JSON.stringify(purch.geojson) : null;
 
   const { error } = await supabase
     .from("sponsored_subscriptions")
     .upsert(payload, { onConflict: "stripe_subscription_id" });
 
   if (error) {
+    const msg = String(error?.message || "").toLowerCase();
+    const code = String(error?.code || "").toLowerCase();
+
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
+
+    // overlap trigger raises errcode 23505 — cancel subscription to avoid charging
+    if (
+      code === "23505" ||
+      msg.includes("overlaps an existing sponsored area") ||
+      msg.includes("overlaps an existing sponsored") ||
+      msg.includes("duplicate") ||
+      msg.includes("unique")
+    ) {
+      await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
+      await releaseLockSafe(lock_id);
+      return; // swallow so Stripe doesn't retry forever
+    }
+
     throw new Error("DB upsert(sponsored_subscriptions) failed");
   }
 
-  // Apply sponsored_geom conversion (geojson -> geometry)
-  if (sponsoredGeo) {
-    const { error: geomErr } = await supabase.rpc("set_subscription_geom", {
-      p_stripe_subscription_id: sub.id,
-      p_geojson: sponsoredGeo,
-    });
-
-    if (geomErr) {
-      console.error("[webhook] set_subscription_geom error:", geomErr);
-      // don't fail webhook; we still have the subscription saved
-    }
-  }
+  // if successful, release lock (checkout complete)
+  await releaseLockSafe(lock_id);
 }
 
 async function upsertInvoice(inv) {
@@ -191,9 +163,7 @@ async function upsertInvoice(inv) {
     amount_due_pennies: inv.amount_due ?? null,
     currency: (inv.currency || "gbp")?.toLowerCase(),
     status: inv.status,
-    period_start: inv.period_start
-      ? new Date(inv.period_start * 1000).toISOString()
-      : null,
+    period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
     period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
   };
 
@@ -213,10 +183,9 @@ exports.handler = async (event) => {
   }
   if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
-  const sig =
-    event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
-
+  const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
   if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
+
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
     return json(500, { ok: false, error: "Missing STRIPE_WEBHOOK_SECRET env var" });
   }
@@ -227,11 +196,7 @@ exports.handler = async (event) => {
       ? Buffer.from(event.body, "base64")
       : Buffer.from(event.body || "", "utf8");
 
-    stripeEvent = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
     return json(400, { ok: false, error: "Bad signature" });
