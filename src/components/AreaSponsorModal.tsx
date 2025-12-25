@@ -35,7 +35,7 @@ const GBP = (n: number | null | undefined) =>
 const fmtKm2 = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `${n.toFixed(3)} km²` : "—";
 
-const EPS = 1e-9;
+const EPS = 1e-6;
 
 export default function AreaSponsorModal({
   open,
@@ -94,7 +94,8 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId, areaId, slot: 1, categoryId }),
+          // ✅ FIX: use the actual slot variable, not hardcoded 1
+          body: JSON.stringify({ businessId, areaId, slot, categoryId }),
         });
 
         const j = await res.json().catch(() => null);
@@ -107,7 +108,9 @@ export default function AreaSponsorModal({
         const availableKm2 =
           typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-        const soldOut = availableKm2 <= EPS;
+        // ✅ Respect server sold_out as well (source of truth)
+        const soldOut =
+          Boolean(j.sold_out) || availableKm2 <= EPS || j.reason === "no_remaining";
 
         if (!cancelled) {
           setPv({
@@ -161,7 +164,7 @@ export default function AreaSponsorModal({
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
 
   // ✅ Don’t block on pv.loading – just require area & not mid checkout
-  const canBuy = open && hasArea && !checkingOut && !!categoryId;
+  const canBuy = open && hasArea && !checkingOut && !!categoryId && !pv.soldOut;
 
   const startCheckout = async () => {
     if (!canBuy) return;
@@ -172,6 +175,13 @@ export default function AreaSponsorModal({
       return;
     }
 
+    // ✅ extra guard: if sold out or no area, bail early
+    if (!hasArea || pv.soldOut) {
+      setCheckoutErr("No purchasable area left for this industry in this polygon.");
+      setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+      return;
+    }
+
     setCheckingOut(true);
     setCheckoutErr(null);
 
@@ -179,7 +189,6 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        // ✅ FIX: include categoryId
         body: JSON.stringify({ businessId, areaId, slot, categoryId }),
       });
 
@@ -190,7 +199,7 @@ export default function AreaSponsorModal({
           j?.message ||
           j?.error ||
           (res.status === 409
-            ? "No purchasable area left for this slot."
+            ? "No purchasable area left for this industry in this polygon."
             : `Checkout failed (${res.status})`);
 
         setCheckoutErr(message);
@@ -256,7 +265,7 @@ export default function AreaSponsorModal({
 
           {pv.soldOut && !hasArea && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              No purchasable area left for this slot.
+              No purchasable area left for this industry in this polygon.
             </div>
           )}
 
