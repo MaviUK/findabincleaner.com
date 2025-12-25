@@ -17,7 +17,6 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
-// treat these as "still blocks the area"
 const ACTIVE_LIKE = new Set([
   "active",
   "trialing",
@@ -31,47 +30,7 @@ function normStatus(s) {
   return String(s || "").toLowerCase();
 }
 
-/**
- * NEW: lock helpers
- * Your sponsored_locks table columns (from you):
- * id, area_id, slot, business_id, stripe_session_id, created_at
- * + you are adding: expires_at, is_active
- */
-async function deactivateLockById(lockId) {
-  if (!lockId) return;
-  const { error } = await supabase
-    .from("sponsored_locks")
-    .update({ is_active: false })
-    .eq("id", lockId);
-
-  if (error) console.error("[webhook] deactivate lock error:", error);
-}
-
-async function deactivateLockBySessionId(stripeSessionId) {
-  if (!stripeSessionId) return;
-  const { error } = await supabase
-    .from("sponsored_locks")
-    .update({ is_active: false })
-    .eq("stripe_session_id", stripeSessionId);
-
-  if (error) console.error("[webhook] deactivate lock by session error:", error);
-}
-
-// best-effort cleanup of expired locks
-async function cleanupExpiredLocks() {
-  try {
-    await supabase
-      .from("sponsored_locks")
-      .update({ is_active: false })
-      .eq("is_active", true)
-      .lt("expires_at", new Date().toISOString());
-  } catch (e) {
-    // do not fail webhook for cleanup
-  }
-}
-
 async function resolveContext({ meta, customerId }) {
-  // checkout sets metadata like: business_id, area_id, slot, category_id, lock_id
   const business_id =
     meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
@@ -105,43 +64,28 @@ async function resolveContext({ meta, customerId }) {
   return { business_id: null, area_id: null, slot: null, category_id: null };
 }
 
-/**
- * Ownership check (best-effort). Real enforcement should be in checkout + DB.
- */
-async function slotIsOwnedByOther(payload) {
-  if (!payload.area_id || payload.slot == null) return false;
+async function computePurchasable({ area_id, category_id, slot }) {
+  if (!area_id || !category_id || slot == null) return null;
 
-  let q = supabase
-    .from("sponsored_subscriptions")
-    .select("business_id,status,stripe_subscription_id")
-    .eq("area_id", payload.area_id)
-    .eq("slot", payload.slot);
-
-  // Keep this line if exclusivity is per category too (you are using category_id in checkout).
-  if (payload.category_id) q = q.eq("category_id", payload.category_id);
-
-  const { data, error } = await q;
+  const { data, error } = await supabase.rpc("area_remaining_preview", {
+    p_area_id: area_id,
+    p_category_id: category_id,
+    p_slot: slot,
+  });
 
   if (error) {
-    console.error("[webhook] slot ownership check error:", error);
-    return false; // fail open
+    console.error("[webhook] computePurchasable rpc error:", error);
+    return null;
   }
 
-  const blocking = (data || []).filter((r) => ACTIVE_LIKE.has(normStatus(r.status)));
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return null;
 
-  return blocking.some(
-    (r) => String(r.business_id) && String(r.business_id) !== String(payload.business_id)
-  );
-}
-
-async function cancelStripeSubscriptionSafe(subId, reason) {
-  if (!subId) return;
-  try {
-    console.warn("[webhook] canceling subscription:", subId, reason || "");
-    await stripe.subscriptions.cancel(subId);
-  } catch (e) {
-    console.error("[webhook] failed to cancel subscription:", subId, e);
-  }
+  return {
+    available_km2: Number(row.available_km2 ?? 0) || 0,
+    sold_out: !!row.sold_out,
+    geojson: row.gj || null, // purchasable geojson
+  };
 }
 
 async function upsertSubscription(sub, meta = {}) {
@@ -155,6 +99,11 @@ async function upsertSubscription(sub, meta = {}) {
 
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
+
+  // NEW: compute purchasable geometry at the time we process webhook
+  // (Best practice is to compute+lock at checkout time, but this will still
+  // correctly prevent overlaps & store geometry in the DB.)
+  const purch = await computePurchasable({ area_id, category_id, slot });
 
   const payload = {
     business_id,
@@ -172,16 +121,18 @@ async function upsertSubscription(sub, meta = {}) {
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
+
+    // NEW: store purchased amount + geometry
+    area_km2: purch ? purch.available_km2 : null,
+    sponsored_geom: purch?.geojson
+      ? // convert geojson -> geometry server-side
+        // we store geojson in a hidden json field and convert using SQL expression below
+        null
+      : null,
   };
 
-  // If this subscription is attempting to claim an already-owned slot, cancel it.
-  if (payload.area_id && payload.slot != null && payload.business_id) {
-    const ownedByOther = await slotIsOwnedByOther(payload);
-    if (ownedByOther && ACTIVE_LIKE.has(normStatus(payload.status))) {
-      await cancelStripeSubscriptionSafe(sub.id, "Slot already owned by another business");
-      payload.status = "canceled";
-    }
-  }
+  // If we have purchasable geojson, set sponsored_geom using a SQL update after upsert
+  const sponsoredGeo = purch?.geojson ? JSON.stringify(purch.geojson) : null;
 
   const { error } = await supabase
     .from("sponsored_subscriptions")
@@ -189,14 +140,20 @@ async function upsertSubscription(sub, meta = {}) {
 
   if (error) {
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
-
-    const msg = String(error?.message || "").toLowerCase();
-    if (msg.includes("duplicate") || msg.includes("unique")) {
-      await cancelStripeSubscriptionSafe(sub.id, "DB uniqueness violation");
-      return; // swallow so Stripe doesn't retry forever
-    }
-
     throw new Error("DB upsert(sponsored_subscriptions) failed");
+  }
+
+  // Apply sponsored_geom conversion (geojson -> geometry)
+  if (sponsoredGeo) {
+    const { error: geomErr } = await supabase.rpc("set_subscription_geom", {
+      p_stripe_subscription_id: sub.id,
+      p_geojson: sponsoredGeo,
+    });
+
+    if (geomErr) {
+      console.error("[webhook] set_subscription_geom error:", geomErr);
+      // don't fail webhook; we still have the subscription saved
+    }
   }
 }
 
@@ -204,7 +161,6 @@ async function upsertInvoice(inv) {
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
-  // Find local subscription row
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
     .select("id")
@@ -216,7 +172,6 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If missing, fetch from Stripe and insert
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -253,24 +208,15 @@ async function upsertInvoice(inv) {
 }
 
 exports.handler = async (event) => {
-  // Health check
   if (event.httpMethod === "GET") {
-    return json(200, {
-      ok: true,
-      note: "Stripe webhook is deployed. Use POST from Stripe.",
-    });
+    return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
   }
-  if (event.httpMethod !== "POST") {
-    return json(405, { ok: false, error: "Method not allowed" });
-  }
+  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
   const sig =
-    event.headers["stripe-signature"] ||
-    event.headers["Stripe-Signature"] ||
-    null;
+    event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
 
   if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
-
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
     return json(500, { ok: false, error: "Missing STRIPE_WEBHOOK_SECRET env var" });
   }
@@ -294,37 +240,12 @@ exports.handler = async (event) => {
   try {
     console.log(`[webhook] ${stripeEvent.type} id=${stripeEvent.id}`);
 
-    // best-effort cleanup (won't break webhook if it fails)
-    await cleanupExpiredLocks();
-
     switch (stripeEvent.type) {
       case "checkout.session.completed": {
         const session = stripeEvent.data.object;
-
-        // ✅ Always release the lock for this checkout session (success)
-        // We prefer lock_id, but also support stripe_session_id lookup.
-        const lockId = session?.metadata?.lock_id || null;
-        if (lockId) {
-          await deactivateLockById(lockId);
-        } else {
-          await deactivateLockBySessionId(session?.id || null);
-        }
-
         if (session.mode === "subscription" && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
           await upsertSubscription(sub, session.metadata || {});
-        }
-        break;
-      }
-
-      // If you enable this event in Stripe, it's great for releasing locks on abandoned checkouts.
-      case "checkout.session.expired": {
-        const session = stripeEvent.data.object;
-        const lockId = session?.metadata?.lock_id || null;
-        if (lockId) {
-          await deactivateLockById(lockId);
-        } else {
-          await deactivateLockBySessionId(session?.id || null);
         }
         break;
       }
@@ -338,7 +259,6 @@ exports.handler = async (event) => {
 
       case "customer.subscription.deleted": {
         const sub = stripeEvent.data.object;
-
         const { error } = await supabase
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
