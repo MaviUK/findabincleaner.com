@@ -1,4 +1,3 @@
-// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(
@@ -38,14 +37,11 @@ export default async (req) => {
   }
 
   try {
-    // IMPORTANT:
-    // This MUST be the geometry-aware function (see SQL below).
     const { data, error } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_category_id: categoryId,
       p_slot: slot,
     });
-
     if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;
@@ -53,13 +49,12 @@ export default async (req) => {
 
     const totalKm2 = Number(row.total_km2 ?? 0) || 0;
     const availableKm2 = Number(row.available_km2 ?? 0) || 0;
-
     const soldOut =
       Boolean(row.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
 
-    const ratePerKm2 = Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? 1) || 1;
+    const ratePerKm2 =
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
-    // Price = available * rate, floor £1.00 if any availability, else £0.
     const priceCents = soldOut
       ? 0
       : Math.max(100, Math.round(Math.max(availableKm2, 0) * ratePerKm2 * 100));
