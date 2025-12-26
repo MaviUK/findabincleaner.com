@@ -19,7 +19,12 @@ export interface ServiceAreaRow {
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
+
+  // ✅ NEW: lock info (from RPC)
+  is_sponsored_locked?: boolean;
+  sponsored_until?: string | null;
 }
+
 
 // Keep Slot type for back-compat where needed
 type Slot = 1;
@@ -649,6 +654,28 @@ export default function ServiceAreaEditor({
   function getAreaSlotState(areaId: string): SingleSlotState | undefined {
     return sponsorship[areaId]?.slot;
   }
+
+  function isAreaLocked(area: ServiceAreaRow): boolean {
+  // Prefer DB truth if present
+  if (typeof area.is_sponsored_locked === "boolean") return area.is_sponsored_locked;
+
+  // Fallback: if sponsorship map says YOU own an active/past_due/trialing slot, lock it
+  const s = getAreaSlotState(area.id);
+  const mine =
+    !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
+
+  return mine;
+}
+
+function lockedUntilLabel(area: ServiceAreaRow): string | null {
+  if (!area.sponsored_until) return null;
+  try {
+    return new Date(area.sponsored_until).toLocaleDateString();
+  } catch {
+    return null;
+  }
+}
+
 
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
