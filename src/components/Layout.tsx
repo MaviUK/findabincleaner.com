@@ -33,13 +33,13 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-black/5 bg-white/80 backdrop-blur">
         {/* Match dashboard content width: max-w-6xl + same paddings */}
-        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 h-32 flex items-center justify-between">
+        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 h-16 flex items-center justify-between">
           <Link to="/" className="inline-flex items-center gap-3">
             {/* Logo */}
             <img
               src="/cleanlylogo.png"
               alt="Clean.ly"
-              className="h-9 w-9 object-contain"
+              className="h-16 w-16 object-contain"
               draggable={false}
             />
             <span className="font-extrabold tracking-tight text-gray-900 text-lg">
@@ -78,4 +78,5 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
