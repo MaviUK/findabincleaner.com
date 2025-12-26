@@ -32,10 +32,16 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     <div className="min-h-screen flex flex-col bg-gray-50">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-black/5 bg-white/80 backdrop-blur">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <Link to="/" className="inline-flex items-center gap-2">
-            {/* Tiny brand mark */}
-            <span className="h-9 w-9 rounded-xl bg-gradient-to-br from-emerald-600 via-teal-500 to-sky-500 shadow-sm" />
+        {/* Match dashboard content width: max-w-6xl + same paddings */}
+        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 h-16 flex items-center justify-between">
+          <Link to="/" className="inline-flex items-center gap-3">
+            {/* Logo */}
+            <img
+              src="/cleanlylogo.png"
+              alt="Clean.ly"
+              className="h-9 w-9 object-contain"
+              draggable={false}
+            />
             <span className="font-extrabold tracking-tight text-gray-900 text-lg">
               Clean<span className="text-emerald-600">.</span>ly
             </span>
@@ -59,7 +65,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
       {/* Footer */}
       <footer className="border-t border-black/5 bg-white">
-        <div className="container mx-auto px-4 py-6 flex flex-col sm:flex-row gap-2 sm:gap-0 items-center justify-between text-sm text-gray-500">
+        {/* Keep footer aligned too */}
+        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 py-6 flex flex-col sm:flex-row gap-2 sm:gap-0 items-center justify-between text-sm text-gray-500">
           <span>© {new Date().getFullYear()} Clean.ly</span>
           <span>
             Built with <span className="text-rose-600">❤</span>
