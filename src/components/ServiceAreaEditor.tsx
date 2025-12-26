@@ -784,6 +784,10 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                   isBlockingStatus(s.status) &&
                   s.owner_business_id === myBusinessId;
 
+                const locked = isAreaLocked(a);
+                const until = lockedUntilLabel(a);
+
+
                 const takenByOther =
                   !!s &&
                   isBlockingStatus(s.status) &&
@@ -856,9 +860,27 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <button className="btn" onClick={() => editArea(a)} disabled={loading}>
-                          Edit
-                        </button>
+                        <button
+  className="btn"
+  onClick={(e) => {
+    e.stopPropagation();
+
+    if (locked) {
+      setError(
+        `Sponsored areas are locked and cannot be edited${
+          until ? ` until ${until}` : ""
+        }.`
+      );
+      return;
+    }
+
+    editArea(a);
+  }}
+  disabled={loading || locked}
+  title={locked ? "This area is sponsored and locked" : "Edit area"}
+>
+  Edit
+</button>
                         <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
                           Delete
                         </button>
