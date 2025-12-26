@@ -32,33 +32,34 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     <div className="min-h-screen flex flex-col bg-gray-50">
       {/* Header */}
       <header className="sticky top-0 z-30 border-b border-black/5 bg-white/80 backdrop-blur">
-        {/* Match dashboard content width: max-w-6xl + same paddings */}
-        <div className="mx-auto w-full max-w-6xl px-4 sm:px-6 h-16 flex items-center justify-between">
-          <Link to="/" className="inline-flex items-center gap-3">
-            {/* Logo */}
-            <img
-              src="/cleanlylogo.png"
-              alt="Clean.ly"
-              className="h-16 w-16 object-contain"
-              draggable={false}
-            />
-            <span className="font-extrabold tracking-tight text-gray-900 text-lg">
-              Clean<span className="text-emerald-600">.</span>ly
-            </span>
-          </Link>
+  <div className="mx-auto max-w-7xl px-6 h-16 flex items-center justify-between">
+    {/* Left */}
+    <Link to="/" className="inline-flex items-center gap-3">
+      <img
+        src="/cleanlylogo.png"
+        alt="Clean.ly"
+        className="h-9 w-9 object-contain"
+        draggable={false}
+      />
+      <span className="font-extrabold tracking-tight text-gray-900 text-lg">
+        Clean<span className="text-emerald-600">.</span>ly
+      </span>
+    </Link>
 
-          {!hideCta && (
-            <Link
-              to={ctaHref}
-              className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
-                         bg-gray-900 text-white hover:bg-black
-                         focus:outline-none focus:ring-4 focus:ring-black/20"
-            >
-              {ctaLabel}
-            </Link>
-          )}
-        </div>
-      </header>
+    {/* Right */}
+    {!hideCta && (
+      <Link
+        to={ctaHref}
+        className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
+                   bg-gray-900 text-white hover:bg-black
+                   focus:outline-none focus:ring-4 focus:ring-black/20"
+      >
+        {ctaLabel}
+      </Link>
+    )}
+  </div>
+</header>
+
 
       {/* Page */}
       <div className="flex-1">{children}</div>
@@ -78,5 +79,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
 
