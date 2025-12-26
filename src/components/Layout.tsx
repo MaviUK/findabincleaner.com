@@ -1,85 +1,142 @@
-// src/components/Layout.tsx
-import React, { useEffect, useState } from "react";
-import { Link, useLocation } from "react-router-dom";
-import { supabase } from "../lib/supabase";
+// src/pages/Landing.tsx
+import { useMemo, useState } from "react";
+import FindCleaners, { type ServiceSlug } from "../components/FindCleaners";
+import ResultsList from "../components/ResultsList";
 
-const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
-  const [authed, setAuthed] = useState(false);
-  const location = useLocation();
+type Cleaner = any;
 
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      if (mounted) setAuthed(!!session?.user);
-    })();
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
-      setAuthed(!!s?.user);
-    });
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
+const SERVICE_BUTTONS: {
+  slug: ServiceSlug;
+  label: string;
+  icon: string;
+  blurb: string;
+}[] = [
+  {
+    slug: "bin-cleaner",
+    label: "Bin Cleaner",
+    icon: "🗑️",
+    blurb: "Wheelie bins, deep clean & deodorise",
+  },
+  {
+    slug: "window-cleaner",
+    label: "Window Cleaner",
+    icon: "🪟",
+    blurb: "Windows, frames, sills",
+  },
+  {
+    slug: "cleaner",
+    label: "General Cleaner",
+    icon: "🧼",
+    blurb: "General domestic cleaning",
+  },
+];
 
-  const ctaHref = authed ? "/dashboard" : "/login?mode=signup";
-  const ctaLabel = authed ? "Dashboard" : "Register a Business";
-  const hideCta = location.pathname === "/login";
+export default function Landing() {
+  const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-cleaner");
+  const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
+  const [postcode, setPostcode] = useState<string>("");
+  const [locality, setLocality] = useState<string>("");
+  const [loading, setLoading] = useState(false);
 
-  // ✅ Single source of truth for horizontal alignment
-  // Use this exact wrapper everywhere you want perfect "rails"
+  // ✅ MUST MATCH Layout.tsx rails exactly
   const WRAP = "mx-auto w-full max-w-7xl px-4 sm:px-6";
 
+  const activeService = useMemo(
+    () => SERVICE_BUTTONS.find((b) => b.slug === serviceSlug) ?? SERVICE_BUTTONS[0],
+    [serviceSlug]
+  );
+
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      {/* Header */}
-      <header className="sticky top-0 z-30 border-b border-black/5 bg-white/80 backdrop-blur">
-        <div className={`${WRAP} h-16 flex items-center justify-between`}>
-          {/* Left */}
-          <Link to="/" className="inline-flex items-center gap-3">
-            <img
-              src="/cleanlylogo.png"
-              alt="Clean.ly"
-              className="h-8 w-8 object-contain"
-              draggable={false}
-            />
-            <span className="font-extrabold tracking-tight text-gray-900 text-lg">
-              Clean<span className="text-emerald-600">.</span>ly
+    <div className="bg-gray-50">
+      {/* Outer wrapper that defines the rails */}
+      <div className={`${WRAP} py-10 sm:py-14`}>
+        {/* Hero */}
+        <div className="text-center">
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight text-gray-900">
+            Welcome to
+            <span className="block mt-2">
+              <span className="text-emerald-700">CLEAN</span>
+              <span className="text-sky-600">ly</span>
             </span>
-          </Link>
-
-          {/* Right */}
-          {!hideCta && (
-            <Link
-              to={ctaHref}
-              className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
-                         bg-gray-900 text-white hover:bg-black
-                         focus:outline-none focus:ring-4 focus:ring-black/20"
-            >
-              {ctaLabel}
-            </Link>
-          )}
+          </h1>
+          <p className="mt-4 text-gray-600 max-w-2xl mx-auto">
+            Pick a service, enter your postcode, and contact trusted local cleaners in minutes.
+          </p>
         </div>
-      </header>
 
-      {/* Page */}
-      <div className="flex-1">{children}</div>
+        {/* Search Card */}
+        <div className="mt-10 sm:mt-12">
+          <div className="bg-white border border-black/5 rounded-2xl shadow-sm p-5 sm:p-6">
+            <div className="flex flex-col gap-4">
+              {/* Top row: service label + tabs */}
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-gray-900">Service</div>
+                  <div className="text-xs text-gray-500">{activeService.blurb}</div>
+                </div>
 
-      {/* Footer */}
-      <footer className="border-t border-black/5 bg-white">
-        <div
-          className={`${WRAP} py-6 flex flex-col sm:flex-row gap-2 sm:gap-0 items-center justify-between text-sm text-gray-500`}
-        >
-          <span>© {new Date().getFullYear()} Clean.ly</span>
-          <span>
-            Built with <span className="text-rose-600">❤</span>
-          </span>
+                <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
+                  {SERVICE_BUTTONS.map((b) => {
+                    const active = b.slug === serviceSlug;
+                    return (
+                      <button
+                        key={b.slug}
+                        type="button"
+                        onClick={() => setServiceSlug(b.slug)}
+                        className={[
+                          "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition",
+                          active
+                            ? "bg-emerald-700 text-white border-emerald-700"
+                            : "bg-white text-gray-900 border-gray-200 hover:bg-gray-50",
+                        ].join(" ")}
+                        aria-pressed={active}
+                      >
+                        <span aria-hidden>{b.icon}</span>
+                        {b.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Finder */}
+              <FindCleaners
+                serviceSlug={serviceSlug}
+                onSearchStart={() => {
+                  setLoading(true);
+                  setCleaners(null);
+                }}
+                onSearchComplete={(results, pc, loc) => {
+                  setLoading(false);
+                  setCleaners(results);
+                  setPostcode(pc);
+                  setLocality(loc ?? "");
+                }}
+              />
+
+              {/* Small trust row */}
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs text-gray-500">
+                <div>Free listing for cleaners • No signup fees</div>
+                <div className="inline-flex items-center gap-2 justify-center sm:justify-end">
+                  <span className="h-2 w-2 rounded-full bg-emerald-600" />
+                  Verified businesses only
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </footer>
+
+        {/* Results */}
+        <div className="mt-8 sm:mt-10">
+          <ResultsList
+            cleaners={cleaners}
+            loading={loading}
+            postcode={postcode}
+            locality={locality}
+            serviceSlug={serviceSlug}
+          />
+        </div>
+      </div>
     </div>
   );
-};
-
-export default Layout;
+}
