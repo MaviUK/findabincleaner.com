@@ -1,30 +1,30 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
+ <header className="border-b bg-white">
+  <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+    
+    {/* Left: Logo + Brand */}
+    <div className="flex items-center gap-3">
+      <img
+        src="/cleanlylogo.png"
+        alt="Clean.ly"
+        className="h-8 w-auto"
+      />
+      <span className="text-xl font-semibold tracking-tight">
+        Clean.ly
+      </span>
+    </div>
 
-    <!-- Favicon -->
-    <link rel="icon" type="image/png" href="/cleanlylogo.png" />
+    {/* Right: Actions */}
+    <div>
+      <button className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white">
+        Dashboard
+      </button>
+    </div>
 
-    <!-- Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  </div>
+</header>
 
-    <!-- Inter (site default) -->
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-
-    <!-- Bebas Neue (for CLEANly wordmark) -->
-    <link
-      href="https://fonts.googleapis.com/css2?family=Bebas+Neue&display=swap"
-      rel="stylesheet"
-    />
-
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Clean.ly</title>
-  </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
