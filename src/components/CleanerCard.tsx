@@ -22,13 +22,12 @@ type Props = {
   cleaner: Cleaner;
   postcodeHint?: string;
   showPayments?: boolean;
-
-  // explicitly passed so analytics never “loses” them
   areaId?: string | null;
   categoryId?: string | null;
-
   position?: number;
+  featured?: boolean; // ✅ NEW
 };
+
 
 function normalizeUrl(u: string) {
   const trimmed = u.trim();
