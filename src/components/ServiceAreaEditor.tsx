@@ -860,24 +860,21 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                         </div>
                       </div>
                       <div className="flex gap-2">
-                        <button
-  className="btn"
+                       <button
+  type="button"
   onClick={(e) => {
     e.stopPropagation();
-
-    if (locked) {
-      setError(
-        `Sponsored areas are locked and cannot be edited${
-          until ? ` until ${until}` : ""
-        }.`
-      );
-      return;
-    }
-
+    if (locked) return;
     editArea(a);
   }}
   disabled={loading || locked}
-  title={locked ? "This area is sponsored and locked" : "Edit area"}
+  title={locked ? "Sponsored areas are locked" : "Edit"}
+  className={[
+    "btn",
+    locked
+      ? "opacity-40 cursor-not-allowed grayscale"
+      : "hover:bg-gray-100",
+  ].join(" ")}
 >
   Edit
 </button>
