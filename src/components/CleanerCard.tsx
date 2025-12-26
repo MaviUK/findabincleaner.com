@@ -74,11 +74,15 @@ export default function CleanerCard({ cleaner, areaId, categoryId, position }: P
       <div className="h-20 w-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
         {cleaner.logo_url && (
           <img
-            src={cleaner.logo_url}
-            alt={name}
-            className="h-full w-full object-cover"
-            loading="lazy"
-          />
+  src={cleaner.logo_url}
+  alt={cleaner.business_name ?? "Business logo"}
+  className={
+    featured
+      ? "h-20 w-20 sm:h-24 sm:w-24 rounded-xl object-cover bg-white border-2 border-emerald-300 shadow-sm"
+      : "h-12 w-12 rounded-md object-cover bg-white border"
+  }
+/>
+
         )}
       </div>
 
