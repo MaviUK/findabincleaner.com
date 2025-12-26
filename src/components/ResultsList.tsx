@@ -115,7 +115,19 @@ export default function ResultsList({ cleaners, postcode, locality, areaId, cate
         };
 
         // ✅ IMPORTANT: always pass the current search categoryId so clicks are attributed to the industry
-        const card = (
+        cconst card = (
+  <CleanerCard
+    key={cleanerId}
+    cleaner={cleaner as any}
+    postcodeHint={postcode}
+    showPayments
+    position={idx + 1}
+    areaId={areaId ?? c.area_id ?? null}
+    categoryId={categoryId ?? c.category_id ?? null}
+    featured={isFirstSponsored}   // ✅ ADD THIS
+  />
+);
+onst card = (
           <CleanerCard
             key={cleanerId}
             cleaner={cleaner as any}
