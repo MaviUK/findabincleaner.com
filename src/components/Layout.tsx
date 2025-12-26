@@ -42,7 +42,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             <img
               src="/cleanlylogo.png"
               alt="Clean.ly"
-              className="h-8 w-8 object-contain"
+              className="h-16 w-16 object-contain"
               draggable={false}
             />
             <span className="font-extrabold tracking-tight text-gray-900 text-lg">
@@ -82,3 +82,4 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
