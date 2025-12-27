@@ -4,18 +4,18 @@ import { createClient } from "@supabase/supabase-js";
 /**
  * Required Netlify env vars:
  *  - RESEND_API_KEY
- *  - ENQUIRY_FROM         (verified sender, e.g. enquiries@yourdomain.com)
+ *  - ENQUIRY_FROM         (must be on your verified domain, NOT onboarding@resend.dev)
  *  - SUPABASE_URL
  *  - SUPABASE_SERVICE_ROLE
  *
  * Optional:
  *  - ENQUIRY_INBOX_TO     (admin BCC + fallback recipient if business email missing)
  *
- * What this function does:
- *  1) Looks up the business email via cleaners.contact_email
- *  2) Sends the enquiry to that business email (ONLY)
- *  3) Optionally BCCs ENQUIRY_INBOX_TO for admin visibility
- *  4) Sets reply_to so the business can reply directly to the sender
+ * Behaviour:
+ *  - Sends to business (cleaners.contact_email)
+ *  - Sends a copy to the user (payload.email)
+ *  - Optional BCC to ENQUIRY_INBOX_TO
+ *  - Returns { ok: true } so UI can show "Sent!"
  */
 const allowOrigin = "*";
 
@@ -61,11 +61,11 @@ export const handler: Handler = async (event) => {
       name: string;
       address: string;
       phone: string;
-      email: string; // sender email
+      email: string; // user email
       message: string;
     };
 
-    // Required checks (server-side enforcement)
+    // Required checks
     if (!payload.cleanerId || !payload.cleanerName) {
       return json(400, { error: "Missing cleanerId or cleanerName." });
     }
@@ -77,10 +77,10 @@ export const handler: Handler = async (event) => {
     }
     if (!payload.message?.trim()) return json(400, { error: "Missing message." });
 
-    // ✅ Resolve business email from cleaners.contact_email
+    // Resolve business email from cleaners.contact_email
     const businessEmail = await resolveCleanerContactEmail(payload.cleanerId);
 
-    // Fallback recipient if business email isn't available:
+    // If no business email, fallback to ENQUIRY_INBOX_TO (admin)
     const primaryRecipient = businessEmail || ENQUIRY_INBOX_TO || "";
     if (!primaryRecipient) {
       return json(500, {
@@ -89,10 +89,10 @@ export const handler: Handler = async (event) => {
       });
     }
 
-    // ✅ ONLY send to business (no customer copy)
-    const to = uniqueEmails([primaryRecipient]);
+    // ✅ Send to business + send copy to user
+    const to = uniqueEmails([primaryRecipient, payload.email]);
 
-    // Optional admin copy (BCC) if ENQUIRY_INBOX_TO exists and isn't already in 'to'
+    // Optional admin BCC (only if not already included)
     const bcc =
       ENQUIRY_INBOX_TO && !to.includes(ENQUIRY_INBOX_TO)
         ? [ENQUIRY_INBOX_TO]
@@ -118,7 +118,6 @@ export const handler: Handler = async (event) => {
       `<p style="color:#6b7280;font-size:12px">Sent from Clean.ly</p>` +
       `</div>`;
 
-    // Send email via Resend
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -131,7 +130,8 @@ export const handler: Handler = async (event) => {
         bcc,
         subject,
         html,
-        reply_to: payload.email, // business can reply directly to sender
+        // ✅ When business replies, it goes to the user
+        reply_to: payload.email,
       }),
     });
 
@@ -140,7 +140,12 @@ export const handler: Handler = async (event) => {
       return json(502, { error: txt || "Resend returned an error." });
     }
 
-    return json(200, { ok: true, to, bcc: bcc || [] });
+    // UI uses this to show confirmation
+    return json(200, {
+      ok: true,
+      sent_to_business: !!businessEmail,
+      recipients: to,
+    });
   } catch (e: any) {
     return json(500, { error: e?.message || "Unhandled error" });
   }
@@ -194,6 +199,5 @@ function esc(s: string) {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&lt;")
     .replace(/>/g, "&gt;");
 }
