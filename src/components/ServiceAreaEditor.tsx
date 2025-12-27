@@ -284,17 +284,26 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-  // ✅ Fetch categories once
-  useEffect(() => {
-    (async () => {
-      const { data, error } = await supabase
-  .from("service_categories")
-  .select("id,name,slug")
-  .order("name", { ascending: true });
+// ✅ Fetch ONLY active industries for this cleaner
+useEffect(() => {
+  if (!myBusinessId) return;
 
-      if (!error) setCategories((data as any) || []);
-    })();
-  }, []);
+  (async () => {
+    const { data, error } = await supabase.rpc(
+      "list_active_categories_for_cleaner",
+      { p_cleaner_id: myBusinessId }
+    );
+
+    if (error) {
+      console.warn("active categories fetch error:", error);
+      setCategories([]);
+      return;
+    }
+
+    setCategories((data as any) || []);
+  })();
+}, [myBusinessId]);
+
 
   // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
