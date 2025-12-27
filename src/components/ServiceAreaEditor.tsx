@@ -288,9 +288,10 @@ export default function ServiceAreaEditor({
   useEffect(() => {
     (async () => {
       const { data, error } = await supabase
-        .from("categories")
-        .select("id,name,slug")
-        .order("name", { ascending: true });
+  .from("service_categories")
+  .select("id,name,slug")
+  .order("name", { ascending: true });
+
       if (!error) setCategories((data as any) || []);
     })();
   }, []);
