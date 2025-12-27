@@ -5,18 +5,19 @@ import { createClient } from "@supabase/supabase-js";
  * Required Netlify env vars:
  *  - RESEND_API_KEY
  *  - ENQUIRY_FROM         (verified sender, e.g. enquiries@yourdomain.com)
- *  - ENQUIRY_INBOX_TO     (optional admin copy / fallback recipient)
  *  - SUPABASE_URL
  *  - SUPABASE_SERVICE_ROLE
  *
+ * Optional:
+ *  - ENQUIRY_INBOX_TO     (admin BCC + fallback recipient if business email missing)
+ *
  * What this function does:
- *  1) Looks up the cleaner's email via cleaners.user_id -> profiles.email
- *  2) Sends the enquiry to:
- *      - the cleaner email (primary)
- *      - the sender's email (copy)
- *     And BCCs ENQUIRY_INBOX_TO (optional) for admin visibility.
+ *  1) Looks up the business email via cleaners.contact_email
+ *  2) Sends the enquiry to that business email (ONLY)
+ *  3) Optionally BCCs ENQUIRY_INBOX_TO for admin visibility
+ *  4) Sets reply_to so the business can reply directly to the sender
  */
-const allowOrigin = "*"; // tighten to your domain if you want
+const allowOrigin = "*";
 
 const supabase = createClient(
   process.env.SUPABASE_URL || "",
@@ -68,36 +69,28 @@ export const handler: Handler = async (event) => {
     if (!payload.cleanerId || !payload.cleanerName) {
       return json(400, { error: "Missing cleanerId or cleanerName." });
     }
-    if (!payload.name?.trim()) {
-      return json(400, { error: "Missing name." });
-    }
-    if (!payload.address?.trim()) {
-      return json(400, { error: "Missing address." });
-    }
-    if (!payload.phone?.trim()) {
-      return json(400, { error: "Missing phone." });
-    }
+    if (!payload.name?.trim()) return json(400, { error: "Missing name." });
+    if (!payload.address?.trim()) return json(400, { error: "Missing address." });
+    if (!payload.phone?.trim()) return json(400, { error: "Missing phone." });
     if (!payload.email?.trim() || !isValidEmail(payload.email)) {
       return json(400, { error: "Missing or invalid email." });
     }
-    if (!payload.message?.trim()) {
-      return json(400, { error: "Missing message." });
-    }
+    if (!payload.message?.trim()) return json(400, { error: "Missing message." });
 
-    // 1) Resolve cleaner recipient email
-    const cleanerEmail = await resolveCleanerEmail(payload.cleanerId);
+    // ✅ Resolve business email from cleaners.contact_email
+    const businessEmail = await resolveCleanerContactEmail(payload.cleanerId);
 
-    // Fallback recipient if cleaner email isn't available:
-    const primaryRecipient = cleanerEmail || ENQUIRY_INBOX_TO || "";
+    // Fallback recipient if business email isn't available:
+    const primaryRecipient = businessEmail || ENQUIRY_INBOX_TO || "";
     if (!primaryRecipient) {
       return json(500, {
         error:
-          "No recipient email available. Ensure cleaner has an email (profiles.email) or set ENQUIRY_INBOX_TO.",
+          "No recipient email available. Ensure cleaner has contact_email set or set ENQUIRY_INBOX_TO.",
       });
     }
 
-    // 2) Build recipients (send to cleaner + send copy to sender)
-    const to = uniqueEmails([primaryRecipient, payload.email]);
+    // ✅ ONLY send to business (no customer copy)
+    const to = uniqueEmails([primaryRecipient]);
 
     // Optional admin copy (BCC) if ENQUIRY_INBOX_TO exists and isn't already in 'to'
     const bcc =
@@ -110,7 +103,7 @@ export const handler: Handler = async (event) => {
     const html =
       `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5">` +
       `<h2>${esc(subject)}</h2>` +
-      `<p><strong>Cleaner:</strong> ${esc(payload.cleanerName)}<br/>` +
+      `<p><strong>Business:</strong> ${esc(payload.cleanerName)}<br/>` +
       `<strong>Cleaner ID:</strong> ${esc(payload.cleanerId)}</p>` +
       `<hr/>` +
       `<p><strong>Name:</strong> ${esc(payload.name)}</p>` +
@@ -122,10 +115,10 @@ export const handler: Handler = async (event) => {
         "<br/>"
       )}</p>` +
       `<hr/>` +
-      `<p style="color:#6b7280;font-size:12px">Sent from Find a Bin Cleaner</p>` +
+      `<p style="color:#6b7280;font-size:12px">Sent from Clean.ly</p>` +
       `</div>`;
 
-    // 3) Send email via Resend
+    // Send email via Resend
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -138,8 +131,7 @@ export const handler: Handler = async (event) => {
         bcc,
         subject,
         html,
-        // Makes it easy for cleaner to hit Reply and respond to the sender
-        reply_to: payload.email,
+        reply_to: payload.email, // business can reply directly to sender
       }),
     });
 
@@ -154,35 +146,19 @@ export const handler: Handler = async (event) => {
   }
 };
 
-async function resolveCleanerEmail(cleanerId: string): Promise<string | null> {
-  // Get user_id from cleaners
-  const { data: cleanerRow, error: cleanerErr } = await supabase
+async function resolveCleanerContactEmail(cleanerId: string): Promise<string | null> {
+  const { data, error } = await supabase
     .from("cleaners")
-    .select("user_id")
+    .select("contact_email")
     .eq("id", cleanerId)
     .maybeSingle();
 
-  if (cleanerErr) {
-    console.error("[sendEnquiry] cleaners lookup error:", cleanerErr);
+  if (error) {
+    console.error("[sendEnquiry] cleaners.contact_email lookup error:", error);
     return null;
   }
 
-  const userId = cleanerRow?.user_id;
-  if (!userId) return null;
-
-  // Get email from profiles
-  const { data: profileRow, error: profileErr } = await supabase
-    .from("profiles")
-    .select("email")
-    .eq("id", userId)
-    .maybeSingle();
-
-  if (profileErr) {
-    console.error("[sendEnquiry] profiles lookup error:", profileErr);
-    return null;
-  }
-
-  const email = (profileRow?.email || "").trim();
+  const email = (data?.contact_email || "").trim();
   return email && isValidEmail(email) ? email : null;
 }
 
@@ -218,5 +194,6 @@ function esc(s: string) {
   return String(s)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
+    .replace(/>/g, "&lt;")
     .replace(/>/g, "&gt;");
 }
