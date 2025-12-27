@@ -32,7 +32,7 @@ const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
 
 // ✅ Categories we want visible in the business UI (hide domestic-cleaner for now)
 type Category = { id: string; name: string; slug: string };
-const ALLOWED_CATEGORY_SLUGS = ["bin-cleaner", "window-cleaner", "cleaner"] as const;
+const ALLOWED_CATEGORY_SLUGS = ["bin-cleaner", "window-cleaner", "domestic-cleaner"] as const;
 
 // shape the CleanerCard expects (lightweight local type)
 type CleanerCardShape = {
@@ -329,9 +329,10 @@ export default function Settings() {
 
         // ✅ Load categories list (always)
         const { data: cats, error: catsErr } = await supabase
-          .from("service_categories")
-          .select("id,name,slug")
-          .in("slug", [...ALLOWED_CATEGORY_SLUGS]);
+  .from("service_categories")
+  .select("id,name,slug")
+  .order("name", { ascending: true });
+
 
         if (catsErr) throw catsErr;
 
