@@ -125,7 +125,7 @@ export default function ResultsList({
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
 
-          // ✅ PASS THROUGH Google rating fields from RPC response
+          // ✅ include google fields so CleanerCard can show them
           google_rating: c.google_rating ?? null,
           google_reviews_count: c.google_reviews_count ?? null,
 
@@ -147,7 +147,7 @@ export default function ResultsList({
             position={idx + 1}
             areaId={areaId ?? c.area_id ?? null}
             categoryId={categoryId ?? c.category_id ?? null}
-            featured={isFirstSponsored} // ✅ makes the featured logo larger
+            featured={isFirstSponsored}
           />
         );
 
