@@ -62,7 +62,6 @@ function buildWhatsAppUrl(whatsapp: string, text: string) {
 function isValidEmail(v: string) {
   const s = (v || "").trim();
   if (!s) return false;
-  // simple, safe check
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
@@ -91,6 +90,9 @@ export default function CleanerCard({
   const [enqMessage, setEnqMessage] = useState("");
   const [enqError, setEnqError] = useState<string | null>(null);
   const [enqSending, setEnqSending] = useState(false);
+
+  // ✅ NEW: success confirmation state
+  const [enqSent, setEnqSent] = useState(false);
 
   // Google Places loaded?
   const hasPlaces =
@@ -138,14 +140,16 @@ export default function CleanerCard({
   async function sendEnquiryEmail() {
     setEnqError(null);
 
-    // Hard validation (also ensures "can't send until filled in")
+    // Hard validation
     if (!enqName.trim()) return setEnqError("Please enter your name.");
     if (!enqAddress.trim()) return setEnqError("Please select your address.");
     if (!enqPhone.trim()) return setEnqError("Please enter your phone number.");
-    if (!isValidEmail(enqEmail)) return setEnqError("Please enter a valid email address.");
+    if (!isValidEmail(enqEmail))
+      return setEnqError("Please enter a valid email address.");
     if (!enqMessage.trim()) return setEnqError("Please enter your message.");
 
     setEnqSending(true);
+
     try {
       const payload = {
         cleanerId: cleaner.cleaner_id,
@@ -158,34 +162,48 @@ export default function CleanerCard({
       };
 
       const res = await fetch("/.netlify/functions/sendEnquiry", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify(payload),
-});
-const data = await res.json();
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-if (!res.ok || !data.ok) {
-  setError(data?.error || "Failed to send enquiry");
-  return;
-}
+      const data = await res.json().catch(() => ({} as any));
 
-setSent(true); // show “Email sent!” state
+      if (!res.ok || !data?.ok) {
+        setEnqError(data?.error || "Failed to send enquiry");
+        return;
+      }
 
+      // ✅ show confirmation
+      setEnqSent(true);
 
-      setShowEnquiry(false);
-
-      // clear after send
-      setEnqName("");
-      setEnqAddress("");
-      setEnqPhone("");
-      setEnqEmail("");
-      setEnqMessage("");
+      // (Optional) clear error
       setEnqError(null);
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
     } finally {
       setEnqSending(false);
     }
+  }
+
+  function closeEnquiry() {
+    setShowEnquiry(false);
+    setEnqError(null);
+    setEnqSending(false);
+    setEnqSent(false);
+
+    // keep values? up to you. I’ll clear them on close to match your previous behaviour:
+    setEnqName("");
+    setEnqAddress("");
+    setEnqPhone("");
+    setEnqEmail("");
+    setEnqMessage("");
+  }
+
+  function openEnquiry() {
+    setShowEnquiry(true);
+    setEnqError(null);
+    setEnqSent(false);
   }
 
   // Featured logo: bigger than button stack, no border
@@ -253,7 +271,7 @@ setSent(true); // show “Email sent!” state
                   className="h-10 w-10 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_message");
-                    setShowEnquiry(true);
+                    openEnquiry();
                   }}
                   disabled={!whatsapp && !phone}
                   title="Message"
@@ -281,7 +299,8 @@ setSent(true); // show “Email sent!” state
                   className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_website");
-                    if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                    if (websiteUrl)
+                      window.open(websiteUrl, "_blank", "noopener,noreferrer");
                   }}
                   disabled={!websiteUrl}
                   title="Website"
@@ -298,7 +317,7 @@ setSent(true); // show “Email sent!” state
                 className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
                 onClick={() => {
                   logClick("click_message");
-                  setShowEnquiry(true);
+                  openEnquiry();
                 }}
                 disabled={!whatsapp && !phone}
               >
@@ -322,7 +341,8 @@ setSent(true); // show “Email sent!” state
                 className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
                 onClick={() => {
                   logClick("click_website");
-                  if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  if (websiteUrl)
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
                 }}
                 disabled={!websiteUrl}
               >
@@ -337,7 +357,7 @@ setSent(true); // show “Email sent!” state
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
           {/* backdrop */}
-          <div className="absolute inset-0 bg-black/50" onClick={() => setShowEnquiry(false)} />
+          <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
           {/* modal */}
           <div className="absolute inset-0 flex items-center justify-center p-3 sm:p-6">
@@ -354,7 +374,7 @@ setSent(true); // show “Email sent!” state
 
                   <button
                     type="button"
-                    onClick={() => setShowEnquiry(false)}
+                    onClick={closeEnquiry}
                     className="h-9 w-9 inline-flex items-center justify-center rounded-full hover:bg-black/5"
                     aria-label="Close"
                   >
@@ -364,12 +384,25 @@ setSent(true); // show “Email sent!” state
               </div>
 
               {/* Body */}
-              <div className="px-5 py-4 space-y-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 210px)" }}>
+              <div
+                className="px-5 py-4 space-y-4 overflow-y-auto"
+                style={{ maxHeight: "calc(100vh - 210px)" }}
+              >
+                {/* ✅ Confirmation */}
+                {enqSent && (
+                  <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
+                    ✅ Enquiry sent! A copy has been emailed to you.
+                  </div>
+                )}
+
                 <Field label="Your Name *">
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqName}
-                    onChange={(e) => setEnqName(e.target.value)}
+                    onChange={(e) => {
+                      setEnqName(e.target.value);
+                      setEnqSent(false);
+                    }}
                     placeholder="Your name"
                     autoComplete="name"
                     required
@@ -384,7 +417,10 @@ setSent(true); // show “Email sent!” state
                         try {
                           const place = ac?.getPlace?.();
                           const value = place?.formatted_address || place?.name || "";
-                          if (value) setEnqAddress(value);
+                          if (value) {
+                            setEnqAddress(value);
+                            setEnqSent(false);
+                          }
                         } catch {
                           // ignore
                         }
@@ -393,7 +429,10 @@ setSent(true); // show “Email sent!” state
                       <input
                         className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                         value={enqAddress}
-                        onChange={(e) => setEnqAddress(e.target.value)}
+                        onChange={(e) => {
+                          setEnqAddress(e.target.value);
+                          setEnqSent(false);
+                        }}
                         placeholder="Start typing your address…"
                         autoComplete="street-address"
                         required
@@ -403,20 +442,28 @@ setSent(true); // show “Email sent!” state
                     <input
                       className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                       value={enqAddress}
-                      onChange={(e) => setEnqAddress(e.target.value)}
+                      onChange={(e) => {
+                        setEnqAddress(e.target.value);
+                        setEnqSent(false);
+                      }}
                       placeholder="House no, street, town, postcode"
                       autoComplete="street-address"
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
+                  <p className="text-xs text-gray-500">
+                    Pick from suggestions for best results.
+                  </p>
                 </Field>
 
                 <Field label="Phone Number *">
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqPhone}
-                    onChange={(e) => setEnqPhone(e.target.value)}
+                    onChange={(e) => {
+                      setEnqPhone(e.target.value);
+                      setEnqSent(false);
+                    }}
                     placeholder="07…"
                     autoComplete="tel"
                     required
@@ -427,7 +474,10 @@ setSent(true); // show “Email sent!” state
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqEmail}
-                    onChange={(e) => setEnqEmail(e.target.value)}
+                    onChange={(e) => {
+                      setEnqEmail(e.target.value);
+                      setEnqSent(false);
+                    }}
                     placeholder="you@example.com"
                     autoComplete="email"
                     required
@@ -441,7 +491,10 @@ setSent(true); // show “Email sent!” state
                   <textarea
                     className="min-h-[120px] w-full rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqMessage}
-                    onChange={(e) => setEnqMessage(e.target.value)}
+                    onChange={(e) => {
+                      setEnqMessage(e.target.value);
+                      setEnqSent(false);
+                    }}
                     placeholder="What do you need? Any notes…"
                     required
                   />
@@ -476,10 +529,9 @@ setSent(true); // show “Email sent!” state
                     className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                     title={!canSend ? "Fill in name, address, phone, email and message" : "Send enquiry"}
                   >
-                    {enqSending ? "Sending…" : "Send Enquiry"}
+                    {enqSending ? "Sending…" : enqSent ? "Sent ✓" : "Send Enquiry"}
                   </button>
 
-                  {/* Optional: keep your original quick action reachable */}
                   {!whatsapp && phone ? (
                     <button
                       type="button"
