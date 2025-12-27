@@ -7,13 +7,20 @@ type Props = {
   postcode: string;
   locality?: string;
 
-  // ✅ NEW: pass the current search context down so clicks/impressions are attributed correctly
+  // pass current search context down so clicks/impressions are attributed correctly
   areaId?: string | null;
   categoryId?: string | null;
 };
 
 function truthy(v: any) {
-  return v === true || v === 1 || v === "1" || v === "true" || v === "t" || v === "yes";
+  return (
+    v === true ||
+    v === 1 ||
+    v === "1" ||
+    v === "true" ||
+    v === "t" ||
+    v === "yes"
+  );
 }
 
 function isSponsored(c: any) {
@@ -37,7 +44,10 @@ function toArr(v: unknown): string[] {
       const parsed = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed as string[];
     } catch {}
-    return v.split(",").map((s) => s.trim()).filter(Boolean);
+    return v
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
   }
   return [];
 }
@@ -60,7 +70,13 @@ function mulberry32(a: number) {
   };
 }
 
-export default function ResultsList({ cleaners, postcode, locality, areaId, categoryId }: Props) {
+export default function ResultsList({
+  cleaners,
+  postcode,
+  locality,
+  areaId,
+  categoryId,
+}: Props) {
   if (!cleaners?.length) {
     const pc = postcode?.toUpperCase?.() || "your area";
     return (
@@ -76,7 +92,9 @@ export default function ResultsList({ cleaners, postcode, locality, areaId, cate
     const organic = (cleaners ?? []).filter((c) => !isSponsored(c));
 
     // Shuffle organic (stable per postcode/day)
-    const seedStr = `${(postcode || "").toUpperCase()}|${new Date().toISOString().slice(0, 10)}`;
+    const seedStr = `${(postcode || "").toUpperCase()}|${new Date()
+      .toISOString()
+      .slice(0, 10)}`;
     const rng = mulberry32(hashString(seedStr));
 
     const shuffled = [...organic];
@@ -109,25 +127,13 @@ export default function ResultsList({ cleaners, postcode, locality, areaId, cate
           payment_methods: toArr(c.payment_methods),
           service_types: toArr(c.service_types),
 
-          // keep these on the cleaner too, but we will pass explicit props as the source of truth
           area_id: c.area_id ?? null,
           category_id: c.category_id ?? null,
         };
 
-        // ✅ IMPORTANT: always pass the current search categoryId so clicks are attributed to the industry
-        cconst card = (
-  <CleanerCard
-    key={cleanerId}
-    cleaner={cleaner as any}
-    postcodeHint={postcode}
-    showPayments
-    position={idx + 1}
-    areaId={areaId ?? c.area_id ?? null}
-    categoryId={categoryId ?? c.category_id ?? null}
-    featured={isFirstSponsored}   // ✅ ADD THIS
-  />
-);
-onst card = (
+        const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
+
+        const card = (
           <CleanerCard
             key={cleanerId}
             cleaner={cleaner as any}
@@ -136,10 +142,9 @@ onst card = (
             position={idx + 1}
             areaId={areaId ?? c.area_id ?? null}
             categoryId={categoryId ?? c.category_id ?? null}
+            featured={isFirstSponsored} // ✅ makes the featured logo larger
           />
         );
-
-        const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
 
         if (isFirstSponsored) {
           return (
