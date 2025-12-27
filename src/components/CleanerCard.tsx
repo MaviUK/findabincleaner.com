@@ -73,14 +73,16 @@ export default function CleanerCard({
     if (phone) window.location.href = `tel:${phone}`;
   }
 
-  // ✅ Featured logo should match height of 3 stacked buttons (~136px) → use 144px
-  const logoBoxClass = featured
-    ? "h-36 w-36 rounded-2xl bg-white border-2 border-emerald-300 shadow-sm overflow-hidden shrink-0 flex items-center justify-center"
-    : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
+  // Featured logo: bigger than button stack, no border
+const logoBoxClass = featured
+  ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
+  : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-  const logoImgClass = featured
-    ? "h-full w-full object-contain p-2"
-    : "h-full w-full object-cover";
+// Keep logo crisp, no cropping
+const logoImgClass = featured
+  ? "h-full w-full object-contain"
+  : "h-full w-full object-cover";
+
 
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
