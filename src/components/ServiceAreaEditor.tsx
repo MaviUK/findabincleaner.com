@@ -782,7 +782,18 @@ useEffect(() => {
       setCopyName("");
       await fetchAreas();
     } catch (e: any) {
-      setCopyErr(e?.message || "Failed to copy area");
+  const msg = String(e?.message || "");
+
+  if (msg.includes("uix_service_areas_cleaner_category_name")) {
+    setCopyErr(
+      "This area already exists in the selected industry. " +
+      "Try using a different name or edit the existing area instead."
+    );
+  } else {
+    setCopyErr("Failed to copy area. Please try again.");
+  }
+}
+
     } finally {
       setCopyBusy(false);
     }
