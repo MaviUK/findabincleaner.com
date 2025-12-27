@@ -75,7 +75,7 @@ export default function CleanerCard({
 
   // Featured logo: bigger than button stack, no border
 const logoBoxClass = featured
-  ? "h-41 w-41 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
+  ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
   : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
 // Keep logo crisp, no cropping
