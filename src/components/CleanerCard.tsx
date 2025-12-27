@@ -1,5 +1,6 @@
 // src/components/CleanerCard.tsx
 import { useMemo, useState } from "react";
+import { Autocomplete } from "@react-google-maps/api";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
 type Cleaner = {
@@ -58,6 +59,13 @@ function buildWhatsAppUrl(whatsapp: string, text: string) {
   return `https://wa.me/${noPlus}?text=${encodeURIComponent(text)}`;
 }
 
+function isValidEmail(v: string) {
+  const s = (v || "").trim();
+  if (!s) return false;
+  // simple, safe check
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+}
+
 export default function CleanerCard({
   cleaner,
   areaId,
@@ -72,10 +80,10 @@ export default function CleanerCard({
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // ✅ NEW: modal state (does not remove any existing functionality)
+  // ✅ modal state
   const [showEnquiry, setShowEnquiry] = useState(false);
 
-  // ✅ NEW: enquiry form state
+  // ✅ enquiry form state
   const [enqName, setEnqName] = useState("");
   const [enqAddress, setEnqAddress] = useState("");
   const [enqPhone, setEnqPhone] = useState("");
@@ -83,6 +91,16 @@ export default function CleanerCard({
   const [enqMessage, setEnqMessage] = useState("");
   const [enqError, setEnqError] = useState<string | null>(null);
   const [enqSending, setEnqSending] = useState(false);
+
+  // Google Places loaded?
+  const hasPlaces =
+    typeof window !== "undefined" &&
+    (window as any).google &&
+    (window as any).google.maps &&
+    (window as any).google.maps.places;
+
+  // Keep a ref to the google autocomplete instance
+  const [ac, setAc] = useState<any>(null);
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
@@ -99,7 +117,7 @@ export default function CleanerCard({
     }
   }
 
-  // ✅ KEEP: you said this is important — unchanged
+  // ✅ KEEP: important — unchanged
   function openWhatsAppOrCall() {
     if (whatsapp) {
       const wa = whatsapp.replace(/[^\d+]/g, "");
@@ -109,11 +127,22 @@ export default function CleanerCard({
     if (phone) window.location.href = `tel:${phone}`;
   }
 
-  // ✅ NEW: send enquiry (email) via Netlify function
+  const canSend =
+    enqName.trim().length > 0 &&
+    enqAddress.trim().length > 0 &&
+    enqPhone.trim().length > 0 &&
+    isValidEmail(enqEmail) &&
+    enqMessage.trim().length > 0 &&
+    !enqSending;
+
   async function sendEnquiryEmail() {
     setEnqError(null);
 
+    // Hard validation (also ensures "can't send until filled in")
     if (!enqName.trim()) return setEnqError("Please enter your name.");
+    if (!enqAddress.trim()) return setEnqError("Please select your address.");
+    if (!enqPhone.trim()) return setEnqError("Please enter your phone number.");
+    if (!isValidEmail(enqEmail)) return setEnqError("Please enter a valid email address.");
     if (!enqMessage.trim()) return setEnqError("Please enter your message.");
 
     setEnqSending(true);
@@ -141,7 +170,7 @@ export default function CleanerCard({
 
       setShowEnquiry(false);
 
-      // optional: clear fields after send
+      // clear after send
       setEnqName("");
       setEnqAddress("");
       setEnqPhone("");
@@ -165,7 +194,6 @@ export default function CleanerCard({
     ? "h-full w-full object-contain"
     : "h-full w-full object-cover";
 
-  // For WhatsApp modal quick-send
   const whatsappPrefill = useMemo(() => {
     const text =
       `Enquiry for ${name}\n\n` +
@@ -195,9 +223,7 @@ export default function CleanerCard({
           <div className="flex items-start justify-between gap-3">
             {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">
-                {name}
-              </div>
+              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
               {/* ✅ GOOGLE RATING (from RPC) */}
               {typeof (cleaner as any).google_rating === "number" && (
@@ -223,7 +249,6 @@ export default function CleanerCard({
                   className="h-10 w-10 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_message");
-                    // ✅ CHANGED: open enquiry modal instead of opening WhatsApp/call
                     setShowEnquiry(true);
                   }}
                   disabled={!whatsapp && !phone}
@@ -252,8 +277,7 @@ export default function CleanerCard({
                   className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_website");
-                    if (websiteUrl)
-                      window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                    if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
                   }}
                   disabled={!websiteUrl}
                   title="Website"
@@ -270,7 +294,6 @@ export default function CleanerCard({
                 className="h-10 rounded-full bg-red-500 text-white font-semibold text-sm hover:bg-red-600 disabled:opacity-50"
                 onClick={() => {
                   logClick("click_message");
-                  // ✅ CHANGED: open enquiry modal instead of opening WhatsApp/call
                   setShowEnquiry(true);
                 }}
                 disabled={!whatsapp && !phone}
@@ -295,8 +318,7 @@ export default function CleanerCard({
                 className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
                 onClick={() => {
                   logClick("click_website");
-                  if (websiteUrl)
-                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
                 }}
                 disabled={!websiteUrl}
               >
@@ -307,14 +329,11 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* ✅ NEW: NiBinGuy-style enquiry modal */}
+      {/* ✅ Enquiry modal */}
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
           {/* backdrop */}
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setShowEnquiry(false)}
-          />
+          <div className="absolute inset-0 bg-black/50" onClick={() => setShowEnquiry(false)} />
 
           {/* modal */}
           <div className="absolute inset-0 flex items-center justify-center p-3 sm:p-6">
@@ -323,11 +342,9 @@ export default function CleanerCard({
               <div className="px-5 pt-5 pb-3 border-b border-black/5">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">
-                      Enquiry to {name}
-                    </h2>
+                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
                     <p className="text-sm text-gray-600 mt-1">
-                      Send a quick message and they’ll get back to you.
+                      Address, phone and email are required.
                     </p>
                   </div>
 
@@ -342,57 +359,87 @@ export default function CleanerCard({
                 </div>
               </div>
 
-              {/* Body (scroll inside modal) */}
-              <div
-                className="px-5 py-4 space-y-4 overflow-y-auto"
-                style={{ maxHeight: "calc(100vh - 210px)" }}
-              >
-                <Field label="Your Name">
+              {/* Body */}
+              <div className="px-5 py-4 space-y-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 210px)" }}>
+                <Field label="Your Name *">
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqName}
                     onChange={(e) => setEnqName(e.target.value)}
                     placeholder="Your name"
                     autoComplete="name"
+                    required
                   />
                 </Field>
 
-                <Field label="Address (optional)">
-                  <input
-                    className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
-                    value={enqAddress}
-                    onChange={(e) => setEnqAddress(e.target.value)}
-                    placeholder="House no, street, town, postcode"
-                    autoComplete="street-address"
-                  />
+                <Field label="Address *">
+                  {hasPlaces ? (
+                    <Autocomplete
+                      onLoad={(inst) => setAc(inst)}
+                      onPlaceChanged={() => {
+                        try {
+                          const place = ac?.getPlace?.();
+                          const value = place?.formatted_address || place?.name || "";
+                          if (value) setEnqAddress(value);
+                        } catch {
+                          // ignore
+                        }
+                      }}
+                    >
+                      <input
+                        className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
+                        value={enqAddress}
+                        onChange={(e) => setEnqAddress(e.target.value)}
+                        placeholder="Start typing your address…"
+                        autoComplete="street-address"
+                        required
+                      />
+                    </Autocomplete>
+                  ) : (
+                    <input
+                      className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
+                      value={enqAddress}
+                      onChange={(e) => setEnqAddress(e.target.value)}
+                      placeholder="House no, street, town, postcode"
+                      autoComplete="street-address"
+                      required
+                    />
+                  )}
+                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
                 </Field>
 
-                <Field label="Contact Number (optional)">
+                <Field label="Phone Number *">
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqPhone}
                     onChange={(e) => setEnqPhone(e.target.value)}
                     placeholder="07…"
                     autoComplete="tel"
+                    required
                   />
                 </Field>
 
-                <Field label="Email (optional)">
+                <Field label="Email Address *">
                   <input
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqEmail}
                     onChange={(e) => setEnqEmail(e.target.value)}
                     placeholder="you@example.com"
                     autoComplete="email"
+                    required
                   />
+                  {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
+                    <p className="text-xs text-red-600">Enter a valid email address.</p>
+                  ) : null}
                 </Field>
 
-                <Field label="Your Message">
+                <Field label="Your Message *">
                   <textarea
                     className="min-h-[120px] w-full rounded-xl border border-black/10 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqMessage}
                     onChange={(e) => setEnqMessage(e.target.value)}
                     placeholder="What do you need? Any notes…"
+                    required
                   />
                 </Field>
 
@@ -406,7 +453,6 @@ export default function CleanerCard({
               {/* Footer */}
               <div className="px-5 py-4 border-t border-black/5 bg-white">
                 <div className="flex flex-col gap-2">
-                  {/* WhatsApp quick send (optional) */}
                   {whatsapp ? (
                     <a
                       className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
@@ -419,23 +465,22 @@ export default function CleanerCard({
                     </a>
                   ) : null}
 
-                  {/* Email enquiry */}
                   <button
                     type="button"
                     onClick={sendEnquiryEmail}
-                    disabled={enqSending}
-                    className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60"
+                    disabled={!canSend}
+                    className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={!canSend ? "Fill in name, address, phone, email and message" : "Send enquiry"}
                   >
                     {enqSending ? "Sending…" : "Send Enquiry"}
                   </button>
 
-                  {/* Keep your original quick action available (optional) */}
-                  {(!whatsapp && phone) ? (
+                  {/* Optional: keep your original quick action reachable */}
+                  {!whatsapp && phone ? (
                     <button
                       type="button"
                       className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
                       onClick={() => {
-                        // this uses your existing function unchanged
                         openWhatsAppOrCall();
                       }}
                     >
@@ -445,7 +490,7 @@ export default function CleanerCard({
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  This sends your enquiry to the cleaner.
+                  Your enquiry won’t send until all required fields are completed.
                 </p>
               </div>
             </div>
