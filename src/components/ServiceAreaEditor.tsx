@@ -904,112 +904,108 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
-                return (
-                  <li
-                    key={a.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => zoomToArea(a)} // ✅ click = zoom
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        zoomToArea(a);
-                      }
-                    }}
-                    title="Click to zoom to this area"
-                    className={`border rounded-lg p-3 cursor-pointer transition-colors
-                      hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10
-                      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-medium">{a.name}</div>
-                        <div className="text-xs text-gray-500">
-                          {new Date(a.created_at).toLocaleString()} •{" "}
-                          {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
-                          {locked && until ? (
-                            <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
-                              Locked until {until}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
+               return (
+  <li
+    key={a.id}
+    className={`border rounded-lg p-3 transition-colors
+      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
+  >
+    {/* Top row: title + actions (clean alignment) */}
+    <div className="flex items-start justify-between gap-3">
+      {/* Left: make only THIS area clickable for zoom */}
+      <button
+        type="button"
+        onClick={() => zoomToArea(a)}
+        className="text-left flex-1 min-w-0 group"
+        title="Click to zoom to this area"
+      >
+        <div className="font-medium truncate group-hover:underline">
+          {a.name}
+        </div>
+        <div className="text-xs text-gray-500">
+          {new Date(a.created_at).toLocaleString()} •{" "}
+          {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
+          {locked && until ? (
+            <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+              Locked until {until}
+            </span>
+          ) : null}
+        </div>
+      </button>
 
-                      <div className="flex gap-2">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            if (locked) return;
-                            editArea(a);
-                          }}
-                          disabled={loading || locked}
-                          title={locked ? "Sponsored areas are locked" : "Edit"}
-                          className={[
-                            "btn",
-                            locked
-                              ? "opacity-40 cursor-not-allowed grayscale"
-                              : "hover:bg-gray-100",
-                          ].join(" ")}
-                        >
-                          Edit
-                        </button>
+      {/* Right: action buttons (clickable, neat, consistent) */}
+      <div className="shrink-0 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (locked) return;
+            editArea(a);
+          }}
+          disabled={loading || locked}
+          title={locked ? "Sponsored areas are locked" : "Edit"}
+          className={[
+            "btn",
+            locked ? "opacity-40 cursor-not-allowed grayscale" : "",
+          ].join(" ")}
+        >
+          Edit
+        </button>
 
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteArea(a);
-                          }}
-                          disabled={loading}
-                        >
-                          Delete
-                        </button>
+        <button
+          type="button"
+          className="btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            deleteArea(a);
+          }}
+          disabled={loading}
+        >
+          Delete
+        </button>
 
-                        {/* ✅ NEW: Copy to industry */}
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openCopyModal(a);
-                          }}
-                          disabled={loading || !categories.length}
-                          title={
-                            categories.length
-                              ? "Copy this exact area to another industry"
-                              : "Loading industries…"
-                          }
-                        >
-                          Copy
-                        </button>
-                      </div>
-                    </div>
+        <button
+          type="button"
+          className="btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            openCopyModal(a);
+          }}
+          disabled={loading || categories.length === 0}
+          title={
+            categories.length
+              ? "Copy this exact area to another industry"
+              : "Loading industries…"
+          }
+        >
+          Copy
+        </button>
+      </div>
+    </div>
 
-                    <div className="mt-2 flex flex-wrap gap-2 items-center">
-                      <button
-                        className={`btn ${
-                          disabled ? "opacity-50 cursor-not-allowed" : ""
-                        }`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onClick();
-                        }}
-                        disabled={disabled}
-                        title={title}
-                      >
-                        {label}
-                      </button>
-                    </div>
+    {/* Second row: sponsor/manage */}
+    <div className="mt-2 flex flex-wrap gap-2 items-center">
+      <button
+        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick();
+        }}
+        disabled={disabled}
+        title={title}
+      >
+        {label}
+      </button>
 
-                    {busy && (
-                      <div className="text-[10px] text-gray-500 mt-1">
-                        Checking availability…
-                      </div>
-                    )}
-                  </li>
-                );
+      {busy && (
+        <div className="text-[10px] text-gray-500 mt-1">
+          Checking availability…
+        </div>
+      )}
+    </div>
+  </li>
+);
+
               })}
 
               {!serviceAreas.length && !loading && (
