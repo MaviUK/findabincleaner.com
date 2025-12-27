@@ -728,19 +728,29 @@ export default function ServiceAreaEditor({
   }, [isLoaded, serviceAreas, sponsorship]);
 
   // ✅ COPY ACTION
-  const openCopyModal = useCallback(
-    (area: ServiceAreaRow) => {
-      setCopyErr(null);
-      setCopyArea(area);
-      setCopyOpen(true);
+ const openCopyModal = useCallback(
+  (area: ServiceAreaRow) => {
+    setCopyErr(null);
 
-      // default target = first other category (not current tab)
-      const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
-      setCopyTargetCategoryId(firstOther?.id || "");
+    if (!categories.length) {
+      setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
+      setCopyOpen(true);
+      setCopyArea(area);
+      setCopyTargetCategoryId("");
       setCopyName(area.name ? `${area.name} (copy)` : "");
-    },
-    [categories, categoryId]
-  );
+      return;
+    }
+
+    setCopyArea(area);
+    setCopyOpen(true);
+
+    const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
+    setCopyTargetCategoryId(firstOther?.id || "");
+    setCopyName(area.name ? `${area.name} (copy)` : "");
+  },
+  [categories, categoryId]
+);
+
 
   const doCopyToIndustry = useCallback(async () => {
     if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
@@ -965,21 +975,22 @@ export default function ServiceAreaEditor({
         </button>
 
         <button
-          type="button"
-          className="btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            openCopyModal(a);
-          }}
-          disabled={loading || categories.length === 0}
-          title={
-            categories.length
-              ? "Copy this exact area to another industry"
-              : "Loading industries…"
-          }
-        >
-          Copy
-        </button>
+  type="button"
+  className="btn"
+  onClick={(e) => {
+    e.stopPropagation();
+    openCopyModal(a);
+  }}
+  disabled={loading}
+  title={
+    categories.length
+      ? "Copy this exact area to another industry"
+      : "Industries not loaded (check Supabase RLS on categories)"
+  }
+>
+  Copy
+</button>
+
       </div>
     </div>
 
