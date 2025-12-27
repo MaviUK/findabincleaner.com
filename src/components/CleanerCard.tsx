@@ -158,15 +158,19 @@ export default function CleanerCard({
       };
 
       const res = await fetch("/.netlify/functions/sendEnquiry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify(payload),
+});
+const data = await res.json();
 
-      if (!res.ok) {
-        const txt = await res.text().catch(() => "");
-        throw new Error(txt || "Failed to send enquiry.");
-      }
+if (!res.ok || !data.ok) {
+  setError(data?.error || "Failed to send enquiry");
+  return;
+}
+
+setSent(true); // show “Email sent!” state
+
 
       setShowEnquiry(false);
 
