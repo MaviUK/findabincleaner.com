@@ -28,7 +28,6 @@ type Props = {
   featured?: boolean; // ✅ NEW
 };
 
-
 function normalizeUrl(u: string) {
   const trimmed = u.trim();
   if (!trimmed) return "";
@@ -36,7 +35,13 @@ function normalizeUrl(u: string) {
   return `https://${trimmed}`;
 }
 
-export default function CleanerCard({ cleaner, areaId, categoryId, position }: Props) {
+export default function CleanerCard({
+  cleaner,
+  areaId,
+  categoryId,
+  position,
+  featured, // ✅ IMPORTANT: destructure it so it works
+}: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
   const name = cleaner.business_name || "Cleaner";
@@ -68,22 +73,26 @@ export default function CleanerCard({ cleaner, areaId, categoryId, position }: P
     if (phone) window.location.href = `tel:${phone}`;
   }
 
+  // ✅ Logo sizing (featured gets more presence)
+  const logoBoxClass = featured
+    ? "h-24 w-24 sm:h-28 sm:w-28 rounded-xl bg-white border-2 border-emerald-300 shadow-sm overflow-hidden shrink-0 flex items-center justify-center"
+    : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
+
+  const logoImgClass = featured
+    ? "h-full w-full object-contain p-1"
+    : "h-full w-full object-cover";
+
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
       {/* Logo */}
-      <div className="h-20 w-20 rounded-xl bg-gray-100 overflow-hidden shrink-0">
-        {cleaner.logo_url && (
+      <div className={logoBoxClass}>
+        {cleaner.logo_url ? (
           <img
-  src={cleaner.logo_url}
-  alt={cleaner.business_name ?? "Business logo"}
-  className={
-    featured
-      ? "h-20 w-20 sm:h-24 sm:w-24 rounded-xl object-cover bg-white border-2 border-emerald-300 shadow-sm"
-      : "h-12 w-12 rounded-md object-cover bg-white border"
-  }
-/>
-
-        )}
+            src={cleaner.logo_url}
+            alt={cleaner.business_name ?? "Business logo"}
+            className={logoImgClass}
+          />
+        ) : null}
       </div>
 
       <div className="flex-1 min-w-0">
