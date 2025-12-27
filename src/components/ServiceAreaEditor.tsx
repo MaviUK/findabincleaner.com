@@ -25,7 +25,6 @@ export interface ServiceAreaRow {
   sponsored_until?: string | null;
 }
 
-
 // Keep Slot type for back-compat where needed
 type Slot = 1;
 
@@ -227,6 +226,9 @@ type Props = {
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
+// ✅ categories for "Copy to Industry"
+type CategoryRow = { id: string; name: string; slug: string | null };
+
 export default function ServiceAreaEditor({
   businessId,
   cleanerId,
@@ -273,6 +275,26 @@ export default function ServiceAreaEditor({
   const previewActiveForArea =
     sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
+  // ✅ Copy-to-industry state
+  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyArea, setCopyArea] = useState<ServiceAreaRow | null>(null);
+  const [copyTargetCategoryId, setCopyTargetCategoryId] = useState<string>("");
+  const [copyName, setCopyName] = useState<string>("");
+  const [copyBusy, setCopyBusy] = useState(false);
+  const [copyErr, setCopyErr] = useState<string | null>(null);
+
+  // ✅ Fetch categories once
+  useEffect(() => {
+    (async () => {
+      const { data, error } = await supabase
+        .from("categories")
+        .select("id,name,slug")
+        .order("name", { ascending: true });
+      if (!error) setCategories((data as any) || []);
+    })();
+  }, []);
+
   // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
     setSponsorship({});
@@ -283,6 +305,13 @@ export default function ServiceAreaEditor({
     setSponsorAreaId(null);
     setManageOpen(false);
     setManageAreaId(null);
+
+    // also close copy modal
+    setCopyOpen(false);
+    setCopyArea(null);
+    setCopyTargetCategoryId("");
+    setCopyName("");
+    setCopyErr(null);
   }, [categoryId]);
 
   const resetDraft = useCallback(() => {
@@ -455,7 +484,7 @@ export default function ServiceAreaEditor({
     mapRef.current = map;
   }, []);
 
-    const zoomToArea = useCallback(
+  const zoomToArea = useCallback(
     (area: ServiceAreaRow) => {
       if (!isLoaded || !mapRef.current) return;
 
@@ -484,7 +513,6 @@ export default function ServiceAreaEditor({
     },
     [isLoaded]
   );
-
 
   const onDrawingLoad = useCallback((dm: google.maps.drawing.DrawingManager) => {
     drawingMgrRef.current = dm;
@@ -656,26 +684,26 @@ export default function ServiceAreaEditor({
   }
 
   function isAreaLocked(area: ServiceAreaRow): boolean {
-  // Prefer DB truth if present
-  if (typeof area.is_sponsored_locked === "boolean") return area.is_sponsored_locked;
+    // Prefer DB truth if present
+    if (typeof area.is_sponsored_locked === "boolean")
+      return area.is_sponsored_locked;
 
-  // Fallback: if sponsorship map says YOU own an active/past_due/trialing slot, lock it
-  const s = getAreaSlotState(area.id);
-  const mine =
-    !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
+    // Fallback: if sponsorship map says YOU own an active/past_due/trialing slot, lock it
+    const s = getAreaSlotState(area.id);
+    const mine =
+      !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
 
-  return mine;
-}
-
-function lockedUntilLabel(area: ServiceAreaRow): string | null {
-  if (!area.sponsored_until) return null;
-  try {
-    return new Date(area.sponsored_until).toLocaleDateString();
-  } catch {
-    return null;
+    return mine;
   }
-}
 
+  function lockedUntilLabel(area: ServiceAreaRow): string | null {
+    if (!area.sponsored_until) return null;
+    try {
+      return new Date(area.sponsored_until).toLocaleDateString();
+    } catch {
+      return null;
+    }
+  }
 
   function areaPaint(areaId: string) {
     return sponsorship[areaId]?.paint;
@@ -698,6 +726,47 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
       return sizeKm2(b) - sizeKm2(a);
     });
   }, [isLoaded, serviceAreas, sponsorship]);
+
+  // ✅ COPY ACTION
+  const openCopyModal = useCallback(
+    (area: ServiceAreaRow) => {
+      setCopyErr(null);
+      setCopyArea(area);
+      setCopyOpen(true);
+
+      // default target = first other category (not current tab)
+      const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
+      setCopyTargetCategoryId(firstOther?.id || "");
+      setCopyName(area.name ? `${area.name} (copy)` : "");
+    },
+    [categories, categoryId]
+  );
+
+  const doCopyToIndustry = useCallback(async () => {
+    if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
+
+    setCopyBusy(true);
+    setCopyErr(null);
+    try {
+      const { error } = await supabase.rpc("clone_service_area_to_category", {
+        p_area_id: copyArea.id,
+        p_cleaner_id: myBusinessId,
+        p_target_category_id: copyTargetCategoryId,
+        p_new_name: copyName?.trim() || null,
+      });
+      if (error) throw error;
+
+      setCopyOpen(false);
+      setCopyArea(null);
+      setCopyTargetCategoryId("");
+      setCopyName("");
+      await fetchAreas();
+    } catch (e: any) {
+      setCopyErr(e?.message || "Failed to copy area");
+    } finally {
+      setCopyBusy(false);
+    }
+  }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
 
   if (loadError) {
     return (
@@ -724,7 +793,9 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
               </button>
             </div>
 
-            {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
+            {loading && (
+              <div className="text-sm text-gray-500 mb-2">Working…</div>
+            )}
 
             {error && (
               <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
@@ -745,8 +816,8 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices, double-click
-                    to finish the polygon.
+                    Drawing mode is ON — click on the map to add vertices,
+                    double-click to finish the polygon.
                   </div>
                 )}
 
@@ -787,7 +858,6 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                 const locked = isAreaLocked(a);
                 const until = lockedUntilLabel(a);
 
-
                 const takenByOther =
                   !!s &&
                   isBlockingStatus(s.status) &&
@@ -796,7 +866,8 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                 const hasGeo = avail[a.id] ?? true; // optimistic until computed
                 const busy = availLoading[a.id];
 
-                const disabled = takenByOther || (!mine && !takenByOther && hasGeo === false);
+                const disabled =
+                  takenByOther || (!mine && !takenByOther && hasGeo === false);
 
                 const title = mine
                   ? "You sponsor this area"
@@ -833,61 +904,98 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                   setSponsorOpen(true);
                 };
 
-               return (
-  <li
-    key={a.id}
-    role="button"
-    tabIndex={0}
-    onClick={() => zoomToArea(a)}                 // ✅ click = zoom
-    onKeyDown={(e) => {                          // ✅ keyboard access
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        zoomToArea(a);
-      }
-    }}
-    title="Click to zoom to this area"
-    className={`border rounded-lg p-3 cursor-pointer transition-colors
-      hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10
-      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}  // ✅ highlight sponsored only
-  >
-
+                return (
+                  <li
+                    key={a.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => zoomToArea(a)} // ✅ click = zoom
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        zoomToArea(a);
+                      }
+                    }}
+                    title="Click to zoom to this area"
+                    className={`border rounded-lg p-3 cursor-pointer transition-colors
+                      hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-black/10
+                      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
+                  >
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="font-medium">{a.name}</div>
                         <div className="text-xs text-gray-500">
                           {new Date(a.created_at).toLocaleString()} •{" "}
                           {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
+                          {locked && until ? (
+                            <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+                              Locked until {until}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
+
                       <div className="flex gap-2">
-                       <button
-  type="button"
-  onClick={(e) => {
-    e.stopPropagation();
-    if (locked) return;
-    editArea(a);
-  }}
-  disabled={loading || locked}
-  title={locked ? "Sponsored areas are locked" : "Edit"}
-  className={[
-    "btn",
-    locked
-      ? "opacity-40 cursor-not-allowed grayscale"
-      : "hover:bg-gray-100",
-  ].join(" ")}
->
-  Edit
-</button>
-                        <button className="btn" onClick={() => deleteArea(a)} disabled={loading}>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (locked) return;
+                            editArea(a);
+                          }}
+                          disabled={loading || locked}
+                          title={locked ? "Sponsored areas are locked" : "Edit"}
+                          className={[
+                            "btn",
+                            locked
+                              ? "opacity-40 cursor-not-allowed grayscale"
+                              : "hover:bg-gray-100",
+                          ].join(" ")}
+                        >
+                          Edit
+                        </button>
+
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteArea(a);
+                          }}
+                          disabled={loading}
+                        >
                           Delete
+                        </button>
+
+                        {/* ✅ NEW: Copy to industry */}
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openCopyModal(a);
+                          }}
+                          disabled={loading || !categories.length}
+                          title={
+                            categories.length
+                              ? "Copy this exact area to another industry"
+                              : "Loading industries…"
+                          }
+                        >
+                          Copy
                         </button>
                       </div>
                     </div>
 
                     <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
-                        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={onClick}
+                        className={`btn ${
+                          disabled ? "opacity-50 cursor-not-allowed" : ""
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onClick();
+                        }}
                         disabled={disabled}
                         title={title}
                       >
@@ -944,8 +1052,8 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
                 Double-click to finish.
               </li>
               <li>
-                Drag the white handles to adjust vertices. Use “Clear Polygons” to
-                redraw before saving.
+                Drag the white handles to adjust vertices. Use “Clear Polygons”
+                to redraw before saving.
               </li>
               <li>Each saved Service Area may include multiple polygons.</li>
             </ul>
@@ -1057,6 +1165,96 @@ function lockedUntilLabel(area: ServiceAreaRow): string | null {
           areaId={manageAreaId}
           slot={1}
         />
+      )}
+
+      {/* ✅ Copy to Industry Modal */}
+      {copyOpen && copyArea && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <div>
+                <div className="font-semibold">Copy area to another industry</div>
+                <div className="text-xs text-gray-500">
+                  Copying: <span className="font-medium">{copyArea.name}</span>
+                </div>
+              </div>
+              <button
+                className="text-sm opacity-70 hover:opacity-100"
+                onClick={() => {
+                  setCopyOpen(false);
+                  setCopyArea(null);
+                  setCopyErr(null);
+                }}
+                disabled={copyBusy}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-4 space-y-3">
+              {copyErr && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                  {copyErr}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="text-sm font-medium">Target industry</div>
+                <select
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={copyTargetCategoryId}
+                  onChange={(e) => setCopyTargetCategoryId(e.target.value)}
+                  disabled={copyBusy}
+                >
+                  <option value="">Select…</option>
+                  {categories
+                    .filter((c) => c.id !== (categoryId ?? "")) // don’t default to same
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+                <div className="text-[11px] text-gray-500">
+                  This will create a new service area with the exact same polygon.
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-sm font-medium">New area name (optional)</div>
+                <input
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={copyName}
+                  onChange={(e) => setCopyName(e.target.value)}
+                  placeholder="e.g. Bangor (Window Cleaning)"
+                  disabled={copyBusy}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
+              <button
+                className="btn"
+                onClick={() => {
+                  setCopyOpen(false);
+                  setCopyArea(null);
+                  setCopyErr(null);
+                }}
+                disabled={copyBusy}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                onClick={doCopyToIndustry}
+                disabled={copyBusy || !copyTargetCategoryId}
+                title={!copyTargetCategoryId ? "Select a target industry" : "Copy"}
+              >
+                {copyBusy ? "Copying…" : "Copy"}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );
