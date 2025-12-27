@@ -24,6 +24,10 @@ type RpcRow = {
   area_name: string | null;
   is_covering_sponsor: boolean | null;
   distance_meters: number | null;
+
+  // (optional) if RPC returns these, fine; if not, we still pull from cleaners table
+  google_rating?: number | null;
+  google_reviews_count?: number | null;
 };
 
 export type MatchOut = {
@@ -37,6 +41,11 @@ export type MatchOut = {
   service_types: string[];
   rating_avg: number | null;
   rating_count: number | null;
+
+  // ✅ NEW: google rating fields
+  google_rating?: number | null;
+  google_reviews_count?: number | null;
+
   distance_m: number | null;
   area_id: string | null;
   area_name?: string | null;
@@ -181,10 +190,11 @@ export default function FindCleaners({
       }
 
       // 3) Fetch full cleaner details for eligible IDs
+      // ✅ IMPORTANT: include google fields here
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
-          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count"
+          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count, google_rating, google_reviews_count"
         )
         .in("id", eligibleIds);
 
@@ -212,6 +222,12 @@ export default function FindCleaners({
           service_types: toArray(c.service_types),
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
+
+          // ✅ PASS THROUGH google rating fields
+          google_rating: c.google_rating ?? r?.google_rating ?? null,
+          google_reviews_count:
+            c.google_reviews_count ?? r?.google_reviews_count ?? null,
+
           distance_m: r?.distance_meters ?? null,
           area_id: r?.area_id ?? null,
           area_name: r?.area_name ?? null,
