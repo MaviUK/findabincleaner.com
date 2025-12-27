@@ -124,6 +124,11 @@ export default function ResultsList({
           whatsapp: c.whatsapp ?? null,
           rating_avg: c.rating_avg ?? null,
           rating_count: c.rating_count ?? null,
+
+          // ✅ PASS THROUGH Google rating fields from RPC response
+          google_rating: c.google_rating ?? null,
+          google_reviews_count: c.google_reviews_count ?? null,
+
           payment_methods: toArr(c.payment_methods),
           service_types: toArr(c.service_types),
 
