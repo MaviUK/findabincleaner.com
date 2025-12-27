@@ -762,42 +762,41 @@ useEffect(() => {
 );
 
 
-  const doCopyToIndustry = useCallback(async () => {
-    if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
+const doCopyToIndustry = useCallback(async () => {
+  if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
 
-    setCopyBusy(true);
-    setCopyErr(null);
-    try {
-      const { error } = await supabase.rpc("clone_service_area_to_category", {
-        p_area_id: copyArea.id,
-        p_cleaner_id: myBusinessId,
-        p_target_category_id: copyTargetCategoryId,
-        p_new_name: copyName?.trim() || null,
-      });
-      if (error) throw error;
+  setCopyBusy(true);
+  setCopyErr(null);
 
-      setCopyOpen(false);
-      setCopyArea(null);
-      setCopyTargetCategoryId("");
-      setCopyName("");
-      await fetchAreas();
-    } catch (e: any) {
-  const msg = String(e?.message || "");
+  try {
+    const { error } = await supabase.rpc("clone_service_area_to_category", {
+      p_area_id: copyArea.id,
+      p_cleaner_id: myBusinessId,
+      p_target_category_id: copyTargetCategoryId,
+      p_new_name: copyName?.trim() || null,
+    });
+    if (error) throw error;
 
-  if (msg.includes("uix_service_areas_cleaner_category_name")) {
-    setCopyErr(
-      "This area already exists in the selected industry. " +
-      "Try using a different name or edit the existing area instead."
-    );
-  } else {
-    setCopyErr("Failed to copy area. Please try again.");
-  }
-}
+    setCopyOpen(false);
+    setCopyArea(null);
+    setCopyTargetCategoryId("");
+    setCopyName("");
+    await fetchAreas();
+  } catch (e: any) {
+    const msg = String(e?.message || "");
 
-    } finally {
-      setCopyBusy(false);
+    if (msg.includes("uix_service_areas_cleaner_category_name")) {
+      setCopyErr(
+        "This area already exists in the selected industry. Try using a different name or edit the existing area instead."
+      );
+    } else {
+      setCopyErr("Failed to copy area. Please try again.");
     }
-  }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
+  } finally {
+    setCopyBusy(false);
+  }
+}, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
+
 
   if (loadError) {
     return (
