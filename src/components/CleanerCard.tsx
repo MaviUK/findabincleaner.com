@@ -17,7 +17,7 @@ type Cleaner = {
 
   is_covering_sponsor?: boolean;
 
-  // ✅ NEW: Google rating fields (synced server-side)
+  // ✅ NEW (from your RPC response)
   google_rating?: number | null;
   google_reviews_count?: number | null;
 };
@@ -39,6 +39,26 @@ function normalizeUrl(u: string) {
   return `https://${trimmed}`;
 }
 
+// Simple star render (no deps)
+function Stars({ rating }: { rating: number }) {
+  const full = Math.floor(rating);
+  const hasHalf = rating - full >= 0.5;
+  const total = 5;
+
+  const stars: string[] = [];
+  for (let i = 0; i < total; i++) {
+    if (i < full) stars.push("★");
+    else if (i === full && hasHalf) stars.push("⯪"); // half-ish
+    else stars.push("☆");
+  }
+
+  return (
+    <span className="tracking-tight" aria-label={`${rating.toFixed(1)} out of 5`}>
+      {stars.join("")}
+    </span>
+  );
+}
+
 export default function CleanerCard({
   cleaner,
   areaId,
@@ -52,6 +72,13 @@ export default function CleanerCard({
   const websiteUrl = cleaner.website ? normalizeUrl(cleaner.website) : "";
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
+
+  const rating =
+    typeof cleaner.google_rating === "number" ? cleaner.google_rating : null;
+  const reviews =
+    typeof cleaner.google_reviews_count === "number"
+      ? cleaner.google_reviews_count
+      : null;
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
@@ -85,13 +112,6 @@ export default function CleanerCard({
   // Keep logo crisp, no cropping
   const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
 
-  // ✅ NEW: decide whether we can show google rating
-  const hasGoogleRating =
-    typeof cleaner.google_rating === "number" &&
-    !Number.isNaN(cleaner.google_rating) &&
-    typeof cleaner.google_reviews_count === "number" &&
-    cleaner.google_reviews_count > 0;
-
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
       {/* Logo */}
@@ -111,16 +131,16 @@ export default function CleanerCard({
           <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
             <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
-            {/* ✅ NEW: Google rating under the name */}
-            {hasGoogleRating ? (
-              <div className="mt-1 text-sm text-gray-600 flex items-center gap-1">
-                <span aria-label="Google rating">
-                  ⭐ {Number(cleaner.google_rating).toFixed(1)}
+            {/* ✅ NEW: Rating line (only if we have rating AND reviews) */}
+            {rating !== null && reviews !== null && reviews > 0 && (
+              <div className="text-xs text-gray-600 mt-1 flex items-center gap-2">
+                <span className="text-amber-600">
+                  <Stars rating={rating} />
                 </span>
-                <span className="text-gray-500">({cleaner.google_reviews_count})</span>
-                <span className="text-xs text-gray-400">· Google</span>
+                <span className="font-semibold">{rating.toFixed(1)}</span>
+                <span className="text-gray-500">({reviews})</span>
               </div>
-            ) : null}
+            )}
 
             {typeof cleaner.distance_m === "number" && (
               <div className="text-xs text-gray-500 mt-1">
@@ -164,7 +184,8 @@ export default function CleanerCard({
                 className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
                 onClick={() => {
                   logClick("click_website");
-                  if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  if (websiteUrl)
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
                 }}
                 disabled={!websiteUrl}
                 title="Website"
@@ -205,7 +226,8 @@ export default function CleanerCard({
               className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
               onClick={() => {
                 logClick("click_website");
-                if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                if (websiteUrl)
+                  window.open(websiteUrl, "_blank", "noopener,noreferrer");
               }}
               disabled={!websiteUrl}
             >
