@@ -538,6 +538,21 @@ export default function Settings() {
       // ✅ save category selections too
       await saveCategories(id);
 
+          // ✅ NEW: sync Google rating if Place ID exists
+    if (googlePlaceId.trim()) {
+      try {
+        await fetch("/.netlify/functions/syncGoogleRating", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cleaner_id: id }),
+        });
+      } catch (e) {
+        console.warn("Google rating sync failed", e);
+        // Do NOT block saving if Google fails
+      }
+    }
+
+
       setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
