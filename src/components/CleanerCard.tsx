@@ -16,6 +16,10 @@ type Cleaner = {
   category_id?: string | null;
 
   is_covering_sponsor?: boolean;
+
+  // ✅ NEW: Google rating fields (synced server-side)
+  google_rating?: number | null;
+  google_reviews_count?: number | null;
 };
 
 type Props = {
@@ -74,15 +78,19 @@ export default function CleanerCard({
   }
 
   // Featured logo: bigger than button stack, no border
-const logoBoxClass = featured
-  ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
-  : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
+  const logoBoxClass = featured
+    ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
+    : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-// Keep logo crisp, no cropping
-const logoImgClass = featured
-  ? "h-full w-full object-contain"
-  : "h-full w-full object-cover";
+  // Keep logo crisp, no cropping
+  const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
 
+  // ✅ NEW: decide whether we can show google rating
+  const hasGoogleRating =
+    typeof cleaner.google_rating === "number" &&
+    !Number.isNaN(cleaner.google_rating) &&
+    typeof cleaner.google_reviews_count === "number" &&
+    cleaner.google_reviews_count > 0;
 
   return (
     <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
@@ -102,6 +110,17 @@ const logoImgClass = featured
           {/* Info */}
           <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
             <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
+
+            {/* ✅ NEW: Google rating under the name */}
+            {hasGoogleRating ? (
+              <div className="mt-1 text-sm text-gray-600 flex items-center gap-1">
+                <span aria-label="Google rating">
+                  ⭐ {Number(cleaner.google_rating).toFixed(1)}
+                </span>
+                <span className="text-gray-500">({cleaner.google_reviews_count})</span>
+                <span className="text-xs text-gray-400">· Google</span>
+              </div>
+            ) : null}
 
             {typeof cleaner.distance_m === "number" && (
               <div className="text-xs text-gray-500 mt-1">
