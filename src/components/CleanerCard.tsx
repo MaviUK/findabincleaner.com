@@ -7,7 +7,7 @@ type Cleaner = {
   business_name: string | null;
   logo_url: string | null;
   website: string | null;
-  phone: string | null;const logoBoxClass = featured
+  phone: string | null;
   whatsapp?: string | null;
   distance_m?: number | null;
 
@@ -25,7 +25,7 @@ type Props = {
   areaId?: string | null;
   categoryId?: string | null;
   position?: number;
-  featured?: boolean; // ✅ NEW
+  featured?: boolean;
 };
 
 function normalizeUrl(u: string) {
@@ -40,7 +40,7 @@ export default function CleanerCard({
   areaId,
   categoryId,
   position,
-  featured, // ✅ IMPORTANT: destructure it so it works
+  featured,
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
@@ -55,7 +55,7 @@ export default function CleanerCard({
         event,
         cleanerId: cleaner.cleaner_id,
         areaId: areaId ?? null,
-        categoryId: categoryId ?? null, // ✅ do NOT fallback to cleaner.category_id (often missing)
+        categoryId: categoryId ?? null,
         sessionId,
         meta: { position: position ?? null },
       });
@@ -73,22 +73,13 @@ export default function CleanerCard({
     if (phone) window.location.href = `tel:${phone}`;
   }
 
- // ✅ Featured logo should match the height of the 3 stacked desktop buttons (~136px)
-const logoBoxClass = featured
-  ? "h-36 w-36 rounded-2xl bg-white border-2 border-emerald-300 shadow-sm overflow-hidden shrink-0 flex items-center justify-center"
-  : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
-
-// Keep logo readable (no cropping)
-const logoImgClass = featured
-  ? "h-full w-full object-contain p-2"
-  : "h-full w-full object-cover";
- // ✅ Logo sizing (featured gets more presence)
+  // ✅ Featured logo should match height of 3 stacked buttons (~136px) → use 144px
   const logoBoxClass = featured
-    ? "h-24 w-24 sm:h-28 sm:w-28 rounded-xl bg-white border-2 border-emerald-300 shadow-sm overflow-hidden shrink-0 flex items-center justify-center"
+    ? "h-36 w-36 rounded-2xl bg-white border-2 border-emerald-300 shadow-sm overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
   const logoImgClass = featured
-    ? "h-full w-full object-contain p-1"
+    ? "h-full w-full object-contain p-2"
     : "h-full w-full object-cover";
 
   return (
@@ -107,7 +98,7 @@ const logoImgClass = featured
       <div className="flex-1 min-w-0">
         <div className="flex items-start justify-between gap-3">
           {/* Info */}
-          <div className="min-w-0">
+          <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
             <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
             {typeof cleaner.distance_m === "number" && (
