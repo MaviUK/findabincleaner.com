@@ -20,6 +20,9 @@ type Cleaner = {
   contact_email: string | null;
   payment_methods?: string[] | null;
   service_types?: string[] | null;
+
+  // ✅ NEW: Google Place ID (optional)
+  google_place_id?: string | null;
 };
 
 const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
@@ -260,6 +263,9 @@ export default function Settings() {
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
   const [serviceTypes, setServiceTypes] = useState<string[]>([]);
 
+  // ✅ NEW: Google Place ID
+  const [googlePlaceId, setGooglePlaceId] = useState("");
+
   // ✅ industries/categories state
   const [categories, setCategories] = useState<Category[]>([]);
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
@@ -311,6 +317,9 @@ export default function Settings() {
               contact_email: session.user.email ?? null,
               payment_methods: [] as string[],
               service_types: [] as string[],
+
+              // ✅ NEW
+              google_place_id: null,
             },
             session.user.email ?? ""
           );
@@ -401,6 +410,9 @@ export default function Settings() {
     setLogoPreview(c.logo_url ?? null);
     setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
     setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
+
+    // ✅ NEW
+    setGooglePlaceId((c as any).google_place_id ?? "");
   }
 
   function toggleCategory(categoryId: string) {
@@ -431,6 +443,9 @@ export default function Settings() {
         contact_email: contactEmail || null,
         payment_methods: paymentMethods,
         service_types: serviceTypes,
+
+        // ✅ NEW
+        google_place_id: googlePlaceId.trim() || null,
       })
       .select("id,*")
       .single();
@@ -512,6 +527,9 @@ export default function Settings() {
         logo_url: newLogo ?? logoPreview ?? null,
         payment_methods: paymentMethods,
         service_types: serviceTypes,
+
+        // ✅ NEW
+        google_place_id: googlePlaceId.trim() || null,
       };
 
       const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
@@ -683,6 +701,37 @@ export default function Settings() {
                 onToggle={toggleCategory}
               />
             )}
+          </div>
+
+          {/* ✅ NEW: Google Place ID (optional) */}
+          <div className="pt-2 border-t">
+            <div className="text-sm font-medium">Google Business Profile (optional)</div>
+
+            <label className="block mt-2">
+              <span className="text-sm">Google Place ID</span>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={googlePlaceId}
+                onChange={(e) => {
+                  setMsg(null);
+                  setErr(null);
+                  setGooglePlaceId(e.target.value);
+                }}
+                placeholder="e.g. ChIJN1t_tDeuEmsRUsoyG83frY4"
+              />
+              <span className="text-xs text-gray-500">
+                Add your Place ID to show your Google rating under your name in listings.
+              </span>
+            </label>
+
+            <a
+              className="text-xs text-blue-600 underline mt-1 inline-block"
+              href="https://developers.google.com/maps/documentation/javascript/examples/places-placeid-finder"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Find my Place ID
+            </a>
           </div>
 
           <div>
