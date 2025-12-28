@@ -1,5 +1,6 @@
 // netlify/functions/stripe-webhook.js
 const Stripe = require("stripe");
+const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 const { createClient } = require("@supabase/supabase-js");
 
 // Netlify Functions (Node 18+) normally has global fetch.
@@ -316,8 +317,10 @@ exports.handler = async (event) => {
         // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
         // ✅ DO NOT block the webhook response (Stripe retries on slow handlers)
         if (stripeEvent.type === "invoice.finalized") {
-  await triggerCustomInvoicePdf(inv.id); // ✅ MUST await on Netlify
+  const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
+  console.log("[webhook] createInvoiceAndEmail result:", result);
 }
+
 
 
         break;
