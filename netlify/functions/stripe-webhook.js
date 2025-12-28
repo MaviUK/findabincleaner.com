@@ -50,7 +50,7 @@ async function resolveContext({ meta, customerId }) {
     };
   }
 
-  // fallback by customerId -> cleaners.stripe_customer_id (your newer schema)
+  // fallback by customerId -> cleaners.stripe_customer_id
   if (customerId) {
     const { data: c1 } = await supabase
       .from("cleaners")
@@ -68,22 +68,7 @@ async function resolveContext({ meta, customerId }) {
       };
     }
 
-    // fallback by customerId -> businesses.stripe_customer_id (older schema)
-    const { data: b1 } = await supabase
-      .from("businesses")
-      .select("id")
-      .eq("stripe_customer_id", customerId)
-      .maybeSingle();
-
-    if (b1?.id) {
-      return {
-        business_id: b1.id,
-        area_id: null,
-        slot: null,
-        category_id: null,
-        lock_id,
-      };
-    }
+    // ❌ REMOVED: businesses fallback (you do not have public.businesses table)
   }
 
   return {
@@ -108,7 +93,10 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
 async function releaseLockSafe(lockId) {
   if (!lockId) return;
   try {
-    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+    await supabase
+      .from("sponsored_locks")
+      .update({ is_active: false })
+      .eq("id", lockId);
   } catch (e) {
     console.error("[webhook] failed to release lock:", lockId, e);
   }
@@ -124,9 +112,7 @@ async function upsertSubscription(sub, meta = {}) {
       customerId,
     });
 
-  // ✅ CRITICAL GUARD:
-  // Stripe sometimes sends subscription.updated with NO metadata.
-  // Your DB trigger rejects NULL area geometry — so we must NOT upsert without area_id/slot.
+  // ✅ CRITICAL GUARD: do not upsert if missing area_id/slot (your DB trigger rejects it)
   if (!area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing area_id/slot)", {
       sub_id: sub.id,
@@ -137,7 +123,6 @@ async function upsertSubscription(sub, meta = {}) {
       category_id,
       meta,
     });
-    // Still release lock if present (checkout completed) to avoid stuck locks
     await releaseLockSafe(lock_id);
     return;
   }
@@ -174,7 +159,6 @@ async function upsertSubscription(sub, meta = {}) {
 
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
 
-    // overlap/unique violation => cancel subscription to avoid charging
     if (
       code === "23505" ||
       msg.includes("overlaps an existing sponsored area") ||
@@ -184,7 +168,7 @@ async function upsertSubscription(sub, meta = {}) {
     ) {
       await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
       await releaseLockSafe(lock_id);
-      return; // swallow so Stripe doesn't retry forever
+      return;
     }
 
     throw new Error("DB upsert(sponsored_subscriptions) failed");
@@ -208,7 +192,6 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If invoice arrives before subscription row exists, try hydrating it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -231,7 +214,9 @@ async function upsertInvoice(inv) {
     period_start: inv.period_start
       ? new Date(inv.period_start * 1000).toISOString()
       : null,
-    period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
+    period_end: inv.period_end
+      ? new Date(inv.period_end * 1000).toISOString()
+      : null,
   };
 
   const { error } = await supabase
@@ -248,7 +233,9 @@ exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
     return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
   }
-  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
+  if (event.httpMethod !== "POST") {
+    return json(405, { ok: false, error: "Method not allowed" });
+  }
 
   const sig =
     event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
@@ -316,23 +303,20 @@ exports.handler = async (event) => {
 
         await upsertInvoice(inv);
 
-        // ✅ ONLY create our custom invoice/PDF on finalized
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
           try {
-  const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-  console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
-} catch (err) {
-  console.error(
-    "[webhook] createInvoiceAndEmail ERROR:",
-    inv.id,
-    err?.message || err,
-    err?.stack || ""
-  );
-}
-
+            const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
+            console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
+          } catch (err) {
+            console.error(
+              "[webhook] createInvoiceAndEmail ERROR:",
+              inv.id,
+              err?.message || err,
+              err?.stack || ""
+            );
+          }
         }
-
         break;
       }
 
