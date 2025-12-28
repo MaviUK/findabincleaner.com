@@ -1,7 +1,9 @@
 // src/pages/Dashboard.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
+
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
@@ -44,16 +46,17 @@ export default function Dashboard() {
 
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
 
-  // existing “bump” used by ServiceAreaEditor to refetch sponsorship state
+  // used by ServiceAreaEditor to refetch sponsorship state
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
 
-  // ✅ NEW: hard refresh key to force full remount of the editor after checkout
+  // ✅ hard refresh key to force full remount of the editor after checkout
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [openingPortal, setOpeningPortal] = useState(false);
 
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
+  // ✅ Handle checkout redirect hash params
   useEffect(() => {
     const status = qs.get("checkout");
     const checkoutSession = qs.get("checkout_session");
@@ -72,30 +75,30 @@ export default function Dashboard() {
     }
 
     if (status === "success") {
-  postVerify().finally(() => {
-    setBanner({
-      kind: "success",
-      msg: "Payment completed. Your sponsorship will appear shortly.",
-    });
+      postVerify().finally(() => {
+        setBanner({
+          kind: "success",
+          msg: "Payment completed. Your sponsorship will appear shortly.",
+        });
 
-    // ✅ bump so we refetch sponsorship + optionally remount editor
-    setSponsorshipVersion((v) => v + 1);
-    setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
+        // ✅ bump so we refetch sponsorship + remount editor
+        setSponsorshipVersion((v) => v + 1);
+        setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
 
-    // if you're using refreshKey elsewhere, keep this — otherwise remove it
-    setRefreshKey((k) => k + 1);
+        setRefreshKey((k) => k + 1);
 
-    // clear hash params
-    const clean = window.location.hash.replace(/\?[^#]*/g, "");
-    setTimeout(() => navigate(clean, { replace: true }), 0);
-  });
-} else if (status === "cancel") {
-  setBanner({ kind: "error", msg: "Checkout cancelled." });
-  const clean = window.location.hash.replace(/\?[^#]*/g, "");
-  setTimeout(() => navigate(clean, { replace: true }), 0);
-}
+        // clear hash params
+        const clean = window.location.hash.replace(/\?[^#]*/g, "");
+        setTimeout(() => navigate(clean, { replace: true }), 0);
+      });
+    } else if (status === "cancel") {
+      setBanner({ kind: "error", msg: "Checkout cancelled." });
+      const clean = window.location.hash.replace(/\?[^#]*/g, "");
+      setTimeout(() => navigate(clean, { replace: true }), 0);
+    }
+  }, [qs, navigate]);
 
-
+  // ✅ Load user + cleaner + active industries
   useEffect(() => {
     (async () => {
       try {
@@ -367,7 +370,7 @@ export default function Dashboard() {
 
                     <div className="rounded-xl overflow-hidden border">
                       <ServiceAreaEditor
-                        // ✅ include refreshKey so checkout success fully remounts the editor + repaints yellow
+                        // ✅ key includes refreshKey so checkout success fully remounts editor
                         key={`areas:${industryKey}:${refreshKey}`}
                         cleanerId={cleaner.id}
                         sponsorshipVersion={sponsorshipVersion}
