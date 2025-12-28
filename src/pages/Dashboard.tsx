@@ -1,9 +1,7 @@
 // src/pages/Dashboard.tsx
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import type { User } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
-
 import CleanerOnboard from "../components/CleanerOnboard";
 import ServiceAreaEditor from "../components/ServiceAreaEditor";
 import AnalyticsOverview from "../components/AnalyticsOverview";
@@ -46,20 +44,22 @@ export default function Dashboard() {
 
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
 
-  // used by ServiceAreaEditor to refetch sponsorship state
+  // bump used by ServiceAreaEditor to refetch sponsorship state
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
 
-  // ✅ hard refresh key to force full remount of the editor after checkout
+  // hard refresh key to force full remount of the editor after checkout
   const [refreshKey, setRefreshKey] = useState(0);
 
   const [openingPortal, setOpeningPortal] = useState(false);
 
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
-  // ✅ Handle checkout redirect hash params
+  // ✅ Handle checkout success/cancel in hash query
   useEffect(() => {
-    const status = qs.get("checkout");
+    const status = qs.get("checkout"); // "success" | "cancel"
     const checkoutSession = qs.get("checkout_session");
+
+    if (!status) return;
 
     async function postVerify() {
       if (!checkoutSession) return;
@@ -81,13 +81,14 @@ export default function Dashboard() {
           msg: "Payment completed. Your sponsorship will appear shortly.",
         });
 
-        // ✅ bump so we refetch sponsorship + remount editor
+        // ✅ bump so we refetch sponsorship + repaint
         setSponsorshipVersion((v) => v + 1);
         setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
 
+        // ✅ hard remount editor (clears internal cached state)
         setRefreshKey((k) => k + 1);
 
-        // clear hash params
+        // ✅ clear hash params
         const clean = window.location.hash.replace(/\?[^#]*/g, "");
         setTimeout(() => navigate(clean, { replace: true }), 0);
       });
@@ -98,7 +99,7 @@ export default function Dashboard() {
     }
   }, [qs, navigate]);
 
-  // ✅ Load user + cleaner + active industries
+  // ✅ Load user + cleaner + active categories
   useEffect(() => {
     (async () => {
       try {
@@ -106,6 +107,7 @@ export default function Dashboard() {
           data: { user },
           error: userErr,
         } = await supabase.auth.getUser();
+
         if (userErr) throw userErr;
 
         if (!user) {
@@ -121,6 +123,7 @@ export default function Dashboard() {
           .select("*")
           .eq("user_id", user.id)
           .maybeSingle();
+
         if (error) throw error;
 
         let c: Cleaner | null = null;
@@ -135,6 +138,7 @@ export default function Dashboard() {
             })
             .select("*")
             .single();
+
           if (insertErr) throw insertErr;
           c = created as Cleaner;
         } else {
@@ -348,7 +352,6 @@ export default function Dashboard() {
 
               {activeCategoryId ? (
                 <div className="space-y-6" key={industryKey}>
-                  {/* Analytics */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Analytics</h3>
@@ -362,7 +365,6 @@ export default function Dashboard() {
                     />
                   </div>
 
-                  {/* Service Areas */}
                   <div className="space-y-3">
                     <div className="flex items-center justify-between">
                       <h3 className="text-base font-semibold">Your Service Areas</h3>
@@ -370,7 +372,6 @@ export default function Dashboard() {
 
                     <div className="rounded-xl overflow-hidden border">
                       <ServiceAreaEditor
-                        // ✅ key includes refreshKey so checkout success fully remounts editor
                         key={`areas:${industryKey}:${refreshKey}`}
                         cleanerId={cleaner.id}
                         sponsorshipVersion={sponsorshipVersion}
