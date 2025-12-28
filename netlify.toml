@@ -138,3 +138,6 @@
   from = "/*"
   to   = "/index.html"
   status = 200
+
+  external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf", "resend", "pdf-lib"]
+
