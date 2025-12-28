@@ -13,62 +13,100 @@ function json(body, status = 200) {
 }
 
 export default async (req) => {
-  // Helpful GET response so you can verify deploy from the browser
   if (req.method === "GET") {
     return json({ ok: true, note: "stripe-postverify is deployed. Use POST with { checkout_session }." });
   }
-  if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
-  }
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   try {
     const { checkout_session } = await req.json();
-    if (!checkout_session) return json({ error: "checkout_session required" }, 400);
+    if (!checkout_session) return json({ ok: false, error: "checkout_session required" }, 400);
 
-    // Pull the session (expand to get subscription + customer quickly)
+    // Expand so we can pull subscription/customer + line item price reliably
     const session = await stripe.checkout.sessions.retrieve(checkout_session, {
-      expand: ["subscription", "customer"],
+      expand: ["subscription", "customer", "line_items.data.price"],
     });
 
-    // Only proceed for successful paid/complete sessions
     if (session.status !== "complete") {
       return json({ ok: false, status: session.status });
     }
 
-    const subId = typeof session.subscription === "string"
-      ? session.subscription
-      : session.subscription?.id || null;
+    const subObj = typeof session.subscription === "string" ? null : session.subscription;
+    const subId =
+      typeof session.subscription === "string"
+        ? session.subscription
+        : session.subscription?.id || null;
 
-    const custId = typeof session.customer === "string"
-      ? session.customer
-      : session.customer?.id || null;
+    const custId =
+      typeof session.customer === "string"
+        ? session.customer
+        : session.customer?.id || null;
 
-    // metadata we set in Checkout
+    // ✅ metadata (MATCHES sponsored-checkout)
     const meta = session.metadata || {};
-    const business_id = meta.cleaner_id || meta.cleanerId || null;
+    const business_id =
+      meta.business_id || meta.cleaner_id || meta.cleanerId || meta.businessId || null;
     const area_id = meta.area_id || meta.areaId || null;
+    const category_id = meta.category_id || meta.categoryId || null;
     const slot = Number(meta.slot || 1);
 
-    // Best-effort upsert (this mirrors what your webhook does)
-    if (business_id && area_id && subId && custId) {
-      await supabase.from("sponsored_subscriptions").upsert({
-        business_id,
-        area_id,
-        slot,
-        stripe_customer_id: custId,
-        stripe_subscription_id: subId,
-        price_monthly_pennies: Number(meta.monthly_price_pennies || 0) || null,
-        currency: session.currency || "gbp",
-        status: "active",
-        current_period_end: session.subscription?.current_period_end
-          ? new Date(session.subscription.current_period_end * 1000).toISOString()
-          : null,
-      }, { onConflict: "stripe_subscription_id" });
+    if (!business_id || !area_id || !category_id || !subId || !custId) {
+      return json(
+        {
+          ok: false,
+          error: "Missing required metadata/customer/subscription",
+          got: { business_id, area_id, category_id, slot, subId, custId },
+        },
+        400
+      );
     }
 
-    return json({ ok: true, business_id, area_id, slot, stripe_subscription_id: subId, stripe_customer_id: custId });
+    // ✅ price from line item (most reliable)
+    const unitAmount =
+      session.line_items?.data?.[0]?.price?.unit_amount ??
+      null;
+
+    // ✅ current_period_end from subscription (also reliable)
+    const currentPeriodEndIso =
+      subObj?.current_period_end
+        ? new Date(subObj.current_period_end * 1000).toISOString()
+        : null;
+
+    await supabase
+      .from("sponsored_subscriptions")
+      .upsert(
+        {
+          business_id,
+          area_id,
+          category_id,
+          slot,
+          stripe_customer_id: custId,
+          stripe_subscription_id: subId,
+          price_monthly_pennies: unitAmount, // pennies
+          currency: (session.currency || "gbp")?.toLowerCase(),
+          status: "active",
+          current_period_end: currentPeriodEndIso,
+        },
+        { onConflict: "stripe_subscription_id" }
+      );
+
+    // ✅ release lock immediately if present (so you don't see "being purchased")
+    const lockId = meta.lock_id || null;
+    if (lockId) {
+      await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+    }
+
+    return json({
+      ok: true,
+      business_id,
+      area_id,
+      category_id,
+      slot,
+      stripe_subscription_id: subId,
+      stripe_customer_id: custId,
+    });
   } catch (e) {
     console.error("[stripe-postverify] error:", e);
-    return json({ error: e?.message || "post-verify failed" }, 500);
+    return json({ ok: false, error: e?.message || "post-verify failed" }, 500);
   }
 };
