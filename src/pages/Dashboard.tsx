@@ -41,8 +41,15 @@ export default function Dashboard() {
 
   const qs = useHashQuery();
   const navigate = useNavigate();
+
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
+
+  // existing “bump” used by ServiceAreaEditor to refetch sponsorship state
   const [sponsorshipVersion, setSponsorshipVersion] = useState(0);
+
+  // ✅ NEW: hard refresh key to force full remount of the editor after checkout
+  const [refreshKey, setRefreshKey] = useState(0);
+
   const [openingPortal, setOpeningPortal] = useState(false);
 
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
@@ -66,8 +73,16 @@ export default function Dashboard() {
 
     if (status === "success") {
       postVerify().finally(() => {
-        setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
+        setBanner({
+          kind: "success",
+          msg: "Payment completed. Your sponsorship will appear shortly.",
+        });
+
+        // ✅ bump both so we refetch + fully remount the editor
         setSponsorshipVersion((v) => v + 1);
+        setRefreshKey((k) => k + 1);
+
+        // clear hash params
         const clean = window.location.hash.replace(/\?[^#]*/g, "");
         setTimeout(() => navigate(clean, { replace: true }), 0);
       });
@@ -207,7 +222,6 @@ export default function Dashboard() {
 
   const needsOnboard = !cleaner.business_name || !cleaner.address || !cleaner.logo_url;
   const industryKey = `${cleaner.id}:${activeCategoryId ?? "none"}`;
-  const breakdownKey = `areaBreakdown:${industryKey}`;
 
   return (
     <main className="container mx-auto max-w-6xl px-4 sm:px-6 py-8 space-y-8">
@@ -350,7 +364,8 @@ export default function Dashboard() {
 
                     <div className="rounded-xl overflow-hidden border">
                       <ServiceAreaEditor
-                        key={`areas:${industryKey}`}
+                        // ✅ include refreshKey so checkout success fully remounts the editor + repaints yellow
+                        key={`areas:${industryKey}:${refreshKey}`}
                         cleanerId={cleaner.id}
                         sponsorshipVersion={sponsorshipVersion}
                         categoryId={activeCategoryId}
