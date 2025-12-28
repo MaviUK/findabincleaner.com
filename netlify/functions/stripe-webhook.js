@@ -282,13 +282,14 @@ case "invoice.voided": {
 
   await upsertInvoice(inv);
 
-  // ✅ Only generate our custom invoice ONCE: when invoice is finalized
+  // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
   if (stripeEvent.type === "invoice.finalized") {
     await triggerCustomInvoicePdf(inv.id);
   }
 
   break;
 }
+
 
         break;
       }
