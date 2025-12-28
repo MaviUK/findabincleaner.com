@@ -206,17 +206,12 @@ async function upsertInvoice(inv) {
 async function triggerCustomInvoicePdf(stripeInvoiceId) {
   if (!stripeInvoiceId) return;
 
-  // If fetch isn't available (and node-fetch isn't installed), skip gracefully
   if (!fetchFn) {
     console.warn("[webhook] fetch not available; skipping createInvoiceAndEmail trigger.");
     return;
   }
 
-  const base =
-    process.env.PUBLIC_SITE_URL ||
-    process.env.URL || // Netlify auto env
-    "";
-
+  const base = process.env.PUBLIC_SITE_URL || process.env.URL || "";
   if (!base) {
     console.warn("[webhook] No PUBLIC_SITE_URL/URL set, cannot trigger custom invoice function.");
     return;
@@ -224,21 +219,29 @@ async function triggerCustomInvoicePdf(stripeInvoiceId) {
 
   const url = `${base.replace(/\/$/, "")}/.netlify/functions/createInvoiceAndEmail`;
 
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 8000); // ✅ 8s cap
+
   try {
+    console.log("[webhook] triggering createInvoiceAndEmail:", stripeInvoiceId);
+
     const resp = await fetchFn(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ stripe_invoice_id: stripeInvoiceId }),
+      signal: controller.signal,
     });
 
     const txt = await resp.text().catch(() => "");
+    console.log("[webhook] createInvoiceAndEmail response:", resp.status, txt);
+
     if (!resp.ok) {
       console.error("[webhook] createInvoiceAndEmail failed", resp.status, txt);
-    } else {
-      console.log("[webhook] createInvoiceAndEmail ok", stripeInvoiceId, txt);
     }
   } catch (e) {
-    console.error("[webhook] error calling createInvoiceAndEmail:", e);
+    console.error("[webhook] error calling createInvoiceAndEmail:", e?.name || e, e?.message || "");
+  } finally {
+    clearTimeout(t);
   }
 }
 
