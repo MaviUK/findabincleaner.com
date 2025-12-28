@@ -2,6 +2,25 @@
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
+// Netlify Functions (Node 18+) normally has global fetch.
+// This fallback prevents silent failures if your bundler/runtime differs.
+let fetchFn = global.fetch;
+if (!fetchFn) {
+  try {
+    // Optional dependency: only needed if fetch isn't available
+    // npm i node-fetch@3  (or rely on Node18 global fetch)
+    // Note: node-fetch@3 is ESM; require may fail depending on your setup.
+    // If require fails, we’ll warn and skip calling createInvoiceAndEmail.
+    // eslint-disable-next-line import/no-extraneous-dependencies
+    fetchFn = require("node-fetch");
+  } catch (e) {
+    console.warn(
+      "[webhook] fetch is not available and node-fetch is not installed. createInvoiceAndEmail trigger will be skipped."
+    );
+    fetchFn = null;
+  }
+}
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
@@ -72,7 +91,8 @@ async function releaseLockSafe(lockId) {
 }
 
 async function upsertSubscription(sub, meta = {}) {
-  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
   const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
     meta,
@@ -181,9 +201,16 @@ async function upsertInvoice(inv) {
   }
 }
 
-// ✅ NEW: trigger your custom invoice generator (your branding + km2 + rate breakdown)
+// ✅ Trigger your custom invoice generator (branding + km2 + rate breakdown)
+// IMPORTANT: we do NOT block the webhook response on this.
 async function triggerCustomInvoicePdf(stripeInvoiceId) {
   if (!stripeInvoiceId) return;
+
+  // If fetch isn't available (and node-fetch isn't installed), skip gracefully
+  if (!fetchFn) {
+    console.warn("[webhook] fetch not available; skipping createInvoiceAndEmail trigger.");
+    return;
+  }
 
   const base =
     process.env.PUBLIC_SITE_URL ||
@@ -198,7 +225,7 @@ async function triggerCustomInvoicePdf(stripeInvoiceId) {
   const url = `${base.replace(/\/$/, "")}/.netlify/functions/createInvoiceAndEmail`;
 
   try {
-    const resp = await fetch(url, {
+    const resp = await fetchFn(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ stripe_invoice_id: stripeInvoiceId }),
@@ -262,6 +289,7 @@ exports.handler = async (event) => {
 
       case "customer.subscription.deleted": {
         const sub = stripeEvent.data.object;
+
         const { error } = await supabase
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
@@ -275,17 +303,18 @@ exports.handler = async (event) => {
       }
 
       case "invoice.finalized":
-case "invoice.paid":
-case "invoice.payment_failed":
-case "invoice.voided": {
-  const inv = stripeEvent.data.object;
+      case "invoice.paid":
+      case "invoice.payment_failed":
+      case "invoice.voided": {
+        const inv = stripeEvent.data.object;
 
-  await upsertInvoice(inv);
+        await upsertInvoice(inv);
 
-  // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
-  if (stripeEvent.type === "invoice.finalized") {
-    await triggerCustomInvoicePdf(inv.id);
-  }
+        // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
+        // ✅ DO NOT block the webhook response (Stripe retries on slow handlers)
+        if (stripeEvent.type === "invoice.finalized") {
+          triggerCustomInvoicePdf(inv.id); // intentionally NOT awaited
+        }
 
         break;
       }
