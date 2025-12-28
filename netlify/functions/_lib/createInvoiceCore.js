@@ -37,7 +37,7 @@ function safeUpperCurrency(c) {
   return String(c || "gbp").toUpperCase();
 }
 
-// Keep PDF text WinAnsi-safe
+// Keep PDF text WinAnsi-safe (pdf-lib StandardFonts limitation)
 function pdfSafeText(s) {
   if (s == null) return "";
   return String(s)
@@ -135,7 +135,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   // ✅ Dedupe: if already EMAILED, stop. If created but not emailed, continue.
   const { data: existingInvoice, error: existErr } = await supabase
     .from("invoices")
-    .select("id, emailed_at, invoice_number, cleaner_id, area_id")
+    .select("id, emailed_at, invoice_number")
     .eq("stripe_invoice_id", inv.id)
     .maybeSingle();
 
@@ -144,9 +144,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     throw existErr;
   }
 
-  if (existingInvoice?.emailed_at) {
-    return "already-emailed";
-  }
+  if (existingInvoice?.emailed_at) return "already-emailed";
 
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
@@ -186,27 +184,27 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   if (!customerEmail) return "no-email";
 
-  // Area info (name only)
+  // Area info (name only; avoid missing area_km2 column)
   let areaName = "Sponsored Area";
   let areaKm2 = 0;
 
   if (subRow.area_id) {
-    const { data: area } = await supabase
+    const { data: area, error: areaErr } = await supabase
       .from("service_areas")
       .select("name")
       .eq("id", subRow.area_id)
       .maybeSingle();
+
+    if (areaErr) console.warn("[invoiceCore] service_areas lookup error", areaErr);
     areaName = area?.name || areaName;
   }
 
-  // Amounts
+  // Amounts (Stripe = source of truth incl proration)
   const subtotalCents = Number(inv.subtotal ?? 0);
   const totalCents = Number(inv.total ?? inv.amount_due ?? 0);
   const taxCents = Number(inv.tax ?? Math.max(0, totalCents - subtotalCents));
 
-  // Invoice number:
-  // - If invoice row already exists, reuse its invoice_number
-  // - Otherwise generate a new one
+  // Invoice number: reuse if invoice already exists
   const yyyy = new Date().getFullYear();
   const invoiceNumber =
     existingInvoice?.invoice_number || `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
@@ -234,13 +232,13 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     quantity: Number(l.quantity ?? 1),
   }));
 
-  // ✅ If invoice doesn't exist yet, insert it. If it exists, do not insert again.
+  // Insert invoice row only if it doesn't exist
   let invoiceId = existingInvoice?.id || null;
 
   if (!invoiceId) {
     const supplier = supplierDetails();
 
-    const { data: createdInvoice, error: invErr } = await supabase
+    const { data: created, error: invErr } = await supabase
       .from("invoices")
       .insert({
         cleaner_id: subRow.business_id,
@@ -277,7 +275,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
       throw invErr;
     }
 
-    invoiceId = createdInvoice?.id || null;
+    invoiceId = created?.id || null;
 
     // Insert line items only on first create (avoid duplicates)
     if (invoiceId && lines.length) {
@@ -328,29 +326,37 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     totalCents,
   });
 
-  // Send email
-  await resend.emails.send({
-    from: `${supplier.name} <${supplier.email}>`,
-    to: customerEmail,
-    subject: `Invoice ${invoiceNumber} - ${supplier.name}`,
-    html: `
-      <div style="font-family:Arial,sans-serif;line-height:1.5">
-        <p>Hi ${pdfSafeText(customerName)},</p>
-        <p>Attached is your invoice <b>${pdfSafeText(invoiceNumber)}</b>.</p>
-        <p><b>${pdfSafeText(areaName)}</b></p>
-        <p>Total: <b>${moneyGBP(totalCents)}</b></p>
-        <p>Thanks,<br/>${pdfSafeText(supplier.name)}</p>
-      </div>
-    `,
-    attachments: [
-      {
-        filename: `${invoiceNumber}.pdf`,
-        content: pdfBuffer.toString("base64"),
-      },
-    ],
-  });
+  // ✅ Send email + LOG Resend response/errors
+  let resendResp;
+  try {
+    resendResp = await resend.emails.send({
+      from: `${supplier.name} <${supplier.email}>`,
+      to: customerEmail,
+      subject: `Invoice ${invoiceNumber} - ${supplier.name}`,
+      html: `
+        <div style="font-family:Arial,sans-serif;line-height:1.5">
+          <p>Hi ${pdfSafeText(customerName)},</p>
+          <p>Attached is your invoice <b>${pdfSafeText(invoiceNumber)}</b>.</p>
+          <p><b>${pdfSafeText(areaName)}</b></p>
+          <p>Total: <b>${moneyGBP(totalCents)}</b></p>
+          <p>Thanks,<br/>${pdfSafeText(supplier.name)}</p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: `${invoiceNumber}.pdf`,
+          content: pdfBuffer.toString("base64"),
+        },
+      ],
+    });
 
-  // Mark emailed (even if invoice existed already)
+    console.log("[invoiceCore] resend accepted:", resendResp);
+  } catch (e) {
+    console.error("[invoiceCore] resend FAILED:", e?.message || e, e);
+    throw e;
+  }
+
+  // Mark emailed
   if (invoiceId) {
     await supabase
       .from("invoices")
