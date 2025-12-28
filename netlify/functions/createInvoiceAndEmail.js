@@ -13,6 +13,22 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
+
+exports.handler = async (event) => {
+  try {
+    const { stripe_invoice_id } = JSON.parse(event.body || "{}");
+    if (!stripe_invoice_id) return { statusCode: 400, body: "Missing stripe_invoice_id" };
+
+    const out = await createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id);
+    return { statusCode: 200, body: out || "OK" };
+  } catch (e) {
+    console.error("[createInvoiceAndEmail] error:", e);
+    return { statusCode: 500, body: e?.message || "Server error" };
+  }
+};
+
+
 function supplierDetails() {
   return {
     name: process.env.INVOICE_SUPPLIER_NAME || "Find A Bin Cleaner Ltd",
