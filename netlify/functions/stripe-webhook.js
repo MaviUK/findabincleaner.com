@@ -319,8 +319,18 @@ exports.handler = async (event) => {
         // ✅ ONLY create our custom invoice/PDF on finalized
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
-          const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-          console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
+          try {
+  const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
+  console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
+} catch (err) {
+  console.error(
+    "[webhook] createInvoiceAndEmail ERROR:",
+    inv.id,
+    err?.message || err,
+    err?.stack || ""
+  );
+}
+
         }
 
         break;
