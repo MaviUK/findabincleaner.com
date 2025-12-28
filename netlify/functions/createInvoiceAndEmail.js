@@ -4,6 +4,21 @@ const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
+// ✅ DEDUPE: if we already created our invoice for this Stripe invoice, do nothing
+const { data: existingInvoice } = await supabase
+  .from("invoices")
+  .select("id, emailed_at")
+  .eq("stripe_invoice_id", inv.id)
+  .maybeSingle();
+
+if (existingInvoice?.id) {
+  return {
+    statusCode: 200,
+    body: existingInvoice.emailed_at ? "Already created & emailed" : "Already created",
+  };
+}
+
+
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
