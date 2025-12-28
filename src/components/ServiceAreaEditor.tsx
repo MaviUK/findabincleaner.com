@@ -855,7 +855,7 @@ const doCopyToIndustry = useCallback(async () => {
                   Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
                 </div>
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <button className="btn" onClick={saveDraft} disabled={loading}>
                     {activeAreaId ? "Save Changes" : "Save Area"}
                   </button>
@@ -1192,7 +1192,8 @@ const doCopyToIndustry = useCallback(async () => {
       {copyOpen && copyArea && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
-            <div className="flex items-center justify-between px-4 py-3 border-b">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+
               <div>
                 <div className="font-semibold">Copy area to another industry</div>
                 <div className="text-xs text-gray-500">
