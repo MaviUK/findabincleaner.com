@@ -138,3 +138,8 @@
 [[scheduled.functions]]
   name = "sendRenewalNotices"
   cron = "0 * * * *" # every hour
+
+  [[scheduled.functions]]
+name = "sendRenewalNotices"
+cron = "0 * * * *"
+
