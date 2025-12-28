@@ -287,10 +287,6 @@ case "invoice.voided": {
     await triggerCustomInvoicePdf(inv.id);
   }
 
-  break;
-}
-
-
         break;
       }
 
