@@ -73,10 +73,18 @@ export default function Dashboard() {
 
     if (status === "success") {
       postVerify().finally(() => {
-        setBanner({
-          kind: "success",
-          msg: "Payment completed. Your sponsorship will appear shortly.",
-        });
+  setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
+
+  // ✅ force refresh sponsorship data
+  setSponsorshipVersion((v) => v + 1);
+
+  // ✅ ALSO force a small delayed refresh (because Supabase/Stripe webhook may lag)
+  setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
+
+  const clean = window.location.hash.replace(/\?[^#]*/g, "");
+  setTimeout(() => navigate(clean, { replace: true }), 0);
+});
+
 
         // ✅ bump both so we refetch + fully remount the editor
         setSponsorshipVersion((v) => v + 1);
