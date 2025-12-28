@@ -37,6 +37,21 @@ function safeUpperCurrency(c) {
   return String(c || "gbp").toUpperCase();
 }
 
+// PDF-lib StandardFonts (Helvetica) can’t encode unicode arrows etc.
+// Keep ALL printable characters WinAnsi-safe:
+function pdfSafeText(s) {
+  if (s == null) return "";
+  return String(s)
+    .replaceAll("→", "to")
+    .replaceAll("–", "-")
+    .replaceAll("—", "-")
+    .replaceAll("“", '"')
+    .replaceAll("”", '"')
+    .replaceAll("’", "'")
+    .replaceAll("‘", "'")
+    .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, ""); // allow basic ASCII + £
+}
+
 /* ---------------- PDF ---------------- */
 
 async function renderPdf({
@@ -62,7 +77,12 @@ async function renderPdf({
   let y = 800;
 
   const draw = (text, size = 11, isBold = false) => {
-    page.drawText(String(text || ""), { x: left, y, size, font: isBold ? bold : font });
+    page.drawText(pdfSafeText(text), {
+      x: left,
+      y,
+      size,
+      font: isBold ? bold : font,
+    });
     y -= size + 6;
   };
 
@@ -72,30 +92,33 @@ async function renderPdf({
   if (supplier.vat) draw(`VAT: ${supplier.vat}`, 10, false);
 
   y -= 10;
-  draw(`INVOICE`, 16, true);
+  draw("INVOICE", 16, true);
   draw(`Invoice #: ${invoiceNumber}`, 11, true);
   draw(`Issue date: ${issueDateISO}`, 11, false);
   draw(`Stripe ref: ${stripeRef}`, 10, false);
 
   y -= 12;
-  draw(`Billed to`, 12, true);
+  draw("Billed to", 12, true);
   draw(customer.name || "Customer", 11, false);
   if (customer.address) draw(customer.address, 10, false);
   if (customer.email) draw(customer.email, 10, false);
 
   y -= 16;
-  draw(`Details`, 12, true);
+  draw("Details", 12, true);
   if (headline) draw(headline, 11, false);
-  if (periodStart && periodEnd) draw(`Billing period: ${periodStart} → ${periodEnd}`, 11, false);
+
+  if (periodStart && periodEnd) {
+    draw(`Billing period: ${periodStart} to ${periodEnd}`, 11, false);
+  }
 
   y -= 16;
-  draw(`Line items`, 12, true);
+  draw("Line items", 12, true);
 
   for (const l of lines || []) {
     draw(`${l.description}`, 10, true);
     draw(`Amount: ${moneyGBP(l.amount_cents)}`, 10, false);
     if (l.period_start && l.period_end) {
-      draw(`Period: ${l.period_start} → ${l.period_end}`, 9, false);
+      draw(`Period: ${l.period_start} to ${l.period_end}`, 9, false);
     }
     y -= 6;
   }
@@ -106,7 +129,7 @@ async function renderPdf({
   draw(`Total: ${moneyGBP(totalCents)}`, 13, true);
 
   y = 70;
-  page.drawText("Thank you for your business.", { x: left, y, size: 10, font });
+  page.drawText(pdfSafeText("Thank you for your business."), { x: left, y, size: 10, font });
 
   return Buffer.from(await pdfDoc.save());
 }
@@ -116,7 +139,6 @@ async function renderPdf({
 async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   console.log("[invoiceCore] start", stripe_invoice_id);
 
-  // 1) Load Stripe invoice
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
   // ✅ Dedupe
@@ -142,7 +164,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   if (!subscriptionId) return "no-subscription";
 
-  // 2) Find sponsored subscription row
   const { data: subRow, error: subErr } = await supabase
     .from("sponsored_subscriptions")
     .select("id, business_id, area_id, current_period_end")
@@ -155,8 +176,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   }
   if (!subRow?.business_id) return "no-business-id";
 
-  // 3) Load cleaner details
-  // 🔥 IMPORTANT: your email column is contact_email
+  // 🔥 IMPORTANT: email is contact_email in your cleaners table
   const { data: cleaner, error: cleanerErr } = await supabase
     .from("cleaners")
     .select("business_name, contact_email, email, address")
@@ -168,24 +188,19 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     throw cleanerErr;
   }
 
-  // Customer fields
   let customerEmail = cleaner?.contact_email || cleaner?.email || "";
   const customerName = cleaner?.business_name || "Customer";
   const customerAddress = cleaner?.address || "";
 
   // If missing, fallback to Stripe customer email and persist to contact_email
   if (!customerEmail) {
-    const customerId =
-      typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
-
+    const customerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
     if (customerId) {
       try {
         const sc = await stripe.customers.retrieve(customerId);
         const stripeEmail = sc?.email || "";
         if (stripeEmail) {
           customerEmail = stripeEmail;
-
-          // 🔥 Save it so future invoices work
           await supabase
             .from("cleaners")
             .update({ contact_email: stripeEmail })
@@ -199,33 +214,30 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   if (!customerEmail) return "no-email";
 
-  // 4) Area info (optional)
+  // Area info (keep minimal; your service_areas table does NOT have area_km2)
   let areaName = "Sponsored Area";
   let areaKm2 = 0;
 
   if (subRow.area_id) {
+    // Only select "name" to avoid the missing column error
     const { data: area, error: areaErr } = await supabase
       .from("service_areas")
-      .select("name, area_km2")
+      .select("name")
       .eq("id", subRow.area_id)
       .maybeSingle();
 
     if (areaErr) console.warn("[invoiceCore] service_areas lookup error", areaErr);
-
     areaName = area?.name || areaName;
-    areaKm2 = Number(area?.area_km2 || 0);
   }
 
-  // 5) Amounts
+  // Amounts
   const subtotalCents = Number(inv.subtotal ?? 0);
   const totalCents = Number(inv.total ?? inv.amount_due ?? 0);
   const taxCents = Number(inv.tax ?? Math.max(0, totalCents - subtotalCents));
 
-  // 6) Invoice number
   const yyyy = new Date().getFullYear();
   const invoiceNumber = `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
 
-  // 7) Period
   const periodStart = inv.period_start
     ? isoDateFromUnix(inv.period_start)
     : new Date().toISOString().slice(0, 10);
@@ -236,7 +248,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
       ? new Date(subRow.current_period_end).toISOString().slice(0, 10)
       : "");
 
-  // 8) Stripe line items
+  // Stripe line items
   const stripeLines = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
 
   const lines = (stripeLines?.data || []).map((l) => ({
@@ -249,7 +261,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     quantity: Number(l.quantity ?? 1),
   }));
 
-  // 9) Insert invoice row
+  // Insert invoice row
   const supplier = supplierDetails();
 
   const { data: createdInvoice, error: invErr } = await supabase
@@ -289,7 +301,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     throw invErr;
   }
 
-  // 10) Insert invoice line items
+  // Insert invoice line items
   if (lines.length) {
     const { error: liErr } = await supabase.from("invoice_line_items").insert(
       lines.map((l) => ({
@@ -316,7 +328,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     }
   }
 
-  // 11) Generate PDF
+  // Generate PDF (ASCII-safe text)
   const issueDateISO = new Date((inv.created || Math.floor(Date.now() / 1000)) * 1000)
     .toISOString()
     .slice(0, 10);
@@ -336,18 +348,18 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     totalCents,
   });
 
-  // 12) Email PDF
+  // Email PDF
   await resend.emails.send({
     from: `${supplier.name} <${supplier.email}>`,
     to: customerEmail,
     subject: `Invoice ${invoiceNumber} - ${supplier.name}`,
     html: `
       <div style="font-family:Arial,sans-serif;line-height:1.5">
-        <p>Hi ${customerName},</p>
-        <p>Attached is your invoice <b>${invoiceNumber}</b>.</p>
-        <p><b>${areaName}</b></p>
+        <p>Hi ${pdfSafeText(customerName)},</p>
+        <p>Attached is your invoice <b>${pdfSafeText(invoiceNumber)}</b>.</p>
+        <p><b>${pdfSafeText(areaName)}</b></p>
         <p>Total: <b>${moneyGBP(totalCents)}</b></p>
-        <p>Thanks,<br/>${supplier.name}</p>
+        <p>Thanks,<br/>${pdfSafeText(supplier.name)}</p>
       </div>
     `,
     attachments: [
@@ -358,7 +370,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     ],
   });
 
-  // 13) Mark emailed
+  // Mark emailed
   await supabase
     .from("invoices")
     .update({ emailed_at: new Date().toISOString() })
