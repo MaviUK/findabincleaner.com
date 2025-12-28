@@ -186,8 +186,9 @@ export default async (req) => {
           quantity: 1,
         },
       ],
-      success_url: successUrl,
-      cancel_url: cancelUrl,
+      success_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`,
+cancel_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+
     });
 
     // tie stripe session to lock
