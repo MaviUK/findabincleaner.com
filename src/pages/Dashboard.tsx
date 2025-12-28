@@ -255,7 +255,7 @@ export default function Dashboard() {
       ) : (
         <>
           <section className="card">
-            <div className="card-pad grid grid-cols-[auto_1fr_auto] items-center gap-4">
+            <div className="card-pad grid grid-cols-1 sm:grid-cols-[auto_1fr] lg:grid-cols-[auto_1fr_auto] gap-4">
               {cleaner.logo_url ? (
                 <img
                   src={cleaner.logo_url}
@@ -271,11 +271,11 @@ export default function Dashboard() {
                 <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
-              <div className="flex gap-2">
-                <Link to="/settings" className="btn btn-primary">
+              <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
+                <Link to="/settings" className="btn btn-primary w-full sm:w-auto">
                   Edit profile
                 </Link>
-                <button className="btn" onClick={openBillingPortal} disabled={openingPortal}>
+                <button className="btn w-full sm:w-auto" onClick={openBillingPortal} disabled={openingPortal}>
                   {openingPortal ? "Opening…" : "Manage billing"}
                 </button>
               </div>
