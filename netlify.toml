@@ -131,3 +131,10 @@
   from = "/*"
   to   = "/index.html"
   status = 200
+
+[functions]
+  node_bundler = "esbuild"
+
+[[scheduled.functions]]
+  name = "sendRenewalNotices"
+  cron = "0 * * * *" # every hour
