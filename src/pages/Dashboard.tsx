@@ -72,34 +72,29 @@ export default function Dashboard() {
     }
 
     if (status === "success") {
-      postVerify().finally(() => {
-  setBanner({ kind: "success", msg: "Payment completed. Your sponsorship will appear shortly." });
+  postVerify().finally(() => {
+    setBanner({
+      kind: "success",
+      msg: "Payment completed. Your sponsorship will appear shortly.",
+    });
 
-  // ✅ force refresh sponsorship data
-  setSponsorshipVersion((v) => v + 1);
+    // ✅ bump so we refetch sponsorship + optionally remount editor
+    setSponsorshipVersion((v) => v + 1);
+    setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
 
-  // ✅ ALSO force a small delayed refresh (because Supabase/Stripe webhook may lag)
-  setTimeout(() => setSponsorshipVersion((v) => v + 1), 2000);
+    // if you're using refreshKey elsewhere, keep this — otherwise remove it
+    setRefreshKey((k) => k + 1);
 
+    // clear hash params
+    const clean = window.location.hash.replace(/\?[^#]*/g, "");
+    setTimeout(() => navigate(clean, { replace: true }), 0);
+  });
+} else if (status === "cancel") {
+  setBanner({ kind: "error", msg: "Checkout cancelled." });
   const clean = window.location.hash.replace(/\?[^#]*/g, "");
   setTimeout(() => navigate(clean, { replace: true }), 0);
-});
+}
 
-
-        // ✅ bump both so we refetch + fully remount the editor
-        setSponsorshipVersion((v) => v + 1);
-        setRefreshKey((k) => k + 1);
-
-        // clear hash params
-        const clean = window.location.hash.replace(/\?[^#]*/g, "");
-        setTimeout(() => navigate(clean, { replace: true }), 0);
-      });
-    } else if (status === "cancel") {
-      setBanner({ kind: "error", msg: "Checkout cancelled." });
-      const clean = window.location.hash.replace(/\?[^#]*/g, "");
-      setTimeout(() => navigate(clean, { replace: true }), 0);
-    }
-  }, [qs, navigate]);
 
   useEffect(() => {
     (async () => {
