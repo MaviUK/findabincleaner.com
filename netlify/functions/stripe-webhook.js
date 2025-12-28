@@ -274,19 +274,22 @@ exports.handler = async (event) => {
         break;
       }
 
-      // ✅ Invoice lifecycle: mirror Stripe invoice + create YOUR branded invoice + PDF + email
       case "invoice.finalized":
-      case "invoice.paid":
-      case "invoice.payment_failed":
-      case "invoice.voided": {
-        const inv = stripeEvent.data.object;
+case "invoice.paid":
+case "invoice.payment_failed":
+case "invoice.voided": {
+  const inv = stripeEvent.data.object;
 
-        await upsertInvoice(inv);
+  await upsertInvoice(inv);
 
-        // Only generate/email YOUR invoice when it's finalized or paid
-        if (stripeEvent.type === "invoice.finalized" || stripeEvent.type === "invoice.paid") {
-          await triggerCustomInvoicePdf(inv.id);
-        }
+  // ✅ Only generate our custom invoice ONCE: when invoice is finalized
+  if (stripeEvent.type === "invoice.finalized") {
+    await triggerCustomInvoicePdf(inv.id);
+  }
+
+  break;
+}
+
         break;
       }
 
