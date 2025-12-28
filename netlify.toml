@@ -6,18 +6,25 @@
   publish   = "dist"
   functions = "netlify/functions"
 
-# Single global functions table (no duplicates!)
+# Single global functions table (NO DUPLICATES)
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf"]
   included_files = ["netlify/functions/**"]
 
-# Only the Stripe webhook needs raw body for signature verification
+# Stripe webhook needs raw body for signature verification
 [functions."stripe-webhook"]
   body = "raw"
 
 [dev]
   framework = "vite"
+
+########################
+# Scheduled Functions
+########################
+[[scheduled.functions]]
+  name = "sendRenewalNotices"
+  cron = "0 * * * *" # every hour
 
 ########################
 # API / Functions redirects (FIRST)
@@ -49,13 +56,13 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship: availability/painting helper
+# Sponsorship: availability / painting helper
 [[redirects]]
   from = "/api/area/sponsorship"
   to   = "/.netlify/functions/area-sponsorship"
   status = 200
 
-# Sponsorship checkout/preview
+# Sponsorship checkout / preview
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -71,13 +78,13 @@
   to   = "/.netlify/functions/sponsored-checkout"
   status = 200
 
-# Stripe webhook endpoint (this is the URL configured in Stripe)
+# Stripe webhook endpoint (configured in Stripe)
 [[redirects]]
   from = "/api/stripe/webhook"
   to   = "/.netlify/functions/stripe-webhook"
   status = 200
 
-# Post-verify alias (nice UX for Dashboard)
+# Post-verify alias (dashboard UX)
 [[redirects]]
   from = "/api/stripe/postverify"
   to   = "/.netlify/functions/stripe-postverify"
@@ -89,7 +96,7 @@
   to   = "/.netlify/functions/billing-portal"
   status = 200
 
-# Manage view: subscription info + cancel-at-period-end
+# Subscription management
 [[redirects]]
   from = "/api/subscription/get"
   to   = "/.netlify/functions/subscription-get"
@@ -100,14 +107,14 @@
   to   = "/.netlify/functions/subscription-cancel"
   status = 200
 
-# ✅ Record analytics events
+# Analytics
 [[redirects]]
   from = "/api/record_event"
   to   = "/.netlify/functions/record_event"
   status = 200
 
 ########################
-# API headers (disable CDN caching for JSON)
+# API headers (disable caching)
 ########################
 [[headers]]
   for = "/api/*"
@@ -116,7 +123,7 @@
     Pragma        = "no-cache"
     Expires       = "0"
 
-# If you call functions directly without /api redirects
+# Direct function calls
 [[headers]]
   for = "/.netlify/functions/*"
   [headers.values]
@@ -131,15 +138,3 @@
   from = "/*"
   to   = "/index.html"
   status = 200
-
-[functions]
-  node_bundler = "esbuild"
-
-[[scheduled.functions]]
-  name = "sendRenewalNotices"
-  cron = "0 * * * *" # every hour
-
-  [[scheduled.functions]]
-name = "sendRenewalNotices"
-cron = "0 * * * *"
-
