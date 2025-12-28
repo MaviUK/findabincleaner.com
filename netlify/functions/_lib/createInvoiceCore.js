@@ -132,7 +132,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-  // ✅ Dedupe: if already EMAILED, stop. If created but not emailed, continue.
+  // Dedupe: if invoice row exists and emailed => stop
   const { data: existingInvoice, error: existErr } = await supabase
     .from("invoices")
     .select("id, emailed_at, invoice_number")
@@ -166,7 +166,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   }
   if (!subRow?.business_id) return "no-business-id";
 
-  // 🔥 contact_email is your real field
+  // ✅ contact_email is your real field
   const { data: cleaner, error: cleanerErr } = await supabase
     .from("cleaners")
     .select("business_name, contact_email, email, address")
@@ -178,15 +178,15 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     throw cleanerErr;
   }
 
-  let customerEmail = cleaner?.contact_email || cleaner?.email || "";
+  const customerEmail = cleaner?.contact_email || cleaner?.email || "";
   const customerName = cleaner?.business_name || "Customer";
   const customerAddress = cleaner?.address || "";
 
   if (!customerEmail) return "no-email";
 
-  // Area info (name only; avoid missing area_km2 column)
+  // Area info (name only; avoid area_km2 missing)
   let areaName = "Sponsored Area";
-  let areaKm2 = 0;
+  const areaKm2 = 0;
 
   if (subRow.area_id) {
     const { data: area, error: areaErr } = await supabase
@@ -199,12 +199,12 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     areaName = area?.name || areaName;
   }
 
-  // Amounts (Stripe = source of truth incl proration)
+  // Stripe amounts (includes proration)
   const subtotalCents = Number(inv.subtotal ?? 0);
   const totalCents = Number(inv.total ?? inv.amount_due ?? 0);
   const taxCents = Number(inv.tax ?? Math.max(0, totalCents - subtotalCents));
 
-  // Invoice number: reuse if invoice already exists
+  // Invoice number
   const yyyy = new Date().getFullYear();
   const invoiceNumber =
     existingInvoice?.invoice_number || `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
@@ -221,7 +221,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   // Stripe line items
   const stripeLines = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
-
   const lines = (stripeLines?.data || []).map((l) => ({
     stripe_line_id: l.id,
     description: l.description || l.price?.nickname || "Line item",
@@ -232,7 +231,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     quantity: Number(l.quantity ?? 1),
   }));
 
-  // Insert invoice row only if it doesn't exist
+  // Create invoice row if needed
   let invoiceId = existingInvoice?.id || null;
 
   if (!invoiceId) {
@@ -277,7 +276,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
     invoiceId = created?.id || null;
 
-    // Insert line items only on first create (avoid duplicates)
+    // Insert line items once
     if (invoiceId && lines.length) {
       const { error: liErr } = await supabase.from("invoice_line_items").insert(
         lines.map((l) => ({
@@ -326,35 +325,40 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     totalCents,
   });
 
-  // ✅ Send email + LOG Resend response/errors
-  let resendResp;
-  try {
-    resendResp = await resend.emails.send({
-      from: `${supplier.name} <${supplier.email}>`,
-      to: customerEmail,
-      subject: `Invoice ${invoiceNumber} - ${supplier.name}`,
-      html: `
-        <div style="font-family:Arial,sans-serif;line-height:1.5">
-          <p>Hi ${pdfSafeText(customerName)},</p>
-          <p>Attached is your invoice <b>${pdfSafeText(invoiceNumber)}</b>.</p>
-          <p><b>${pdfSafeText(areaName)}</b></p>
-          <p>Total: <b>${moneyGBP(totalCents)}</b></p>
-          <p>Thanks,<br/>${pdfSafeText(supplier.name)}</p>
-        </div>
-      `,
-      attachments: [
-        {
-          filename: `${invoiceNumber}.pdf`,
-          content: pdfBuffer.toString("base64"),
-        },
-      ],
-    });
+  // ✅ IMPORTANT: allow override from env
+  // For now set RESEND_FROM="onboarding@resend.dev" until you verify your domain
+  const fromAddress =
+    process.env.RESEND_FROM || `${supplier.name} <${supplier.email}>`;
 
-    console.log("[invoiceCore] resend accepted:", resendResp);
-  } catch (e) {
-    console.error("[invoiceCore] resend FAILED:", e?.message || e, e);
-    throw e;
+  // Send email — and treat "error" as failure
+  const resp = await resend.emails.send({
+    from: fromAddress,
+    to: customerEmail,
+    subject: `Invoice ${invoiceNumber} - ${supplier.name}`,
+    html: `
+      <div style="font-family:Arial,sans-serif;line-height:1.5">
+        <p>Hi ${pdfSafeText(customerName)},</p>
+        <p>Attached is your invoice <b>${pdfSafeText(invoiceNumber)}</b>.</p>
+        <p><b>${pdfSafeText(areaName)}</b></p>
+        <p>Total: <b>${moneyGBP(totalCents)}</b></p>
+        <p>Thanks,<br/>${pdfSafeText(supplier.name)}</p>
+      </div>
+    `,
+    attachments: [
+      {
+        filename: `${invoiceNumber}.pdf`,
+        content: pdfBuffer.toString("base64"),
+      },
+    ],
+  });
+
+  // Resend can return { data:null, error:{...} } without throwing
+  if (resp?.error) {
+    console.error("[invoiceCore] resend rejected:", resp);
+    throw new Error(resp.error.message || "Resend rejected email");
   }
+
+  console.log("[invoiceCore] resend sent:", resp);
 
   // Mark emailed
   if (invoiceId) {
