@@ -37,8 +37,7 @@ function safeUpperCurrency(c) {
   return String(c || "gbp").toUpperCase();
 }
 
-// PDF-lib StandardFonts (Helvetica) can’t encode unicode arrows etc.
-// Keep ALL printable characters WinAnsi-safe:
+// Keep PDF text WinAnsi-safe
 function pdfSafeText(s) {
   if (s == null) return "";
   return String(s)
@@ -49,7 +48,7 @@ function pdfSafeText(s) {
     .replaceAll("”", '"')
     .replaceAll("’", "'")
     .replaceAll("‘", "'")
-    .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, ""); // allow basic ASCII + £
+    .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, "");
 }
 
 /* ---------------- PDF ---------------- */
@@ -77,12 +76,7 @@ async function renderPdf({
   let y = 800;
 
   const draw = (text, size = 11, isBold = false) => {
-    page.drawText(pdfSafeText(text), {
-      x: left,
-      y,
-      size,
-      font: isBold ? bold : font,
-    });
+    page.drawText(pdfSafeText(text), { x: left, y, size, font: isBold ? bold : font });
     y -= size + 6;
   };
 
@@ -106,10 +100,7 @@ async function renderPdf({
   y -= 16;
   draw("Details", 12, true);
   if (headline) draw(headline, 11, false);
-
-  if (periodStart && periodEnd) {
-    draw(`Billing period: ${periodStart} to ${periodEnd}`, 11, false);
-  }
+  if (periodStart && periodEnd) draw(`Billing period: ${periodStart} to ${periodEnd}`, 11, false);
 
   y -= 16;
   draw("Line items", 12, true);
@@ -141,10 +132,10 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-  // ✅ Dedupe
+  // ✅ Dedupe: if already EMAILED, stop. If created but not emailed, continue.
   const { data: existingInvoice, error: existErr } = await supabase
     .from("invoices")
-    .select("id, emailed_at")
+    .select("id, emailed_at, invoice_number, cleaner_id, area_id")
     .eq("stripe_invoice_id", inv.id)
     .maybeSingle();
 
@@ -152,8 +143,9 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     console.error("[invoiceCore] dedupe lookup error", existErr);
     throw existErr;
   }
-  if (existingInvoice?.id) {
-    return existingInvoice.emailed_at ? "already-emailed" : "already-created";
+
+  if (existingInvoice?.emailed_at) {
+    return "already-emailed";
   }
 
   const subscriptionId =
@@ -176,7 +168,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   }
   if (!subRow?.business_id) return "no-business-id";
 
-  // 🔥 IMPORTANT: email is contact_email in your cleaners table
+  // 🔥 contact_email is your real field
   const { data: cleaner, error: cleanerErr } = await supabase
     .from("cleaners")
     .select("business_name, contact_email, email, address")
@@ -192,41 +184,18 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   const customerName = cleaner?.business_name || "Customer";
   const customerAddress = cleaner?.address || "";
 
-  // If missing, fallback to Stripe customer email and persist to contact_email
-  if (!customerEmail) {
-    const customerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id;
-    if (customerId) {
-      try {
-        const sc = await stripe.customers.retrieve(customerId);
-        const stripeEmail = sc?.email || "";
-        if (stripeEmail) {
-          customerEmail = stripeEmail;
-          await supabase
-            .from("cleaners")
-            .update({ contact_email: stripeEmail })
-            .eq("id", subRow.business_id);
-        }
-      } catch (e) {
-        console.warn("[invoiceCore] could not retrieve stripe customer for email", e?.message || e);
-      }
-    }
-  }
-
   if (!customerEmail) return "no-email";
 
-  // Area info (keep minimal; your service_areas table does NOT have area_km2)
+  // Area info (name only)
   let areaName = "Sponsored Area";
   let areaKm2 = 0;
 
   if (subRow.area_id) {
-    // Only select "name" to avoid the missing column error
-    const { data: area, error: areaErr } = await supabase
+    const { data: area } = await supabase
       .from("service_areas")
       .select("name")
       .eq("id", subRow.area_id)
       .maybeSingle();
-
-    if (areaErr) console.warn("[invoiceCore] service_areas lookup error", areaErr);
     areaName = area?.name || areaName;
   }
 
@@ -235,8 +204,12 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   const totalCents = Number(inv.total ?? inv.amount_due ?? 0);
   const taxCents = Number(inv.tax ?? Math.max(0, totalCents - subtotalCents));
 
+  // Invoice number:
+  // - If invoice row already exists, reuse its invoice_number
+  // - Otherwise generate a new one
   const yyyy = new Date().getFullYear();
-  const invoiceNumber = `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
+  const invoiceNumber =
+    existingInvoice?.invoice_number || `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
 
   const periodStart = inv.period_start
     ? isoDateFromUnix(inv.period_start)
@@ -261,74 +234,81 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     quantity: Number(l.quantity ?? 1),
   }));
 
-  // Insert invoice row
-  const supplier = supplierDetails();
+  // ✅ If invoice doesn't exist yet, insert it. If it exists, do not insert again.
+  let invoiceId = existingInvoice?.id || null;
 
-  const { data: createdInvoice, error: invErr } = await supabase
-    .from("invoices")
-    .insert({
-      cleaner_id: subRow.business_id,
-      area_id: subRow.area_id,
-      stripe_invoice_id: inv.id,
-      stripe_payment_intent_id: stripePaymentIntentId || null,
-      invoice_number: invoiceNumber,
-      status: inv.status || "open",
-      subtotal_cents: subtotalCents,
-      tax_cents: taxCents,
-      total_cents: totalCents,
-      currency: safeUpperCurrency(inv.currency),
+  if (!invoiceId) {
+    const supplier = supplierDetails();
 
-      billing_period_start: periodStart,
-      billing_period_end: periodEnd,
+    const { data: createdInvoice, error: invErr } = await supabase
+      .from("invoices")
+      .insert({
+        cleaner_id: subRow.business_id,
+        area_id: subRow.area_id,
+        stripe_invoice_id: inv.id,
+        stripe_payment_intent_id: stripePaymentIntentId || null,
+        invoice_number: invoiceNumber,
+        status: inv.status || "open",
+        subtotal_cents: subtotalCents,
+        tax_cents: taxCents,
+        total_cents: totalCents,
+        currency: safeUpperCurrency(inv.currency),
 
-      supplier_name: supplier.name,
-      supplier_address: supplier.address,
-      supplier_email: supplier.email,
-      supplier_vat: supplier.vat,
+        billing_period_start: periodStart,
+        billing_period_end: periodEnd,
 
-      customer_name: customerName,
-      customer_email: customerEmail,
-      customer_address: customerAddress,
+        supplier_name: supplier.name,
+        supplier_address: supplier.address,
+        supplier_email: supplier.email,
+        supplier_vat: supplier.vat,
 
-      area_km2: areaKm2,
-      rate_per_km2_cents: Math.round(Number(process.env.RATE_PER_KM2_PER_MONTH || "0") * 100),
-    })
-    .select("*")
-    .maybeSingle();
+        customer_name: customerName,
+        customer_email: customerEmail,
+        customer_address: customerAddress,
 
-  if (invErr) {
-    console.error("[invoiceCore] insert invoices error", invErr);
-    throw invErr;
-  }
+        area_km2: areaKm2,
+        rate_per_km2_cents: Math.round(Number(process.env.RATE_PER_KM2_PER_MONTH || "0") * 100),
+      })
+      .select("id")
+      .maybeSingle();
 
-  // Insert invoice line items
-  if (lines.length) {
-    const { error: liErr } = await supabase.from("invoice_line_items").insert(
-      lines.map((l) => ({
-        invoice_id: createdInvoice.id,
-        description: l.description,
-        quantity: l.quantity,
-        unit_price_cents: l.amount_cents,
-        total_cents: l.amount_cents,
-        meta: {
-          stripe_invoice_id: inv.id,
-          stripe_line_id: l.stripe_line_id,
-          proration: l.proration,
-          period_start: l.period_start,
-          period_end: l.period_end,
-          area_name: areaName,
-          area_km2: areaKm2,
-        },
-      }))
-    );
+    if (invErr) {
+      console.error("[invoiceCore] insert invoices error", invErr);
+      throw invErr;
+    }
 
-    if (liErr) {
-      console.error("[invoiceCore] insert invoice_line_items error", liErr);
-      throw liErr;
+    invoiceId = createdInvoice?.id || null;
+
+    // Insert line items only on first create (avoid duplicates)
+    if (invoiceId && lines.length) {
+      const { error: liErr } = await supabase.from("invoice_line_items").insert(
+        lines.map((l) => ({
+          invoice_id: invoiceId,
+          description: l.description,
+          quantity: l.quantity,
+          unit_price_cents: l.amount_cents,
+          total_cents: l.amount_cents,
+          meta: {
+            stripe_invoice_id: inv.id,
+            stripe_line_id: l.stripe_line_id,
+            proration: l.proration,
+            period_start: l.period_start,
+            period_end: l.period_end,
+            area_name: areaName,
+            area_km2: areaKm2,
+          },
+        }))
+      );
+
+      if (liErr) {
+        console.error("[invoiceCore] insert invoice_line_items error", liErr);
+        throw liErr;
+      }
     }
   }
 
-  // Generate PDF (ASCII-safe text)
+  // Generate PDF
+  const supplier = supplierDetails();
   const issueDateISO = new Date((inv.created || Math.floor(Date.now() / 1000)) * 1000)
     .toISOString()
     .slice(0, 10);
@@ -348,7 +328,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     totalCents,
   });
 
-  // Email PDF
+  // Send email
   await resend.emails.send({
     from: `${supplier.name} <${supplier.email}>`,
     to: customerEmail,
@@ -370,13 +350,15 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
     ],
   });
 
-  // Mark emailed
-  await supabase
-    .from("invoices")
-    .update({ emailed_at: new Date().toISOString() })
-    .eq("id", createdInvoice.id);
+  // Mark emailed (even if invoice existed already)
+  if (invoiceId) {
+    await supabase
+      .from("invoices")
+      .update({ emailed_at: new Date().toISOString() })
+      .eq("id", invoiceId);
+  }
 
-  return "OK";
+  return existingInvoice?.id ? "emailed-existing" : "OK";
 }
 
 module.exports = { createInvoiceAndEmailByStripeInvoiceId };
