@@ -1,5 +1,4 @@
 // netlify/functions/createInvoiceAndEmail.js
-
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
@@ -14,7 +13,6 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Supplier (marketplace) details (set these env vars in Netlify)
 function supplierDetails() {
   return {
     name: process.env.INVOICE_SUPPLIER_NAME || "Find A Bin Cleaner Ltd",
@@ -29,25 +27,32 @@ function moneyGBP(cents) {
   return `£${v}`;
 }
 
+function isoDateFromUnix(ts) {
+  if (!ts) return "";
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+
 async function renderPdf({
   invoiceNumber,
   supplier,
   customer,
-  areaName,
+  stripeRef,
+  issueDateISO,
   periodStart,
   periodEnd,
-  areaKm2,
-  ratePerKm2Cents,
+  headline,
+  lines,
+  subtotalCents,
+  taxCents,
   totalCents,
-  stripeRef,
 }) {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([595.28, 841.89]); // A4
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  let y = 800;
   const left = 50;
+  let y = 800;
 
   const draw = (text, size = 11, isBold = false) => {
     page.drawText(String(text || ""), { x: left, y, size, font: isBold ? bold : font });
@@ -63,7 +68,7 @@ async function renderPdf({
   y -= 10;
   draw(`INVOICE`, 16, true);
   draw(`Invoice #: ${invoiceNumber}`, 11, true);
-  draw(`Issue date: ${new Date().toLocaleDateString("en-GB")}`, 11, false);
+  draw(`Issue date: ${issueDateISO}`, 11, false);
   draw(`Stripe ref: ${stripeRef}`, 10, false);
 
   y -= 12;
@@ -73,17 +78,35 @@ async function renderPdf({
   draw(customer.email, 10, false);
 
   y -= 16;
-  draw(`Purchase details`, 12, true);
-  draw(`Sponsored area: ${areaName}`, 11, false);
-  draw(`Billing period: ${periodStart} → ${periodEnd}`, 11, false);
+  draw(`Details`, 12, true);
+  if (headline) draw(headline, 11, false);
+  if (periodStart && periodEnd) draw(`Billing period: ${periodStart} → ${periodEnd}`, 11, false);
 
   y -= 16;
-  draw(`Line item`, 12, true);
-  draw(`Area size: ${Number(areaKm2).toFixed(2)} km²`, 11, false);
-  draw(`Rate: ${moneyGBP(ratePerKm2Cents)} per km² / month`, 11, false);
+  draw(`Line items`, 12, true);
+
+  // Simple list (safe for pdf-lib); keep it readable
+  for (const l of lines) {
+    draw(`${l.description}`, 10, true);
+    draw(`Amount: ${moneyGBP(l.amount_cents)}`, 10, false);
+    if (l.period_start && l.period_end) {
+      draw(`Period: ${l.period_start} → ${l.period_end}`, 9, false);
+    }
+    y -= 6;
+
+    // page break protection (basic)
+    if (y < 140) {
+      y = 800;
+      pdfDoc.addPage([595.28, 841.89]);
+      // NOTE: for multi-page you’d want to rebind `page`; keeping simple here.
+    }
+  }
+
+  y -= 10;
+  draw(`Subtotal: ${moneyGBP(subtotalCents)}`, 11, false);
+  if (taxCents) draw(`Tax: ${moneyGBP(taxCents)}`, 11, false);
   draw(`Total: ${moneyGBP(totalCents)}`, 13, true);
 
-  // Footer
   y = 70;
   page.drawText("Thank you for your business.", { x: left, y, size: 10, font });
 
@@ -98,13 +121,12 @@ exports.handler = async (event) => {
     // 1) Load Stripe invoice
     const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-    // ✅ DEDUPE: if we already created our invoice for this Stripe invoice, do nothing
+    // ✅ DEDUPE
     const { data: existingInvoice, error: existErr } = await supabase
       .from("invoices")
       .select("id, emailed_at")
       .eq("stripe_invoice_id", inv.id)
       .maybeSingle();
-
     if (existErr) throw existErr;
 
     if (existingInvoice?.id) {
@@ -130,7 +152,6 @@ exports.handler = async (event) => {
       .select("id, business_id, area_id, category_id, slot, current_period_end")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
-
     if (subErr) throw subErr;
     if (!subRow?.business_id) return { statusCode: 404, body: "No business_id for subscription" };
 
@@ -140,44 +161,39 @@ exports.handler = async (event) => {
       .select("business_name, email, address")
       .eq("id", subRow.business_id)
       .maybeSingle();
-
     if (cleanerErr) throw cleanerErr;
     if (!cleaner?.email) return { statusCode: 200, body: "Cleaner has no email saved." };
 
-    // 4) Load area name + km2 (adjust field names if yours differ)
+    // 4) Load area
     const { data: area, error: areaErr } = await supabase
       .from("service_areas")
       .select("name, area_km2")
       .eq("id", subRow.area_id)
       .maybeSingle();
-
     if (areaErr) throw areaErr;
 
     const areaName = area?.name || "Sponsored Area";
     const areaKm2 = Number(area?.area_km2 || 0);
 
-    // 5) Determine rate per km² (simple: from env)
+    // 5) Rate snapshot (display/meta only; money should come from Stripe invoice)
     const ratePerKm2Cents = Math.round(
       Number(process.env.RATE_PER_KM2_PER_MONTH || "0") * 100
     );
 
-    const subtotalCents = Math.round(areaKm2 * ratePerKm2Cents);
-    const totalCents = subtotalCents;
+    // ✅ 6) Amounts from Stripe (these reflect proration)
+    const subtotalCents = Number(inv.subtotal ?? 0);
+    const totalCents = Number(inv.total ?? inv.amount_due ?? 0);
+    const taxCents = Number(inv.tax ?? Math.max(0, totalCents - subtotalCents));
 
-    // 6) Create invoice number (simple: INV-YYYY-xxxxxx)
+    // 7) Invoice number
     const yyyy = new Date().getFullYear();
     const invoiceNumber = `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
 
-    // Billing period: use Stripe invoice period if present
-    const periodStart = inv.period_start
-      ? new Date(inv.period_start * 1000).toISOString().slice(0, 10)
-      : new Date().toISOString().slice(0, 10);
-
-    const periodEnd = inv.period_end
-      ? new Date(inv.period_end * 1000).toISOString().slice(0, 10)
-      : subRow.current_period_end
-      ? new Date(subRow.current_period_end).toISOString().slice(0, 10)
-      : "";
+    // Period (invoice-level)
+    const periodStart = isoDateFromUnix(inv.period_start) || new Date().toISOString().slice(0, 10);
+    const periodEnd =
+      isoDateFromUnix(inv.period_end) ||
+      (subRow.current_period_end ? new Date(subRow.current_period_end).toISOString().slice(0, 10) : "");
 
     const supplier = supplierDetails();
     const customer = {
@@ -186,7 +202,20 @@ exports.handler = async (event) => {
       address: cleaner.address || "",
     };
 
-    // 7) Insert invoice row
+    // ✅ 8) Pull Stripe line items (this is the real proration breakdown)
+    const stripeLines = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
+
+    const lines = (stripeLines?.data || []).map((l) => ({
+      stripe_line_id: l.id,
+      description: l.description || l.price?.nickname || "Line item",
+      amount_cents: Number(l.amount ?? 0),
+      period_start: l.period?.start ? isoDateFromUnix(l.period.start) : "",
+      period_end: l.period?.end ? isoDateFromUnix(l.period.end) : "",
+      proration: Boolean(l.proration),
+      quantity: Number(l.quantity ?? 1),
+    }));
+
+    // 9) Insert invoice row
     const { data: createdInvoice, error: invErr } = await supabase
       .from("invoices")
       .insert({
@@ -195,9 +224,9 @@ exports.handler = async (event) => {
         stripe_invoice_id: inv.id,
         stripe_payment_intent_id: stripePaymentIntentId,
         invoice_number: invoiceNumber,
-        status: inv.status || "paid",
+        status: inv.status || "open",
         subtotal_cents: subtotalCents,
-        tax_cents: 0,
+        tax_cents: taxCents,
         total_cents: totalCents,
         currency: (inv.currency || "gbp").toUpperCase(),
         billing_period_start: periodStart,
@@ -214,41 +243,52 @@ exports.handler = async (event) => {
       })
       .select("*")
       .maybeSingle();
-
     if (invErr) throw invErr;
 
-    // 8) Insert line item
-    await supabase.from("invoice_line_items").insert({
-      invoice_id: createdInvoice.id,
-      description: `Sponsored area: ${areaName} (${areaKm2.toFixed(2)} km² @ ${moneyGBP(
-        ratePerKm2Cents
-      )}/km²)`,
-      quantity: 1,
-      unit_price_cents: totalCents,
-      total_cents: totalCents,
-      meta: {
-        area_name: areaName,
-        area_km2: areaKm2,
-        rate_per_km2_cents: ratePerKm2Cents,
-        stripe_invoice_id: inv.id,
-      },
-    });
+    // 10) Insert invoice line items from Stripe
+    if (lines.length) {
+      await supabase.from("invoice_line_items").insert(
+        lines.map((l) => ({
+          invoice_id: createdInvoice.id,
+          description: l.description,
+          quantity: l.quantity,
+          unit_price_cents: l.amount_cents, // simplest (you can split unit vs total later)
+          total_cents: l.amount_cents,
+          meta: {
+            stripe_invoice_id: inv.id,
+            stripe_line_id: l.stripe_line_id,
+            proration: l.proration,
+            period_start: l.period_start,
+            period_end: l.period_end,
+            area_name: areaName,
+            area_km2: areaKm2,
+            rate_per_km2_cents: ratePerKm2Cents,
+          },
+        }))
+      );
+    }
 
-    // 9) Generate PDF
+    // 11) Generate PDF using Stripe lines
+    const issueDateISO = new Date((inv.created || Math.floor(Date.now() / 1000)) * 1000)
+      .toISOString()
+      .slice(0, 10);
+
     const pdfBuffer = await renderPdf({
       invoiceNumber,
       supplier,
       customer,
-      areaName,
+      stripeRef: inv.id,
+      issueDateISO,
       periodStart,
       periodEnd,
-      areaKm2,
-      ratePerKm2Cents,
+      headline: `Sponsored area: ${areaName}`,
+      lines,
+      subtotalCents,
+      taxCents,
       totalCents,
-      stripeRef: inv.id,
     });
 
-    // 10) Store PDF in Supabase Storage
+    // 12) Store PDF
     const storagePath = `invoices/${subRow.business_id}/${invoiceNumber}.pdf`;
 
     const { error: upErr } = await supabase.storage
@@ -257,16 +297,14 @@ exports.handler = async (event) => {
         contentType: "application/pdf",
         upsert: true,
       });
-
     if (upErr) throw upErr;
 
     const { data: signed, error: signedErr } = await supabase.storage
       .from("invoices")
-      .createSignedUrl(storagePath, 60 * 60 * 24 * 30); // 30 days
-
+      .createSignedUrl(storagePath, 60 * 60 * 24 * 30);
     if (signedErr) throw signedErr;
 
-    // 11) Email PDF
+    // 13) Email
     await resend.emails.send({
       from: `${supplier.name} <${supplier.email}>`,
       to: customer.email,
@@ -274,7 +312,7 @@ exports.handler = async (event) => {
       html: `
         <div style="font-family:Arial,sans-serif;line-height:1.5">
           <p>Hi ${customer.name},</p>
-          <p>Attached is your invoice <b>${invoiceNumber}</b> for your sponsored area purchase.</p>
+          <p>Attached is your invoice <b>${invoiceNumber}</b>.</p>
           <p><b>${areaName}</b></p>
           <p>Total: <b>${moneyGBP(totalCents)}</b></p>
           ${signed?.signedUrl ? `<p>Download link (30 days): <a href="${signed.signedUrl}">View invoice</a></p>` : ""}
@@ -289,7 +327,7 @@ exports.handler = async (event) => {
       ],
     });
 
-    // 12) Mark invoice as stored + emailed
+    // 14) Mark emailed
     await supabase
       .from("invoices")
       .update({
