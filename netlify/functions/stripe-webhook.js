@@ -2,7 +2,7 @@
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
-// ✅ Direct-call custom invoice generator (NO fetch, no base URL issues)
+// ✅ Direct-call custom invoice generator (no fetch, no base URL issues)
 const {
   createInvoiceAndEmailByStripeInvoiceId,
 } = require("./_lib/createInvoiceCore");
@@ -22,6 +22,15 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
+const BLOCKING_STATUSES = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "paused",
+]);
+
 async function resolveContext({ meta, customerId }) {
   const business_id =
     meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
@@ -30,6 +39,7 @@ async function resolveContext({ meta, customerId }) {
   const category_id = meta?.category_id || meta?.categoryId || null;
   const lock_id = meta?.lock_id || null;
 
+  // If metadata is present, use it
   if (business_id && area_id && slot != null) {
     return {
       business_id,
@@ -40,17 +50,34 @@ async function resolveContext({ meta, customerId }) {
     };
   }
 
-  // fallback by customerId -> cleaners.stripe_customer_id
+  // fallback by customerId -> cleaners.stripe_customer_id (your newer schema)
   if (customerId) {
-    const { data } = await supabase
+    const { data: c1 } = await supabase
       .from("cleaners")
       .select("id")
       .eq("stripe_customer_id", customerId)
       .maybeSingle();
 
-    if (data?.id) {
+    if (c1?.id) {
       return {
-        business_id: data.id,
+        business_id: c1.id,
+        area_id: null,
+        slot: null,
+        category_id: null,
+        lock_id,
+      };
+    }
+
+    // fallback by customerId -> businesses.stripe_customer_id (older schema)
+    const { data: b1 } = await supabase
+      .from("businesses")
+      .select("id")
+      .eq("stripe_customer_id", customerId)
+      .maybeSingle();
+
+    if (b1?.id) {
+      return {
+        business_id: b1.id,
         area_id: null,
         slot: null,
         category_id: null,
@@ -81,10 +108,7 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
 async function releaseLockSafe(lockId) {
   if (!lockId) return;
   try {
-    await supabase
-      .from("sponsored_locks")
-      .update({ is_active: false })
-      .eq("id", lockId);
+    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
   } catch (e) {
     console.error("[webhook] failed to release lock:", lockId, e);
   }
@@ -100,14 +124,32 @@ async function upsertSubscription(sub, meta = {}) {
       customerId,
     });
 
+  // ✅ CRITICAL GUARD:
+  // Stripe sometimes sends subscription.updated with NO metadata.
+  // Your DB trigger rejects NULL area geometry — so we must NOT upsert without area_id/slot.
+  if (!area_id || slot == null) {
+    console.warn("[webhook] skipping sponsored_subscriptions upsert (missing area_id/slot)", {
+      sub_id: sub.id,
+      customerId,
+      business_id,
+      area_id,
+      slot,
+      category_id,
+      meta,
+    });
+    // Still release lock if present (checkout completed) to avoid stuck locks
+    await releaseLockSafe(lock_id);
+    return;
+  }
+
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
 
   const payload = {
     business_id,
     area_id,
-    category_id,
-    slot: slot ?? null,
+    category_id: category_id || null,
+    slot,
 
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
@@ -117,7 +159,6 @@ async function upsertSubscription(sub, meta = {}) {
 
     status: sub.status,
 
-    // ✅ used by 72h renewal reminder
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
@@ -133,7 +174,7 @@ async function upsertSubscription(sub, meta = {}) {
 
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
 
-    // overlap trigger raises errcode 23505 — cancel subscription to avoid charging
+    // overlap/unique violation => cancel subscription to avoid charging
     if (
       code === "23505" ||
       msg.includes("overlaps an existing sponsored area") ||
@@ -149,7 +190,6 @@ async function upsertSubscription(sub, meta = {}) {
     throw new Error("DB upsert(sponsored_subscriptions) failed");
   }
 
-  // if successful, release lock (checkout complete)
   await releaseLockSafe(lock_id);
 }
 
@@ -168,7 +208,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If invoice arrives before subscription row exists, hydrate it
+  // If invoice arrives before subscription row exists, try hydrating it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -206,18 +246,13 @@ async function upsertInvoice(inv) {
 
 exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
-    return json(200, {
-      ok: true,
-      note: "Stripe webhook is deployed. Use POST from Stripe.",
-    });
+    return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
   }
-  if (event.httpMethod !== "POST")
-    return json(405, { ok: false, error: "Method not allowed" });
+  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
   const sig =
     event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
-  if (!sig)
-    return json(400, { ok: false, error: "Missing stripe-signature header" });
+  if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
 
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
     return json(500, { ok: false, error: "Missing STRIPE_WEBHOOK_SECRET env var" });
@@ -261,7 +296,6 @@ exports.handler = async (event) => {
 
       case "customer.subscription.deleted": {
         const sub = stripeEvent.data.object;
-
         const { error } = await supabase
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
@@ -280,15 +314,12 @@ exports.handler = async (event) => {
       case "invoice.voided": {
         const inv = stripeEvent.data.object;
 
-        // Always upsert the “sponsored_invoices” mirror
         await upsertInvoice(inv);
 
-        // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
+        // ✅ ONLY create our custom invoice/PDF on finalized
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
-
           const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-
           console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
         }
 
