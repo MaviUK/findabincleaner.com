@@ -44,6 +44,25 @@ export default async (req) => {
   let lockId = null;
 
   try {
+    // ✅ HARD GUARD: ensure this area belongs to this cleaner AND this category
+    // This prevents ever sponsoring the wrong area/category even if the client sends bad IDs.
+    const { data: areaRow, error: areaErr } = await sb
+      .from("service_areas")
+      .select("id, cleaner_id, category_id, name")
+      .eq("id", areaId)
+      .maybeSingle();
+
+    if (areaErr) throw areaErr;
+    if (!areaRow) return json({ ok: false, error: "Area not found" }, 404);
+
+    if (String(areaRow.cleaner_id) !== businessId) {
+      return json({ ok: false, error: "Area does not belong to this business" }, 400);
+    }
+
+    if (String(areaRow.category_id) !== categoryId) {
+      return json({ ok: false, error: "Area is not in the selected industry" }, 400);
+    }
+
     // cleanup expired locks (best effort)
     await sb
       .from("sponsored_locks")
@@ -51,7 +70,7 @@ export default async (req) => {
       .eq("is_active", true)
       .lt("expires_at", new Date().toISOString());
 
-    // create lock (now includes category_id)
+    // create lock
     const expiresAt = new Date(Date.now() + LOCK_MINUTES * 60 * 1000).toISOString();
 
     const { data: lockRow, error: lockErr } = await sb
@@ -133,6 +152,15 @@ export default async (req) => {
       await sb.from("cleaners").update({ stripe_customer_id: stripeCustomerId }).eq("id", businessId);
     }
 
+    // ✅ include session id in success URL so Dashboard can postVerify correctly
+    const successUrl =
+      `${PUBLIC_SITE_URL}/#dashboard?checkout=success` +
+      `&checkout_session={CHECKOUT_SESSION_ID}` +
+      `&area_id=${encodeURIComponent(areaId)}` +
+      `&category_id=${encodeURIComponent(categoryId)}`;
+
+    const cancelUrl = `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`;
+
     // create Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -158,8 +186,8 @@ export default async (req) => {
           quantity: 1,
         },
       ],
-      success_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     });
 
     // tie stripe session to lock
