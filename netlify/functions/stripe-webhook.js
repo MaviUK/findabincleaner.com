@@ -313,8 +313,9 @@ exports.handler = async (event) => {
         // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
         // ✅ DO NOT block the webhook response (Stripe retries on slow handlers)
         if (stripeEvent.type === "invoice.finalized") {
-          triggerCustomInvoicePdf(inv.id); // intentionally NOT awaited
-        }
+  await triggerCustomInvoicePdf(inv.id); // ✅ MUST await on Netlify
+}
+
 
         break;
       }
