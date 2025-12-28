@@ -47,16 +47,26 @@ async function renderPdf({
   totalCents,
 }) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595.28, 841.89]); // A4
+
+  let page = pdfDoc.addPage([595.28, 841.89]); // A4
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
   const left = 50;
   let y = 800;
 
+  const newPage = () => {
+    page = pdfDoc.addPage([595.28, 841.89]);
+    y = 800;
+  };
+
   const draw = (text, size = 11, isBold = false) => {
     page.drawText(String(text || ""), { x: left, y, size, font: isBold ? bold : font });
     y -= size + 6;
+  };
+
+  const ensureSpace = (minY = 140) => {
+    if (y < minY) newPage();
   };
 
   // Header
@@ -85,23 +95,20 @@ async function renderPdf({
   y -= 16;
   draw(`Line items`, 12, true);
 
-  // Simple list (safe for pdf-lib); keep it readable
   for (const l of lines) {
-    draw(`${l.description}`, 10, true);
+    ensureSpace(170);
+
+    const tag = l.proration ? " (proration)" : "";
+    draw(`${l.description}${tag}`, 10, true);
     draw(`Amount: ${moneyGBP(l.amount_cents)}`, 10, false);
     if (l.period_start && l.period_end) {
       draw(`Period: ${l.period_start} → ${l.period_end}`, 9, false);
     }
-    y -= 6;
 
-    // page break protection (basic)
-    if (y < 140) {
-      y = 800;
-      pdfDoc.addPage([595.28, 841.89]);
-      // NOTE: for multi-page you’d want to rebind `page`; keeping simple here.
-    }
+    y -= 6;
   }
 
+  ensureSpace(160);
   y -= 10;
   draw(`Subtotal: ${moneyGBP(subtotalCents)}`, 11, false);
   if (taxCents) draw(`Tax: ${moneyGBP(taxCents)}`, 11, false);
