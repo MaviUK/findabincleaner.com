@@ -22,7 +22,8 @@ function normStatus(s) {
 }
 
 async function resolveContext({ meta, customerId }) {
-  const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
+  const business_id =
+    meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
   const slot = meta?.slot != null ? Number(meta.slot) : null;
   const category_id = meta?.category_id || meta?.categoryId || null;
@@ -94,6 +95,8 @@ async function upsertSubscription(sub, meta = {}) {
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
 
     status: sub.status,
+
+    // ✅ this powers the 72h renewal reminder
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
@@ -144,6 +147,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
+  // If invoice arrives before subscription row exists, hydrate it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -174,6 +178,40 @@ async function upsertInvoice(inv) {
   if (error) {
     console.error("[webhook] upsert sponsored_invoices error:", error, payload);
     throw new Error("DB upsert(sponsored_invoices) failed");
+  }
+}
+
+// ✅ NEW: trigger your custom invoice generator (your branding + km2 + rate breakdown)
+async function triggerCustomInvoicePdf(stripeInvoiceId) {
+  if (!stripeInvoiceId) return;
+
+  const base =
+    process.env.PUBLIC_SITE_URL ||
+    process.env.URL || // Netlify auto env
+    "";
+
+  if (!base) {
+    console.warn("[webhook] No PUBLIC_SITE_URL/URL set, cannot trigger custom invoice function.");
+    return;
+  }
+
+  const url = `${base.replace(/\/$/, "")}/.netlify/functions/createInvoiceAndEmail`;
+
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ stripe_invoice_id: stripeInvoiceId }),
+    });
+
+    const txt = await resp.text().catch(() => "");
+    if (!resp.ok) {
+      console.error("[webhook] createInvoiceAndEmail failed", resp.status, txt);
+    } else {
+      console.log("[webhook] createInvoiceAndEmail ok", stripeInvoiceId, txt);
+    }
+  } catch (e) {
+    console.error("[webhook] error calling createInvoiceAndEmail:", e);
   }
 }
 
@@ -236,11 +274,19 @@ exports.handler = async (event) => {
         break;
       }
 
+      // ✅ Invoice lifecycle: mirror Stripe invoice + create YOUR branded invoice + PDF + email
+      case "invoice.finalized":
       case "invoice.paid":
       case "invoice.payment_failed":
-      case "invoice.finalized":
       case "invoice.voided": {
-        await upsertInvoice(stripeEvent.data.object);
+        const inv = stripeEvent.data.object;
+
+        await upsertInvoice(inv);
+
+        // Only generate/email YOUR invoice when it's finalized or paid
+        if (stripeEvent.type === "invoice.finalized" || stripeEvent.type === "invoice.paid") {
+          await triggerCustomInvoicePdf(inv.id);
+        }
         break;
       }
 
