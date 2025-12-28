@@ -1,26 +1,11 @@
 // netlify/functions/stripe-webhook.js
 const Stripe = require("stripe");
-const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 const { createClient } = require("@supabase/supabase-js");
 
-// Netlify Functions (Node 18+) normally has global fetch.
-// This fallback prevents silent failures if your bundler/runtime differs.
-let fetchFn = global.fetch;
-if (!fetchFn) {
-  try {
-    // Optional dependency: only needed if fetch isn't available
-    // npm i node-fetch@3  (or rely on Node18 global fetch)
-    // Note: node-fetch@3 is ESM; require may fail depending on your setup.
-    // If require fails, we’ll warn and skip calling createInvoiceAndEmail.
-    // eslint-disable-next-line import/no-extraneous-dependencies
-    fetchFn = require("node-fetch");
-  } catch (e) {
-    console.warn(
-      "[webhook] fetch is not available and node-fetch is not installed. createInvoiceAndEmail trigger will be skipped."
-    );
-    fetchFn = null;
-  }
-}
+// ✅ Direct-call custom invoice generator (NO fetch, no base URL issues)
+const {
+  createInvoiceAndEmailByStripeInvoiceId,
+} = require("./_lib/createInvoiceCore");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -37,10 +22,6 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
-function normStatus(s) {
-  return String(s || "").toLowerCase();
-}
-
 async function resolveContext({ meta, customerId }) {
   const business_id =
     meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
@@ -50,7 +31,13 @@ async function resolveContext({ meta, customerId }) {
   const lock_id = meta?.lock_id || null;
 
   if (business_id && area_id && slot != null) {
-    return { business_id, area_id, slot, category_id: category_id || null, lock_id };
+    return {
+      business_id,
+      area_id,
+      slot,
+      category_id: category_id || null,
+      lock_id,
+    };
   }
 
   // fallback by customerId -> cleaners.stripe_customer_id
@@ -62,11 +49,23 @@ async function resolveContext({ meta, customerId }) {
       .maybeSingle();
 
     if (data?.id) {
-      return { business_id: data.id, area_id: null, slot: null, category_id: null, lock_id };
+      return {
+        business_id: data.id,
+        area_id: null,
+        slot: null,
+        category_id: null,
+        lock_id,
+      };
     }
   }
 
-  return { business_id: null, area_id: null, slot: null, category_id: null, lock_id };
+  return {
+    business_id: null,
+    area_id: null,
+    slot: null,
+    category_id: null,
+    lock_id,
+  };
 }
 
 async function cancelStripeSubscriptionSafe(subId, reason) {
@@ -95,10 +94,11 @@ async function upsertSubscription(sub, meta = {}) {
   const customerId =
     typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
-    meta,
-    customerId,
-  });
+  const { business_id, area_id, slot, category_id, lock_id } =
+    await resolveContext({
+      meta,
+      customerId,
+    });
 
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
@@ -117,7 +117,7 @@ async function upsertSubscription(sub, meta = {}) {
 
     status: sub.status,
 
-    // ✅ this powers the 72h renewal reminder
+    // ✅ used by 72h renewal reminder
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
@@ -188,7 +188,9 @@ async function upsertInvoice(inv) {
     amount_due_pennies: inv.amount_due ?? null,
     currency: (inv.currency || "gbp")?.toLowerCase(),
     status: inv.status,
-    period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
+    period_start: inv.period_start
+      ? new Date(inv.period_start * 1000).toISOString()
+      : null,
     period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
   };
 
@@ -202,58 +204,20 @@ async function upsertInvoice(inv) {
   }
 }
 
-// ✅ Trigger your custom invoice generator (branding + km2 + rate breakdown)
-// IMPORTANT: we do NOT block the webhook response on this.
-async function triggerCustomInvoicePdf(stripeInvoiceId) {
-  if (!stripeInvoiceId) return;
-
-  if (!fetchFn) {
-    console.warn("[webhook] fetch not available; skipping createInvoiceAndEmail trigger.");
-    return;
-  }
-
-  const base = process.env.PUBLIC_SITE_URL || process.env.URL || "";
-  if (!base) {
-    console.warn("[webhook] No PUBLIC_SITE_URL/URL set, cannot trigger custom invoice function.");
-    return;
-  }
-
-  const url = `${base.replace(/\/$/, "")}/.netlify/functions/createInvoiceAndEmail`;
-
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 8000); // ✅ 8s cap
-
-  try {
-    console.log("[webhook] triggering createInvoiceAndEmail:", stripeInvoiceId);
-
-    const resp = await fetchFn(url, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ stripe_invoice_id: stripeInvoiceId }),
-      signal: controller.signal,
-    });
-
-    const txt = await resp.text().catch(() => "");
-    console.log("[webhook] createInvoiceAndEmail response:", resp.status, txt);
-
-    if (!resp.ok) {
-      console.error("[webhook] createInvoiceAndEmail failed", resp.status, txt);
-    }
-  } catch (e) {
-    console.error("[webhook] error calling createInvoiceAndEmail:", e?.name || e, e?.message || "");
-  } finally {
-    clearTimeout(t);
-  }
-}
-
 exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
-    return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
+    return json(200, {
+      ok: true,
+      note: "Stripe webhook is deployed. Use POST from Stripe.",
+    });
   }
-  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
+  if (event.httpMethod !== "POST")
+    return json(405, { ok: false, error: "Method not allowed" });
 
-  const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
-  if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
+  const sig =
+    event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
+  if (!sig)
+    return json(400, { ok: false, error: "Missing stripe-signature header" });
 
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
     return json(500, { ok: false, error: "Missing STRIPE_WEBHOOK_SECRET env var" });
@@ -265,7 +229,11 @@ exports.handler = async (event) => {
       ? Buffer.from(event.body, "base64")
       : Buffer.from(event.body || "", "utf8");
 
-    stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
+    stripeEvent = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
     return json(400, { ok: false, error: "Bad signature" });
@@ -312,16 +280,17 @@ exports.handler = async (event) => {
       case "invoice.voided": {
         const inv = stripeEvent.data.object;
 
+        // Always upsert the “sponsored_invoices” mirror
         await upsertInvoice(inv);
 
         // ✅ ONLY create our custom invoice/PDF on finalized (one-time)
-        // ✅ DO NOT block the webhook response (Stripe retries on slow handlers)
         if (stripeEvent.type === "invoice.finalized") {
-  const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-  console.log("[webhook] createInvoiceAndEmail result:", result);
-}
+          console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
 
+          const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
 
+          console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
+        }
 
         break;
       }
