@@ -2,19 +2,11 @@
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
-// ✅ Direct-call custom invoice generator (no fetch, no base URL issues)
-const {
-  createInvoiceAndEmailByStripeInvoiceId,
-} = require("./_lib/createInvoiceCore");
+const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -23,52 +15,39 @@ const json = (statusCode, body) => ({
 });
 
 async function resolveContext({ meta, customerId }) {
-  const business_id =
-    meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
+  const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
   const slot = meta?.slot != null ? Number(meta.slot) : null;
   const category_id = meta?.category_id || meta?.categoryId || null;
   const lock_id = meta?.lock_id || null;
 
-  // If metadata is present, use it
   if (business_id && area_id && slot != null) {
-    return {
-      business_id,
-      area_id,
-      slot,
-      category_id: category_id || null,
-      lock_id,
-    };
+    return { business_id, area_id, slot, category_id: category_id || null, lock_id };
   }
 
-  // fallback by customerId -> cleaners.stripe_customer_id
+  // fallback by Stripe customer -> cleaners.stripe_customer_id
   if (customerId) {
-    const { data: c1, error } = await supabase
+    const { data } = await supabase
       .from("cleaners")
       .select("id")
       .eq("stripe_customer_id", customerId)
       .maybeSingle();
 
-    if (error) console.warn("[webhook] resolveContext cleaners lookup error", error);
-
-    if (c1?.id) {
-      return {
-        business_id: c1.id,
-        area_id: null,
-        slot: null,
-        category_id: null,
-        lock_id,
-      };
+    if (data?.id) {
+      return { business_id: data.id, area_id: null, slot: null, category_id: null, lock_id };
     }
   }
 
-  return {
-    business_id: null,
-    area_id: null,
-    slot: null,
-    category_id: null,
-    lock_id,
-  };
+  return { business_id: null, area_id: null, slot: null, category_id: null, lock_id };
+}
+
+async function releaseLockSafe(lockId) {
+  if (!lockId) return;
+  try {
+    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+  } catch (e) {
+    console.error("[webhook] failed to release lock:", lockId, e?.message || e);
+  }
 }
 
 async function cancelStripeSubscriptionSafe(subId, reason) {
@@ -77,32 +56,15 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
     console.warn("[webhook] canceling subscription:", subId, reason || "");
     await stripe.subscriptions.cancel(subId);
   } catch (e) {
-    console.error("[webhook] failed to cancel subscription:", subId, e);
-  }
-}
-
-async function releaseLockSafe(lockId) {
-  if (!lockId) return;
-  try {
-    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
-  } catch (e) {
-    console.error("[webhook] failed to release lock:", lockId, e);
+    console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
   }
 }
 
 async function upsertSubscription(sub, meta = {}) {
-  const customerId =
-    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({ meta, customerId });
 
-  const { business_id, area_id, slot, category_id, lock_id } =
-    await resolveContext({
-      meta,
-      customerId,
-    });
-
-  // ✅ CRITICAL GUARD:
-  // Stripe often sends subscription.updated with NO metadata.
-  // Your DB trigger rejects NULL area geometry — so do NOT upsert without area_id/slot.
+  // ✅ CRITICAL GUARD: don’t upsert with null area/slot (your DB trigger rejects this)
   if (!area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing area_id/slot)", {
       sub_id: sub.id,
@@ -133,10 +95,7 @@ async function upsertSubscription(sub, meta = {}) {
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
 
     status: sub.status,
-
-    current_period_end: sub.current_period_end
-      ? new Date(sub.current_period_end * 1000).toISOString()
-      : null,
+    current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
   };
 
   const { error } = await supabase
@@ -149,17 +108,15 @@ async function upsertSubscription(sub, meta = {}) {
 
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
 
-    // overlap/unique violation => cancel subscription to avoid charging
     if (
       code === "23505" ||
       msg.includes("overlaps an existing sponsored area") ||
-      msg.includes("overlaps an existing sponsored") ||
       msg.includes("duplicate") ||
       msg.includes("unique")
     ) {
       await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
       await releaseLockSafe(lock_id);
-      return; // swallow so Stripe doesn't retry forever
+      return;
     }
 
     throw new Error("DB upsert(sponsored_subscriptions) failed");
@@ -169,8 +126,7 @@ async function upsertSubscription(sub, meta = {}) {
 }
 
 async function upsertInvoice(inv) {
-  const subscriptionId =
-    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+  const subscriptionId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
@@ -183,7 +139,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If invoice arrives before subscription row exists, try hydrating it
+  // If invoice arrives before subscription row exists, hydrate it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -203,9 +159,7 @@ async function upsertInvoice(inv) {
     amount_due_pennies: inv.amount_due ?? null,
     currency: (inv.currency || "gbp")?.toLowerCase(),
     status: inv.status,
-    period_start: inv.period_start
-      ? new Date(inv.period_start * 1000).toISOString()
-      : null,
+    period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
     period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
   };
 
@@ -225,8 +179,7 @@ exports.handler = async (event) => {
   }
   if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
-  const sig =
-    event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
+  const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
   if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
 
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
@@ -238,12 +191,7 @@ exports.handler = async (event) => {
     const rawBody = event.isBase64Encoded
       ? Buffer.from(event.body, "base64")
       : Buffer.from(event.body || "", "utf8");
-
-    stripeEvent = stripe.webhooks.constructEvent(
-      rawBody,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
+    stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
     return json(400, { ok: false, error: "Bad signature" });
@@ -275,11 +223,7 @@ exports.handler = async (event) => {
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
           .eq("stripe_subscription_id", sub.id);
-
-        if (error) {
-          console.error("[webhook] cancel sub error:", error);
-          throw new Error("DB cancel(sub) failed");
-        }
+        if (error) throw new Error("DB cancel(sub) failed");
         break;
       }
 
@@ -291,7 +235,7 @@ exports.handler = async (event) => {
 
         await upsertInvoice(inv);
 
-        // ✅ ONLY create our custom invoice/PDF on finalized
+        // ✅ only generate/send our branded invoice on finalized
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
           try {
