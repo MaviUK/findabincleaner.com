@@ -2,6 +2,8 @@ const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
+const inv = await stripe.invoices.retrieve(stripe_invoice_id);
+
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
