@@ -64,14 +64,13 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
-  // ✅ Preview (per industry) — only depends on stable inputs
+  // ✅ Preview (per industry)
   useEffect(() => {
     let cancelled = false;
 
     const run = async () => {
       if (!open) return;
 
-      // Hard guard: if categoryId missing, show error immediately
       if (!categoryId) {
         setPv((s) => ({
           ...s,
@@ -94,7 +93,6 @@ export default function AreaSponsorModal({
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          // ✅ FIX: use the actual slot variable, not hardcoded 1
           body: JSON.stringify({ businessId, areaId, slot, categoryId }),
         });
 
@@ -105,10 +103,8 @@ export default function AreaSponsorModal({
         }
 
         const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
-        const availableKm2 =
-          typeof j.available_km2 === "number" ? j.available_km2 : 0;
+        const availableKm2 = typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-        // ✅ Respect server sold_out as well (source of truth)
         const soldOut =
           Boolean(j.sold_out) || availableKm2 <= EPS || j.reason === "no_remaining";
 
@@ -120,8 +116,7 @@ export default function AreaSponsorModal({
             totalKm2,
             availableKm2,
             priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
-            ratePerKm2:
-              typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+            ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
             geojson: j.geojson ?? null,
             reason: j.reason,
           });
@@ -149,8 +144,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-    // ✅ IMPORTANT: remove onPreviewGeoJSON from deps to avoid re-fetch loops
-  }, [open, businessId, areaId, slot, categoryId]);
+  }, [open, businessId, areaId, slot, categoryId]); // (intentionally not depending on onPreviewGeoJSON)
 
   const handleClose = () => {
     onClearPreview?.();
@@ -160,22 +154,17 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // ✅ Has purchasable area?
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
-
-  // ✅ Don’t block on pv.loading – just require area & not mid checkout
   const canBuy = open && hasArea && !checkingOut && !!categoryId && !pv.soldOut;
 
   const startCheckout = async () => {
     if (!canBuy) return;
 
-    // Guard again for clarity
     if (!categoryId) {
       setCheckoutErr("Missing categoryId");
       return;
     }
 
-    // ✅ extra guard: if sold out or no area, bail early
     if (!hasArea || pv.soldOut) {
       setCheckoutErr("No purchasable area left for this industry in this polygon.");
       setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
@@ -186,6 +175,9 @@ export default function AreaSponsorModal({
     setCheckoutErr(null);
 
     try {
+      // ✅ IMPORTANT: log exactly what we are about to send
+      console.log("[sponsored-checkout] sending", { businessId, areaId, slot, categoryId });
+
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -222,7 +214,6 @@ export default function AreaSponsorModal({
 
   if (!open) return null;
 
-  // ✅ Coverage = % of polygon YOU will be sponsoring (available / total)
   let coverageLabel = "—";
   if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
     const pct = (pv.availableKm2 / pv.totalKm2) * 100;
@@ -241,8 +232,12 @@ export default function AreaSponsorModal({
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results. Preview
-            highlights the purchasable sub-region.
+            Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub-region.
+          </div>
+
+          {/* tiny debug line (remove later) */}
+          <div className="text-[11px] text-gray-500">
+            Debug: areaId={areaId} • categoryId={categoryId || "null"}
           </div>
 
           {!categoryId && (
@@ -272,11 +267,7 @@ export default function AreaSponsorModal({
           <div className="grid grid-cols-2 gap-3">
             <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
             <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
-            <Stat
-              label="Price per km² / month"
-              hint="From server"
-              value={GBP(pv.ratePerKm2 ?? null)}
-            />
+            <Stat label="Price per km² / month" hint="From server" value={GBP(pv.ratePerKm2 ?? null)} />
             <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
             <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
             <Stat label="Coverage" value={coverageLabel} />
@@ -287,9 +278,7 @@ export default function AreaSponsorModal({
               Cancel
             </button>
             <button
-              className={`btn ${
-                canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"
-              }`}
+              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
               onClick={startCheckout}
               disabled={!canBuy}
               title={!canBuy ? "No purchasable area available" : "Buy now"}
@@ -303,15 +292,7 @@ export default function AreaSponsorModal({
   );
 }
 
-function Stat({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="border rounded-lg p-3">
       <div className="text-xs text-gray-500">{label}</div>
