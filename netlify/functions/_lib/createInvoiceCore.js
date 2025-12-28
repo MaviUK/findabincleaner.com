@@ -271,7 +271,7 @@ async function renderPdf({
   y -= 16;
 
   // ---- Line Item ----
-  const desc = `Sponsored Area — ${areaName || "Unknown"}`;
+  const desc = `${areaName || "Unknown"}`;
   const areaTxt = areaKm2 != null ? `${Number(areaKm2).toFixed(3)} km²` : "";
   const rateTxt = ratePerKm2Cents != null ? moneyGBP(ratePerKm2Cents) : "";
   const unitPriceCents =
