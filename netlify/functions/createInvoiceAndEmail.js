@@ -1,24 +1,9 @@
+// netlify/functions/createInvoiceAndEmail.js
+
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
-const inv = await stripe.invoices.retrieve(stripe_invoice_id);
-
-// ✅ DEDUPE: if we already created our invoice for this Stripe invoice, do nothing
-const { data: existingInvoice } = await supabase
-  .from("invoices")
-  .select("id, emailed_at")
-  .eq("stripe_invoice_id", inv.id)
-  .maybeSingle();
-
-if (existingInvoice?.id) {
-  return {
-    statusCode: 200,
-    body: existingInvoice.emailed_at ? "Already created & emailed" : "Already created",
-  };
-}
-
-
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -29,7 +14,7 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-// Your “supplier” (marketplace) details (set these env vars in Netlify)
+// Supplier (marketplace) details (set these env vars in Netlify)
 function supplierDetails() {
   return {
     name: process.env.INVOICE_SUPPLIER_NAME || "Find A Bin Cleaner Ltd",
@@ -112,6 +97,25 @@ exports.handler = async (event) => {
 
     // 1) Load Stripe invoice
     const inv = await stripe.invoices.retrieve(stripe_invoice_id);
+
+    // ✅ DEDUPE: if we already created our invoice for this Stripe invoice, do nothing
+    const { data: existingInvoice, error: existErr } = await supabase
+      .from("invoices")
+      .select("id, emailed_at")
+      .eq("stripe_invoice_id", inv.id)
+      .maybeSingle();
+
+    if (existErr) throw existErr;
+
+    if (existingInvoice?.id) {
+      return {
+        statusCode: 200,
+        body: existingInvoice.emailed_at
+          ? "Already created & emailed"
+          : "Already created (not emailed yet)",
+      };
+    }
+
     const subscriptionId =
       typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
@@ -131,26 +135,28 @@ exports.handler = async (event) => {
     if (!subRow?.business_id) return { statusCode: 404, body: "No business_id for subscription" };
 
     // 3) Load customer details
-    const { data: cleaner } = await supabase
+    const { data: cleaner, error: cleanerErr } = await supabase
       .from("cleaners")
       .select("business_name, email, address")
       .eq("id", subRow.business_id)
       .maybeSingle();
 
+    if (cleanerErr) throw cleanerErr;
     if (!cleaner?.email) return { statusCode: 200, body: "Cleaner has no email saved." };
 
     // 4) Load area name + km2 (adjust field names if yours differ)
-    const { data: area } = await supabase
+    const { data: area, error: areaErr } = await supabase
       .from("service_areas")
       .select("name, area_km2")
       .eq("id", subRow.area_id)
       .maybeSingle();
 
+    if (areaErr) throw areaErr;
+
     const areaName = area?.name || "Sponsored Area";
     const areaKm2 = Number(area?.area_km2 || 0);
 
-    // 5) Determine rate per km² (example: from env by tier/slot)
-    // If you already have a pricing table, swap this logic to query it.
+    // 5) Determine rate per km² (simple: from env)
     const ratePerKm2Cents = Math.round(
       Number(process.env.RATE_PER_KM2_PER_MONTH || "0") * 100
     );
@@ -158,7 +164,7 @@ exports.handler = async (event) => {
     const subtotalCents = Math.round(areaKm2 * ratePerKm2Cents);
     const totalCents = subtotalCents;
 
-    // 6) Create invoice number (simple: INV-YYYY-xxxxx)
+    // 6) Create invoice number (simple: INV-YYYY-xxxxxx)
     const yyyy = new Date().getFullYear();
     const invoiceNumber = `INV-${yyyy}-${String(Date.now()).slice(-6)}`;
 
@@ -254,9 +260,11 @@ exports.handler = async (event) => {
 
     if (upErr) throw upErr;
 
-    const { data: signed } = await supabase.storage
+    const { data: signed, error: signedErr } = await supabase.storage
       .from("invoices")
       .createSignedUrl(storagePath, 60 * 60 * 24 * 30); // 30 days
+
+    if (signedErr) throw signedErr;
 
     // 11) Email PDF
     await resend.emails.send({
