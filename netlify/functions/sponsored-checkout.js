@@ -2,7 +2,11 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
 });
@@ -21,6 +25,7 @@ const BLOCKING = new Set([
   "incomplete",
   "paused",
 ]);
+
 const EPS = 1e-6;
 
 export default async (req) => {
@@ -35,17 +40,21 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const businessId = (body.businessId || body.cleanerId || "").trim();
-  const areaId = (body.areaId || body.area_id || "").trim();
-  const slot = Number(body.slot || 1);
+  // ✅ Accept both old + new naming
+  const cleanerId = String(
+    body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
+  ).trim();
+
+  const areaId = String(body.areaId || body.area_id || "").trim();
+  const slot = Number(body.slot ?? 1);
 
   // optional but recommended if you have categories
-  const categoryId = (body.categoryId || body.category_id || "").trim() || null;
+  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
 
   // optional lock id if you are using sponsored_locks
-  const lockId = (body.lockId || body.lock_id || "").trim() || null;
+  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
+  if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
@@ -62,9 +71,10 @@ export default async (req) => {
     const blocking = (takenRows || []).filter((r) =>
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
+
     const ownedByOther =
       (blocking?.length || 0) > 0 &&
-      String(blocking[0].business_id) !== String(businessId);
+      String(blocking[0].business_id) !== String(cleanerId);
 
     if (ownedByOther) {
       return json(
@@ -113,40 +123,46 @@ export default async (req) => {
           0
       ) || 0;
 
-    const amount_cents = Math.max(
-      1,
-      Math.round(available_km2 * rate_per_km2 * 100)
-    );
+    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
 
-// 4) Get or create Stripe customer (CLEANERS schema)
-const { data: cleaner, error: cleanerErr } = await sb
-  .from("cleaners")
-  .select("id, stripe_customer_id, business_name, contact_email")
-  .eq("id", business_id) // business_id in your metadata is actually cleaner_id
-  .maybeSingle();
+    // 4) Get or create Stripe customer (CLEANERS schema)
+    const { data: cleaner, error: cleanerErr } = await sb
+      .from("cleaners")
+      .select("id, stripe_customer_id, business_name, contact_email")
+      .eq("id", cleanerId)
+      .maybeSingle();
 
-if (cleanerErr) throw cleanerErr;
-if (!cleaner) return json(404, { ok: false, error: "Cleaner not found" });
+    if (cleanerErr) throw cleanerErr;
+    if (!cleaner) return json({ ok: false, error: "Cleaner not found" }, 404);
 
-let stripeCustomerId = cleaner.stripe_customer_id || null;
+    let stripeCustomerId = cleaner.stripe_customer_id || null;
 
-if (!stripeCustomerId) {
-  const created = await stripe.customers.create({
-    name: cleaner.business_name || "Cleaner",
-    email: cleaner.contact_email || undefined,
-    metadata: { cleaner_id: cleaner.id },
-  });
+    if (!stripeCustomerId) {
+      const created = await stripe.customers.create({
+        name: cleaner.business_name || "Cleaner",
+        email: cleaner.contact_email || undefined,
+        metadata: { cleaner_id: cleaner.id },
+      });
 
-  stripeCustomerId = created.id;
+      stripeCustomerId = created.id;
 
-  const { error: upErr } = await sb
-    .from("cleaners")
-    .update({ stripe_customer_id: stripeCustomerId })
-    .eq("id", cleaner.id);
+      const { error: upErr } = await sb
+        .from("cleaners")
+        .update({ stripe_customer_id: stripeCustomerId })
+        .eq("id", cleaner.id);
 
-  if (upErr) throw upErr;
-}
+      if (upErr) throw upErr;
+    }
 
+    // ✅ MUST be defined (you were using `meta` but never created it)
+    const meta = {
+      cleaner_id: cleaner.id,
+      business_id: cleaner.id, // back-compat for older webhook logic
+      area_id: areaId,
+      slot: String(slot),
+      category_id: categoryId || "",
+      lock_id: lockId || "",
+    };
 
     // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
@@ -156,7 +172,7 @@ if (!stripeCustomerId) {
       // ✅ Session metadata (used by checkout.session.completed)
       metadata: meta,
 
-      // ✅ IMPORTANT: Subscription metadata (used by customer.subscription.* events)
+      // ✅ Subscription metadata (used by customer.subscription.* events)
       subscription_data: {
         metadata: meta,
       },
@@ -175,12 +191,14 @@ if (!stripeCustomerId) {
           quantity: 1,
         },
       ],
+
       success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
       cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
     });
 
     return json({ ok: true, url: session.url }, 200);
   } catch (e) {
+    console.error("[sponsored-checkout] error:", e);
     return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
