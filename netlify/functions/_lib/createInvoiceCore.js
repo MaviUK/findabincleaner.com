@@ -1,5 +1,5 @@
 // netlify/functions/_lib/createInvoiceCore.js
-console.log("LOADED createInvoiceCore v2025-12-29-META-FALLBACK");
+console.log("LOADED createInvoiceCore v2025-12-29-INVOICE-UPsert-INDUSTRY-PDF");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -47,10 +47,17 @@ function splitAddressLines(addr) {
     .filter(Boolean);
 }
 
+// pdf-lib standard fonts are WinAnsi — replace characters that can crash (like →)
 function safeText(s) {
   return String(s ?? "")
     .replace(/\u2192/g, "->")
     .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, "");
+}
+
+function clampStr(s, max = 120) {
+  const x = safeText(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
 }
 
 async function fetchLogoBytes(url) {
@@ -68,6 +75,7 @@ async function fetchLogoBytes(url) {
 async function getIndustryName(categoryId) {
   if (!categoryId) return "Industry";
 
+  // categories
   try {
     const { data: cat } = await supabase
       .from("categories")
@@ -77,6 +85,7 @@ async function getIndustryName(categoryId) {
     if (cat?.name) return cat.name;
   } catch (_) {}
 
+  // service_categories
   try {
     const { data: cat2 } = await supabase
       .from("service_categories")
@@ -87,6 +96,80 @@ async function getIndustryName(categoryId) {
   } catch (_) {}
 
   return "Industry";
+}
+
+function wrapByWidth(text, font, fontSize, maxWidth) {
+  const s = safeText(text);
+  if (!s) return [""];
+  const words = s.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+
+  const widthOf = (t) => font.widthOfTextAtSize(t, fontSize);
+
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (widthOf(next) <= maxWidth) {
+      line = next;
+    } else {
+      if (line) lines.push(line);
+      if (widthOf(w) > maxWidth) {
+        let chunk = "";
+        for (const ch of w) {
+          const nxt = chunk + ch;
+          if (widthOf(nxt) <= maxWidth) chunk = nxt;
+          else {
+            if (chunk) lines.push(chunk);
+            chunk = ch;
+          }
+        }
+        line = chunk;
+      } else {
+        line = w;
+      }
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [s];
+}
+
+/**
+ * Store PDF into Supabase Storage and return { ok, bucket, path }
+ * Bucket must exist.
+ */
+async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvoiceId, pdfBuffer }) {
+  const bucket = process.env.INVOICE_PDF_BUCKET || "invoices";
+  const prefix = process.env.INVOICE_PDF_PREFIX || "invoices"; // keep aligned with your current paths
+  const fileName = `${invoiceNumber}.pdf`;
+
+  const path = `${prefix}/${businessId}/${fileName}`;
+
+  try {
+    const { error: upErr } = await supabase.storage
+      .from(bucket)
+      .upload(path, pdfBuffer, { contentType: "application/pdf", upsert: true });
+
+    if (upErr) {
+      console.warn("[invoiceCore] storage upload failed:", upErr);
+      return { ok: false, bucket, path, error: upErr };
+    }
+
+    return { ok: true, bucket, path };
+  } catch (e) {
+    console.warn("[invoiceCore] storage upload exception:", e);
+    return { ok: false, bucket, path, error: e };
+  }
+}
+
+async function signInvoicePdfUrl({ bucket, path }) {
+  try {
+    const expiresIn = Number(process.env.INVOICE_SIGNED_URL_SECONDS || 60 * 60 * 24 * 30); // 30 days
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
+    if (error) return { ok: false, error };
+    return { ok: true, signedUrl: data?.signedUrl || null };
+  } catch (e) {
+    return { ok: false, error: e };
+  }
 }
 
 /* ---------------- PDF ---------------- */
@@ -207,7 +290,12 @@ async function renderPdf({
   page.drawText("Billed to", { x: margin, y: curY, size: 12, font: bold });
   curY -= 18;
 
-  page.drawText(safeText(customer.name || "Customer"), { x: margin, y: curY, size: 11, font: bold });
+  page.drawText(safeText(customer.name || "Customer"), {
+    x: margin,
+    y: curY,
+    size: 11,
+    font: bold,
+  });
   curY -= 14;
 
   if (customer.email) {
@@ -237,17 +325,25 @@ async function renderPdf({
   });
   curY -= 18;
 
-  const desc = safeText(`${industryName || "Industry"} - ${areaName || "Area"}`);
+  // ✅ Wrap description so it never looks "missing"
+  const descFontSize = 10.5;
+  const descMaxW = col.area - col.desc - 12;
+  const descFull = `${industryName || "Industry"} - ${areaName || "Area"}`;
+  const descLines = wrapByWidth(descFull, font, descFontSize, descMaxW).slice(0, 2);
+
   const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
   const rateTxt = moneyGBP(ratePerKm2Cents);
   const amtTxt = moneyGBP(lineAmountCents);
 
-  page.drawText(desc, { x: col.desc, y: curY, size: 10.5, font });
+  descLines.forEach((ln, i) => {
+    page.drawText(safeText(ln), { x: col.desc, y: curY - i * 12, size: descFontSize, font });
+  });
+
   page.drawText(areaTxt, { x: col.area, y: curY, size: 10.5, font });
   page.drawText(rateTxt, { x: col.rate, y: curY, size: 10.5, font });
   page.drawText(amtTxt, { x: col.amt, y: curY, size: 10.5, font });
 
-  curY -= 32;
+  curY -= descLines.length > 1 ? 44 : 32;
 
   const totals = [
     ["Subtotal", lineAmountCents],
@@ -294,27 +390,11 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   if (!subscriptionId) return "no-subscription";
 
-  // Try DB first
-  let { data: subRow } = await supabase
+  const { data: subRow } = await supabase
     .from("sponsored_subscriptions")
-    .select("business_id, area_id, category_id, slot")
+    .select("business_id, area_id, category_id, slot, stripe_subscription_id")
     .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
-
-  // Metadata fallback (prevents no-business-id)
-  const meta = inv.metadata || {};
-  const metaBusinessId = meta.business_id || meta.cleaner_id || meta.businessId || null;
-  const metaAreaId = meta.area_id || meta.areaId || null;
-  const metaCategoryId = meta.category_id || meta.categoryId || null;
-
-  if (!subRow?.business_id && metaBusinessId) {
-    subRow = {
-      business_id: metaBusinessId,
-      area_id: metaAreaId,
-      category_id: metaCategoryId,
-      slot: meta.slot != null ? Number(meta.slot) : null,
-    };
-  }
 
   if (!subRow?.business_id) return "no-business-id";
 
@@ -338,17 +418,29 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     if (area?.name) areaName = area.name;
   }
 
-  // Industry/category fallback
-  const categoryId = subRow.category_id || metaCategoryId || null;
+  // ✅ Category/Industry fallback chain:
+  // 1) sponsored_subscriptions.category_id
+  // 2) Stripe invoice metadata
+  // 3) Stripe subscription metadata
+  const invMeta = inv.metadata || {};
+  const metaCategoryId =
+    invMeta.category_id ||
+    invMeta.categoryId ||
+    invMeta.service_category_id ||
+    invMeta.serviceCategoryId ||
+    null;
+
+  let subMetaCategoryId = null;
+  try {
+    const subLive = await stripe.subscriptions.retrieve(subscriptionId);
+    const sm = subLive?.metadata || {};
+    subMetaCategoryId = sm.category_id || sm.categoryId || sm.service_category_id || sm.serviceCategoryId || null;
+  } catch (_) {}
+
+  const categoryId = subRow.category_id || metaCategoryId || subMetaCategoryId || null;
   const industryName = await getIndustryName(categoryId);
 
-  console.log("[invoiceCore] industry debug", {
-    stripe_invoice_id,
-    categoryId,
-    industryName,
-    areaName,
-  });
-
+  // Stripe amounts (source of truth)
   const linesResp = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
   const firstLine = linesResp.data?.[0];
 
@@ -358,7 +450,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   const areaCoveredKm2 = ratePerKm2Cents > 0 ? lineAmountCents / ratePerKm2Cents : 0;
 
   const vatCents = Number(inv.tax ?? 0);
-  const totalCents = Number(inv.total ?? lineAmountCents + vatCents);
+  const totalCents = Number(inv.total ?? (lineAmountCents + vatCents));
 
   const invoiceNumber =
     existing?.invoice_number || `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
@@ -389,7 +481,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     totalCents,
   });
 
-  // Store invoice row (insert or update)
+  // ✅ Upsert invoice record (always stored)
   const invoiceRow = {
     cleaner_id: subRow.business_id,
     area_id: subRow.area_id,
@@ -418,11 +510,40 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     const { error } = await supabase.from("invoices").insert(invoiceRow);
     if (error) throw error;
   } else {
-    const { error } = await supabase.from("invoices").update(invoiceRow).eq("stripe_invoice_id", inv.id);
+    const { error } = await supabase
+      .from("invoices")
+      .update(invoiceRow)
+      .eq("stripe_invoice_id", inv.id);
     if (error) throw error;
   }
 
+  // ✅ Store PDF + signed URL (your invoices table already has pdf_storage_path + pdf_signed_url)
+  const storePdf = String(process.env.STORE_INVOICE_PDF || "true").toLowerCase() !== "false";
+  if (storePdf) {
+    const storageInfo = await uploadInvoicePdfToStorage({
+      invoiceNumber,
+      businessId: subRow.business_id,
+      stripeInvoiceId: inv.id,
+      pdfBuffer: pdf,
+    });
+
+    if (storageInfo?.ok) {
+      const signed = await signInvoicePdfUrl({ bucket: storageInfo.bucket, path: storageInfo.path });
+
+      await supabase
+        .from("invoices")
+        .update({
+          pdf_storage_path: storageInfo.path,
+          pdf_signed_url: signed?.ok ? signed.signedUrl : null,
+        })
+        .eq("stripe_invoice_id", inv.id);
+    }
+  }
+
+  // Send email
   console.log("[invoiceCore] sending email", { from: supplier.fromEmail, to: customerEmail });
+
+  const emailLine = `${industryName} - ${areaName}`;
 
   const sendResp = await resend.emails.send({
     from: supplier.fromEmail,
@@ -433,7 +554,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
       <div style="font-family:Arial,sans-serif;line-height:1.5">
         <p>Hi ${safeText(cleaner?.business_name || "there")},</p>
         <p>Please find your invoice <b>${safeText(invoiceNumber)}</b> attached.</p>
-        <p><b>${safeText(industryName)} - ${safeText(areaName)}</b></p>
+        <p><b>${safeText(clampStr(emailLine, 120))}</b></p>
         <p>Total: <b>${moneyGBP(totalCents)}</b></p>
         <p>Thanks,<br/>${safeText(supplier.name)}</p>
       </div>
