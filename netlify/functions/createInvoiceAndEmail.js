@@ -1,7 +1,4 @@
 // netlify/functions/_lib/createInvoiceCore.js
-
-console.log("LOADED createInvoiceCore v2025-12-29-INDUSTRY");
-
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
@@ -12,14 +9,21 @@ const fetchFn = global.fetch;
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ---------------- helpers ---------------- */
 
 function supplierDetails() {
+  // Make sure nibing.uy domain + sender are verified in Resend
   const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
+
+  // Best effort: derive supplier "email" shown on the invoice from the FROM address
+  // e.g. "Kleanly <kleanly@nibing.uy>" -> "kleanly@nibing.uy"
   const m = String(fromEmail).match(/<([^>]+)>/);
   const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "kleanly@nibing.uy";
 
@@ -29,7 +33,7 @@ function supplierDetails() {
     address: process.env.INVOICE_SUPPLIER_ADDRESS || "UK",
     email: displayEmail,
     vat: process.env.INVOICE_SUPPLIER_VAT || "",
-    logoUrl: process.env.INVOICE_LOGO_URL || "",
+    logoUrl: process.env.INVOICE_LOGO_URL || "", // https://.../logo.png (PNG recommended)
   };
 }
 
@@ -54,12 +58,6 @@ function safeText(s) {
   return String(s ?? "")
     .replace(/\u2192/g, "->") // →
     .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, ""); // keep basic ASCII + £
-}
-
-function clampStr(s, max = 120) {
-  const x = safeText(s);
-  if (x.length <= max) return x;
-  return x.slice(0, max - 1) + "…";
 }
 
 async function fetchLogoBytes(url) {
@@ -100,77 +98,6 @@ async function getIndustryName(categoryId) {
   return "Industry";
 }
 
-function wrapByWidth(text, font, fontSize, maxWidth) {
-  const s = safeText(text);
-  if (!s) return [""];
-  const words = s.split(/\s+/).filter(Boolean);
-  const lines = [];
-  let line = "";
-
-  const widthOf = (t) => font.widthOfTextAtSize(t, fontSize);
-
-  for (const w of words) {
-    const next = line ? `${line} ${w}` : w;
-    if (widthOf(next) <= maxWidth) {
-      line = next;
-    } else {
-      if (line) lines.push(line);
-      // hard-break long word
-      if (widthOf(w) > maxWidth) {
-        let chunk = "";
-        for (const ch of w) {
-          const nxt = chunk + ch;
-          if (widthOf(nxt) <= maxWidth) chunk = nxt;
-          else {
-            if (chunk) lines.push(chunk);
-            chunk = ch;
-          }
-        }
-        line = chunk;
-      } else {
-        line = w;
-      }
-    }
-  }
-  if (line) lines.push(line);
-  return lines.length ? lines : [s];
-}
-
-async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvoiceId, pdfBuffer }) {
-  const bucket = process.env.INVOICE_PDF_BUCKET || "invoices";
-
-  // ✅ IMPORTANT: match your existing column style (you already have pdf_storage_path like "invoices/<business>/<file>.pdf")
-  const path = `invoices/${businessId}/${invoiceNumber}.pdf`;
-
-  try {
-    const { error: upErr } = await supabase.storage.from(bucket).upload(path, pdfBuffer, {
-      contentType: "application/pdf",
-      upsert: true,
-    });
-
-    if (upErr) {
-      console.warn("[invoiceCore] storage upload failed:", upErr);
-      return { ok: false, bucket, path, error: upErr };
-    }
-
-    // Signed URL (long-ish; you can regenerate later too)
-    const expiresIn = Number(process.env.INVOICE_SIGNED_URL_SECONDS || 60 * 60 * 24 * 30); // 30 days
-    const { data: signed, error: signErr } = await supabase.storage
-      .from(bucket)
-      .createSignedUrl(path, expiresIn);
-
-    if (signErr) {
-      console.warn("[invoiceCore] signed url failed:", signErr);
-      return { ok: true, bucket, path, signedUrl: null };
-    }
-
-    return { ok: true, bucket, path, signedUrl: signed?.signedUrl || null };
-  } catch (e) {
-    console.warn("[invoiceCore] storage upload exception:", e);
-    return { ok: false, bucket, path, error: e };
-  }
-}
-
 /* ---------------- PDF ---------------- */
 
 async function renderPdf({
@@ -199,7 +126,7 @@ async function renderPdf({
   const pageH = 842;
   const top = pageH - margin;
 
-  // optional logo
+  // optional logo (centered above title)
   let logoImg = null;
   let logoDims = null;
 
@@ -207,7 +134,7 @@ async function renderPdf({
   if (logoBytes) {
     try {
       logoImg = await pdf.embedPng(logoBytes);
-      const targetH = 64;
+      const targetH = 64; // logo height
       const scale = targetH / logoImg.height;
       logoDims = { w: logoImg.width * scale, h: logoImg.height * scale };
     } catch {
@@ -216,6 +143,7 @@ async function renderPdf({
     }
   }
 
+  // --- Header: logo above title (centered) ---
   let y = top;
 
   if (logoImg && logoDims) {
@@ -229,7 +157,7 @@ async function renderPdf({
     y -= logoDims.h + 10;
   }
 
-  // Title
+  // Supplier title centered
   const title = safeText(supplier.name);
   const titleSize = 22;
   const titleW = bold.widthOfTextAtSize(title, titleSize);
@@ -241,9 +169,10 @@ async function renderPdf({
   });
   y -= titleSize + 14;
 
-  // Supplier block (left)
+  // Supplier address block (left)
   const leftX = margin;
-  splitAddressLines(supplier.address).forEach((ln) => {
+  const addrLines = splitAddressLines(supplier.address);
+  addrLines.forEach((ln) => {
     page.drawText(safeText(ln), { x: leftX, y, size: 10.5, font });
     y -= 14;
   });
@@ -256,8 +185,9 @@ async function renderPdf({
     y -= 14;
   }
 
-  // Meta (right)
+  // Invoice meta (right side)
   const rightX = pageW - margin;
+
   const metaRows = [
     ["Invoice #", invoiceNumber],
     ["Invoice date", invoiceDate],
@@ -265,7 +195,10 @@ async function renderPdf({
     ["Industry", industryName],
   ];
 
-  let metaY = pageH - margin - 40;
+  let metaY = top - (logoImg && logoDims ? logoDims.h + 10 : 0) - 8;
+  // If the logo exists, meta needs to start below the title region, not at very top.
+  // We'll pin metaY to a safe position near top-right:
+  metaY = pageH - margin - 40;
 
   metaRows.forEach(([k, v]) => {
     const key = safeText(k);
@@ -280,7 +213,7 @@ async function renderPdf({
     metaY -= 18;
   });
 
-  // Divider
+  // Divider line
   const dividerY = Math.min(y, metaY) - 12;
   page.drawLine({
     start: { x: margin, y: dividerY },
@@ -288,12 +221,17 @@ async function renderPdf({
     thickness: 1,
   });
 
-  // Bill-to
+  // Bill-to section
   let curY = dividerY - 22;
   page.drawText("Billed to", { x: margin, y: curY, size: 12, font: bold });
   curY -= 18;
 
-  page.drawText(safeText(customer.name || "Customer"), { x: margin, y: curY, size: 11, font: bold });
+  page.drawText(safeText(customer.name || "Customer"), {
+    x: margin,
+    y: curY,
+    size: 11,
+    font: bold,
+  });
   curY -= 14;
 
   if (customer.email) {
@@ -308,7 +246,13 @@ async function renderPdf({
 
   // Table header
   curY -= 18;
-  const col = { desc: margin, area: 315, rate: 420, amt: 510 };
+
+  const col = {
+    desc: margin,
+    area: 315,
+    rate: 420,
+    amt: 510,
+  };
 
   page.drawText("Description", { x: col.desc, y: curY, size: 10.5, font: bold });
   page.drawText("Area covered", { x: col.area, y: curY, size: 10.5, font: bold });
@@ -323,27 +267,20 @@ async function renderPdf({
   });
   curY -= 18;
 
-  // Line item (wrap description so it can never “vanish”)
-  const descFontSize = 10.5;
-  const descMaxW = col.area - col.desc - 12;
-  const descFull = `${industryName || "Industry"} - ${areaName || "Area"}`;
-  const descLines = wrapByWidth(descFull, font, descFontSize, descMaxW).slice(0, 2);
-
+  // Line item
+  const desc = safeText(`${industryName || "Industry"} - ${areaName || "Area"}`);
   const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
   const rateTxt = moneyGBP(ratePerKm2Cents);
   const amtTxt = moneyGBP(lineAmountCents);
 
-  descLines.forEach((ln, i) => {
-    page.drawText(safeText(ln), { x: col.desc, y: curY - i * 12, size: descFontSize, font });
-  });
-
+  page.drawText(desc, { x: col.desc, y: curY, size: 10.5, font });
   page.drawText(areaTxt, { x: col.area, y: curY, size: 10.5, font });
   page.drawText(rateTxt, { x: col.rate, y: curY, size: 10.5, font });
   page.drawText(amtTxt, { x: col.amt, y: curY, size: 10.5, font });
 
-  curY -= descLines.length > 1 ? 44 : 32;
+  // Totals block
+  curY -= 32;
 
-  // Totals
   const totals = [
     ["Subtotal", lineAmountCents],
     ...(vatCents > 0 ? [["VAT", vatCents]] : []),
@@ -365,14 +302,6 @@ async function renderPdf({
 
   // Footer
   page.drawText("Thank you for your business.", { x: margin, y: 60, size: 10, font });
-
-  // ✅ PDF fingerprint (TEMP - remove later)
-  page.drawText("TEMPLATE: createInvoiceCore v2025-12-29-INDUSTRY", {
-    x: margin,
-    y: 45,
-    size: 8,
-    font,
-  });
 
   return Buffer.from(await pdf.save());
 }
@@ -403,31 +332,15 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   if (!subscriptionId) return "no-subscription";
 
   // Find sponsored subscription row
-  let { data: subRow } = await supabase
-  .from("sponsored_subscriptions")
-  .select("business_id, area_id, category_id, slot")
-  .eq("stripe_subscription_id", subscriptionId)
-  .maybeSingle();
+  const { data: subRow } = await supabase
+    .from("sponsored_subscriptions")
+    .select("business_id, area_id, category_id, slot")
+    .eq("stripe_subscription_id", subscriptionId)
+    .maybeSingle();
 
-const meta = inv.metadata || {};
-const metaBusinessId = meta.business_id || meta.cleaner_id || meta.businessId || null;
-const metaAreaId = meta.area_id || meta.areaId || null;
-const metaCategoryId = meta.category_id || meta.categoryId || null;
+  if (!subRow?.business_id) return "no-business-id";
 
-// If the DB row doesn't exist (or missing business_id), fallback to Stripe invoice metadata
-if (!subRow?.business_id && metaBusinessId) {
-  subRow = {
-    business_id: metaBusinessId,
-    area_id: metaAreaId,
-    category_id: metaCategoryId,
-    slot: meta.slot != null ? Number(meta.slot) : null,
-  };
-}
-
-if (!subRow?.business_id) return "no-business-id";
-
-
-  // Cleaner info
+  // Cleaner info (email is contact_email)
   const { data: cleaner } = await supabase
     .from("cleaners")
     .select("business_name, contact_email, address")
@@ -437,49 +350,32 @@ if (!subRow?.business_id) return "no-business-id";
   const customerEmail = cleaner?.contact_email || "";
   if (!customerEmail) return "no-email";
 
-  // Area name + area category fallback
+  // Area name
   let areaName = "Area";
-  let areaCategoryId = null;
-
   if (subRow.area_id) {
     const { data: area } = await supabase
       .from("service_areas")
-      .select("name, category_id")
+      .select("name")
       .eq("id", subRow.area_id)
       .maybeSingle();
     if (area?.name) areaName = area.name;
-    if (area?.category_id) areaCategoryId = area.category_id;
   }
 
-  // Category/Industry: prefer subRow.category_id, then Stripe invoice metadata, then service_areas.category_id
-  const meta = inv.metadata || {};
-  const metaCategoryId =
-    meta.category_id || meta.categoryId || meta.service_category_id || meta.serviceCategoryId || null;
-
-  const categoryId = subRow.category_id || metaCategoryId || areaCategoryId || null;
-
-  const industryName = await getIndustryName(categoryId);
-
-  // ✅ debug
-  console.log("[invoiceCore] industry debug", {
-    stripe_invoice_id,
-    subscriptionId,
-    subRow_category_id: subRow.category_id,
-    metaCategoryId,
-    areaCategoryId,
-    categoryId,
-    industryName,
-    areaName,
-  });
+  // Industry name
+  const industryName = await getIndustryName(subRow.category_id);
 
   // Stripe amounts (source of truth)
   const linesResp = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
   const firstLine = linesResp.data?.[0];
+
   const lineAmountCents = Number(firstLine?.amount ?? inv.subtotal ?? inv.total ?? 0);
 
+  // Rate used at checkout (defaults to £1.00 / km² if env not set)
+  // You can set RATE_PER_KM2_PER_MONTH_CENTS=100 in Netlify env
   const ratePerKm2Cents = Number(process.env.RATE_PER_KM2_PER_MONTH_CENTS || 100);
 
-  // Compute area covered from billing so it ALWAYS matches what was charged
+  // Compute “area covered” from billing so it ALWAYS matches what was charged.
+  // This is correct when a user buys remaining area (partial) for an already-owned polygon.
   const areaCoveredKm2 = ratePerKm2Cents > 0 ? lineAmountCents / ratePerKm2Cents : 0;
 
   const vatCents = Number(inv.tax ?? 0);
@@ -487,7 +383,8 @@ if (!subRow?.business_id) return "no-business-id";
 
   // Invoice number
   const invoiceNumber =
-    existing?.invoice_number || `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
+    existing?.invoice_number ||
+    `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
 
   const supplier = supplierDetails();
 
@@ -517,70 +414,39 @@ if (!subRow?.business_id) return "no-business-id";
     totalCents,
   });
 
-  // ✅ Store/Update invoice row every time (insert or update)
-  const invoiceRow = {
-    cleaner_id: subRow.business_id,
-    area_id: subRow.area_id,
-    stripe_invoice_id: inv.id,
-    stripe_payment_intent_id: inv.payment_intent || null,
-    invoice_number: invoiceNumber,
-    status: inv.status || "paid",
-    subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
-    tax_cents: vatCents,
-    total_cents: totalCents,
-    currency: String(inv.currency || "gbp").toUpperCase(),
-    billing_period_start: billingPeriodStart,
-    billing_period_end: billingPeriodEnd,
-    supplier_name: supplier.name,
-    supplier_address: supplier.address,
-    supplier_email: supplier.email,
-    supplier_vat: supplier.vat,
-    customer_name: cleaner?.business_name || "Customer",
-    customer_email: customerEmail,
-    customer_address: cleaner?.address || "",
-    area_km2: Number(areaCoveredKm2 || 0),
-    rate_per_km2_cents: ratePerKm2Cents,
-  };
-
+  // Insert invoice row if missing
   if (!existing?.id) {
-    const { error } = await supabase.from("invoices").insert(invoiceRow);
-    if (error) throw error;
-  } else {
-    const { error } = await supabase
-      .from("invoices")
-      .update(invoiceRow)
-      .eq("stripe_invoice_id", inv.id);
-    if (error) throw error;
-  }
-
-  // ✅ Upload PDF + store in your existing columns
-  const storePdf = String(process.env.STORE_INVOICE_PDF || "true").toLowerCase() !== "false";
-  if (storePdf) {
-    const storageInfo = await uploadInvoicePdfToStorage({
-      invoiceNumber,
-      businessId: subRow.business_id,
-      stripeInvoiceId: inv.id,
-      pdfBuffer: pdf,
+    const { error } = await supabase.from("invoices").insert({
+      cleaner_id: subRow.business_id,
+      area_id: subRow.area_id,
+      stripe_invoice_id: inv.id,
+      stripe_payment_intent_id: inv.payment_intent || null,
+      invoice_number: invoiceNumber,
+      status: inv.status || "paid",
+      subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
+      tax_cents: vatCents,
+      total_cents: totalCents,
+      currency: String(inv.currency || "gbp").toUpperCase(),
+      billing_period_start: billingPeriodStart,
+      billing_period_end: billingPeriodEnd,
+      supplier_name: supplier.name,
+      supplier_address: supplier.address,
+      supplier_email: supplier.email,
+      supplier_vat: supplier.vat,
+      customer_name: cleaner?.business_name || "Customer",
+      customer_email: customerEmail,
+      customer_address: cleaner?.address || "",
+      area_km2: Number(areaCoveredKm2 || 0),
+      rate_per_km2_cents: ratePerKm2Cents,
+      // If you have a column for industry/category on invoices, add it here:
+      // industry_name: industryName,
     });
 
-    if (storageInfo?.ok) {
-      const patch = {
-        pdf_storage_path: storageInfo.path, // e.g. invoices/<business>/<inv>.pdf
-        pdf_signed_url: storageInfo.signedUrl || null,
-        pdf_url: storageInfo.signedUrl || null,
-      };
-
-      const { error } = await supabase.from("invoices").update(patch).eq("stripe_invoice_id", inv.id);
-      if (error) {
-        console.warn("[invoiceCore] failed to store pdf path/url:", error);
-      }
-    }
+    if (error) throw error;
   }
 
   // Send email
   console.log("[invoiceCore] sending email", { from: supplier.fromEmail, to: customerEmail });
-
-  const emailLine = `${industryName} - ${areaName}`;
 
   const sendResp = await resend.emails.send({
     from: supplier.fromEmail,
@@ -596,7 +462,7 @@ if (!subRow?.business_id) return "no-business-id";
       <div style="font-family:Arial,sans-serif;line-height:1.5">
         <p>Hi ${safeText(cleaner?.business_name || "there")},</p>
         <p>Please find your invoice <b>${safeText(invoiceNumber)}</b> attached.</p>
-        <p><b>${safeText(clampStr(emailLine, 120))}</b></p>
+        <p><b>${safeText(industryName)} - ${safeText(areaName)}</b></p>
         <p>Total: <b>${moneyGBP(totalCents)}</b></p>
         <p>Thanks,<br/>${safeText(supplier.name)}</p>
       </div>
