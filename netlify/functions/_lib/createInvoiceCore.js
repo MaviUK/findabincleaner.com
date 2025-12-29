@@ -157,7 +157,6 @@ async function renderPdf({
   const meta = [
     ["Invoice #", invoiceNumber],
     ["Invoice date", invoiceDate],
-    ["Industry", industry],
     ["Billing period", `${billingPeriodStart} to ${billingPeriodEnd}`],
   ];
 
