@@ -23,12 +23,12 @@ function supplierDetails() {
   const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <Kleanly@nibing.uy>";
 
   return {
+    logoUrl: process.env.INVOICE_LOGO_URL || "", // optional: https://.../logo.png
     fromEmail,
     name: process.env.INVOICE_SUPPLIER_NAME || "Kleanly",
     address: process.env.INVOICE_SUPPLIER_ADDRESS || "UK",
     email: process.env.INVOICE_SUPPLIER_EMAIL || "Kleanly@nibing.uy",
-    vat: process.env.INVOICE_SUPPLIER_VAT || "",
-    logoUrl: process.env.INVOICE_LOGO_URL || "", // optional: https://.../logo.png
+    vat: process.env.INVOICE_SUPPLIER_VAT || ""
   };
 }
 
