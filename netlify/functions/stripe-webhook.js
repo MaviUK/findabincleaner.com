@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2025-12-29-REFUND-CANCEL-GUARDS");
+console.log("LOADED stripe-webhook v2025-12-29-IDEMPOTENT-REFUND-CANCEL");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -27,7 +27,6 @@ async function resolveContext({ meta, customerId }) {
     return { business_id, area_id, slot, category_id: category_id || null, lock_id };
   }
 
-  // fallback by Stripe customer -> cleaners.stripe_customer_id
   if (customerId) {
     const { data } = await supabase
       .from("cleaners")
@@ -50,6 +49,10 @@ async function releaseLockSafe(lockId) {
   }
 }
 
+/**
+ * Refund the latest invoice payment intent for a subscription, but do it idempotently.
+ * This removes race-condition errors when multiple webhook invocations try to refund at once.
+ */
 async function refundLatestInvoiceOnce(subId) {
   try {
     const subLive = await stripe.subscriptions.retrieve(subId);
@@ -67,16 +70,38 @@ async function refundLatestInvoiceOnce(subId) {
     const paymentIntentId = typeof pi === "string" ? pi : pi?.id;
 
     if (paid && paymentIntentId) {
-      console.warn("[webhook] refunding payment_intent", { subId, paymentIntentId, invoice: latest?.id });
-      await stripe.refunds.create({
-        payment_intent: paymentIntentId,
-        reason: "requested_by_customer",
-        metadata: { reason: "Overlap/uniqueness violation" },
+      console.warn("[webhook] refunding payment_intent", {
+        subId,
+        paymentIntentId,
+        invoice: latest?.id,
       });
+
+      // ✅ Idempotency key makes the refund call safe across concurrent webhook invocations
+      const idempotencyKey = `kleanly-dup-refund-${paymentIntentId}`;
+
+      try {
+        await stripe.refunds.create(
+          {
+            payment_intent: paymentIntentId,
+            reason: "requested_by_customer",
+            metadata: { reason: "Overlap/uniqueness violation" },
+          },
+          { idempotencyKey }
+        );
+      } catch (e) {
+        const msg = String(e?.message || "").toLowerCase();
+        // If another invocation already refunded, treat as success
+        if (msg.includes("already been refunded") || msg.includes("has already been refunded")) {
+          console.warn("[webhook] refund already existed (race), treating as ok", { subId, paymentIntentId });
+        } else {
+          throw e;
+        }
+      }
     } else {
       console.warn("[webhook] no paid invoice/payment_intent to refund", { subId, invoice: latest?.id });
     }
 
+    // ✅ Mark refunded so later events skip
     await stripe.subscriptions.update(subId, {
       metadata: { ...(subLive.metadata || {}), kleanly_refunded: "1" },
     });
@@ -85,6 +110,9 @@ async function refundLatestInvoiceOnce(subId) {
   }
 }
 
+/**
+ * Cancel subscription idempotently-ish: use idempotencyKey + treat "No such subscription" as ok.
+ */
 async function cancelSubscriptionOnce(subId, reason) {
   if (!subId) return;
 
@@ -98,13 +126,29 @@ async function cancelSubscriptionOnce(subId, reason) {
     }
 
     console.warn("[webhook] canceling subscription:", subId, reason || "");
-    await stripe.subscriptions.cancel(subId);
+
+    const idempotencyKey = `kleanly-dup-cancel-${subId}`;
+
+    try {
+      await stripe.subscriptions.cancel(subId, {}, { idempotencyKey });
+    } catch (e) {
+      const msg = String(e?.message || "").toLowerCase();
+      if (msg.includes("no such subscription")) {
+        console.warn("[webhook] cancel already done (race), treating as ok", { subId });
+      } else {
+        throw e;
+      }
+    }
 
     await stripe.subscriptions.update(subId, {
       metadata: { ...(subLive.metadata || {}), kleanly_canceled: "1" },
     });
   } catch (e) {
-    // If Stripe says "No such subscription", we just swallow it (race / already removed)
+    const msg = String(e?.message || "").toLowerCase();
+    if (msg.includes("no such subscription")) {
+      console.warn("[webhook] subscription missing (already gone), ok", { subId });
+      return;
+    }
     console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
   }
 }
@@ -117,7 +161,6 @@ async function upsertSubscription(sub, meta = {}) {
     customerId,
   });
 
-  // ✅ CRITICAL GUARD: don’t upsert with null area/slot
   if (!area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing area_id/slot)", {
       sub_id: sub.id,
@@ -140,13 +183,10 @@ async function upsertSubscription(sub, meta = {}) {
     area_id,
     category_id: category_id || null,
     slot,
-
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
-
     price_monthly_pennies: price?.unit_amount ?? null,
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
-
     status: sub.status,
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
@@ -171,7 +211,6 @@ async function upsertSubscription(sub, meta = {}) {
       msg.includes("uniq_active_slot_per_business");
 
     if (isDup) {
-      // ✅ refund + cancel ONCE (guards inside functions)
       await refundLatestInvoiceOnce(sub.id);
       await cancelSubscriptionOnce(sub.id, "Overlap/uniqueness violation");
       await releaseLockSafe(lock_id);
@@ -187,8 +226,7 @@ async function upsertSubscription(sub, meta = {}) {
 }
 
 async function upsertInvoice(inv) {
-  const subscriptionId =
-    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+  const subscriptionId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
@@ -201,7 +239,6 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If invoice arrives before subscription row exists, try hydrating it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -318,7 +355,6 @@ exports.handler = async (event) => {
 
         await upsertInvoice(inv);
 
-        // ✅ Only create/send branded PDF if this invoice belongs to a valid sponsorship row
         if (stripeEvent.type === "invoice.finalized") {
           const subscriptionId =
             typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
@@ -342,7 +378,6 @@ exports.handler = async (event) => {
           }
         }
 
-        // Stripe dashboard “Resend invoice” typically fires invoice.sent
         if (stripeEvent.type === "invoice.sent") {
           console.log("[webhook] invoice.sent -> FORCE createInvoiceAndEmail", inv.id);
           await safeCreateAndEmailInvoice(inv.id, { force: true });
