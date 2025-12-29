@@ -403,13 +403,29 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   if (!subscriptionId) return "no-subscription";
 
   // Find sponsored subscription row
-  const { data: subRow } = await supabase
-    .from("sponsored_subscriptions")
-    .select("business_id, area_id, category_id, slot")
-    .eq("stripe_subscription_id", subscriptionId)
-    .maybeSingle();
+  let { data: subRow } = await supabase
+  .from("sponsored_subscriptions")
+  .select("business_id, area_id, category_id, slot")
+  .eq("stripe_subscription_id", subscriptionId)
+  .maybeSingle();
 
-  if (!subRow?.business_id) return "no-business-id";
+const meta = inv.metadata || {};
+const metaBusinessId = meta.business_id || meta.cleaner_id || meta.businessId || null;
+const metaAreaId = meta.area_id || meta.areaId || null;
+const metaCategoryId = meta.category_id || meta.categoryId || null;
+
+// If the DB row doesn't exist (or missing business_id), fallback to Stripe invoice metadata
+if (!subRow?.business_id && metaBusinessId) {
+  subRow = {
+    business_id: metaBusinessId,
+    area_id: metaAreaId,
+    category_id: metaCategoryId,
+    slot: meta.slot != null ? Number(meta.slot) : null,
+  };
+}
+
+if (!subRow?.business_id) return "no-business-id";
+
 
   // Cleaner info
   const { data: cleaner } = await supabase
