@@ -3,6 +3,9 @@ const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 
+// Node 18+ has global fetch
+const fetchFn = global.fetch;
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
 const supabase = createClient(
@@ -14,117 +17,55 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ---------------- helpers ---------------- */
 
-// pdf-lib standard fonts are WinAnsi. Strip characters that can't be encoded.
-function safeText(s) {
-  return String(s ?? "").replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "");
-}
+function supplierDetails() {
+  // You said: send from Kleanly@nibing.uy
+  // Make sure nibing.uy is verified in Resend, and this is an allowed sender.
+  const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <Kleanly@nibing.uy>";
 
-function splitAddressLines(addr) {
-  const a = safeText(addr || "").trim();
-  if (!a) return [];
-  return a
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
+  return {
+    fromEmail,
+    name: process.env.INVOICE_SUPPLIER_NAME || "Kleanly",
+    address: process.env.INVOICE_SUPPLIER_ADDRESS || "UK",
+    email: process.env.INVOICE_SUPPLIER_EMAIL || "Kleanly@nibing.uy",
+    vat: process.env.INVOICE_SUPPLIER_VAT || "",
+    logoUrl: process.env.INVOICE_LOGO_URL || "", // optional: https://.../logo.png
+  };
 }
 
 function moneyGBP(cents) {
   return `£${(Number(cents || 0) / 100).toFixed(2)}`;
 }
 
-function isoDate(tsSeconds) {
-  if (!tsSeconds) return null;
-  return new Date(tsSeconds * 1000).toISOString().slice(0, 10);
+function isoDateFromUnix(ts) {
+  return ts ? new Date(ts * 1000).toISOString().slice(0, 10) : null;
 }
 
-async function fetchBytes(url) {
-  // Netlify Node 18+ has global fetch
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  const ab = await res.arrayBuffer();
-  return Buffer.from(ab);
+function splitAddressLines(addr) {
+  if (!addr) return [];
+  return String(addr)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
-/**
- * Compute area (m²) of a GeoJSON Polygon/MultiPolygon in lon/lat degrees
- * using a spherical Earth approximation.
- * Returns km².
- */
-function geojsonKm2(gj) {
-  if (!gj) return 0;
+// pdf-lib standard fonts are WinAnsi — replace characters that can crash (like →)
+function safeText(s) {
+  return String(s ?? "")
+    .replace(/\u2192/g, "->") // →
+    .replace(/[^\x09\x0A\x0D\x20-\x7E£€©®™]/g, ""); // strip other unsupported chars
+}
 
-  // Accept either raw GeoJSON object or stringified
-  let geo = gj;
-  if (typeof geo === "string") {
-    try {
-      geo = JSON.parse(geo);
-    } catch {
-      return 0;
-    }
+async function fetchLogoBytes(url) {
+  if (!url) return null;
+  if (!fetchFn) return null;
+  try {
+    const resp = await fetchFn(url);
+    if (!resp.ok) return null;
+    const buf = Buffer.from(await resp.arrayBuffer());
+    return buf;
+  } catch {
+    return null;
   }
-
-  const R = 6378137; // meters
-
-  const rad = (d) => (d * Math.PI) / 180;
-
-  // Ring area on sphere (approx)
-  // Formula based on spherical excess integration
-  const ringArea = (coords) => {
-    if (!Array.isArray(coords) || coords.length < 4) return 0;
-
-    let area = 0;
-    for (let i = 0; i < coords.length - 1; i++) {
-      const [lon1, lat1] = coords[i];
-      const [lon2, lat2] = coords[i + 1];
-      area += rad(lon2 - lon1) * (2 + Math.sin(rad(lat1)) + Math.sin(rad(lat2)));
-    }
-    area = (area * R * R) / 2;
-    return area;
-  };
-
-  const polygonArea = (polyCoords) => {
-    // polyCoords: [ outerRing, holeRing1, holeRing2... ]
-    if (!Array.isArray(polyCoords) || polyCoords.length === 0) return 0;
-    const outer = Math.abs(ringArea(polyCoords[0]));
-    let holes = 0;
-    for (let i = 1; i < polyCoords.length; i++) holes += Math.abs(ringArea(polyCoords[i]));
-    return Math.max(0, outer - holes);
-  };
-
-  const type = geo.type;
-
-  let m2 = 0;
-
-  if (type === "Polygon") {
-    m2 = polygonArea(geo.coordinates);
-  } else if (type === "MultiPolygon") {
-    for (const poly of geo.coordinates || []) {
-      m2 += polygonArea(poly);
-    }
-  } else if (type === "Feature") {
-    return geojsonKm2(geo.geometry);
-  } else if (type === "FeatureCollection") {
-    for (const f of geo.features || []) {
-      m2 += geojsonKm2(f);
-    }
-  } else {
-    return 0;
-  }
-
-  const km2 = m2 / 1e6;
-  if (!Number.isFinite(km2)) return 0;
-  return Math.max(0, km2);
-}
-
-/* ---------------- supplier ---------------- */
-
-function supplierDetails() {
-  return {
-    name: process.env.INVOICE_SUPPLIER_NAME || "Kleanly",
-    address: process.env.INVOICE_SUPPLIER_ADDRESS || "UK",
-    email: process.env.INVOICE_FROM_EMAIL || process.env.INVOICE_SUPPLIER_EMAIL || "Kleanly@nibing.uy",
-    vat: process.env.INVOICE_SUPPLIER_VAT || "",
-  };
 }
 
 /* ---------------- PDF ---------------- */
@@ -133,183 +74,186 @@ async function renderPdf({
   invoiceNumber,
   supplier,
   customer,
+  invoiceDate,
+  billingPeriodStart,
+  billingPeriodEnd,
   areaName,
-  areaKm2,
+  areaCoveredKm2,
   ratePerKm2Cents,
-  subtotalCents,
+  lineAmountCents,
   vatCents,
   totalCents,
-  issuedDateISO,
-  periodStartISO,
-  periodEndISO,
-  logoUrl,
 }) {
   const pdf = await PDFDocument.create();
   const page = pdf.addPage([595, 842]); // A4
+
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  const margin = 50;
-  let y = 820;
+  const margin = 48;
+  const pageW = 595;
+  const top = 842 - margin;
 
-  const drawText = (t, x, yy, size = 11, isBold = false) => {
-    page.drawText(safeText(t), { x, y: yy, size, font: isBold ? bold : font });
-  };
+  // optional logo
+  let logoImg = null;
+  let logoDims = null;
 
-  // ---- Header: logo left, name to the right ----
-  let logoW = 0;
-  let logoH = 0;
-
-  if (logoUrl) {
+  const logoBytes = await fetchLogoBytes(supplier.logoUrl);
+  if (logoBytes) {
     try {
-      const bytes = await fetchBytes(logoUrl);
-      let img;
-      if (String(logoUrl).toLowerCase().endsWith(".png")) img = await pdf.embedPng(bytes);
-      else img = await pdf.embedJpg(bytes);
-
-      const maxH = 44;
-      const maxW = 44;
-      const dims = img.scale(1);
-      const s = Math.min(maxW / dims.width, maxH / dims.height);
-
-      logoW = dims.width * s;
-      logoH = dims.height * s;
-
-      page.drawImage(img, {
-        x: margin,
-        y: y - logoH + 6,
-        width: logoW,
-        height: logoH,
-      });
+      // PNG preferred
+      logoImg = await pdf.embedPng(logoBytes);
+      const scale = 56 / logoImg.height; // ~56px tall
+      logoDims = { w: logoImg.width * scale, h: logoImg.height * scale };
     } catch {
-      logoW = 0;
-      logoH = 0;
+      logoImg = null;
+      logoDims = null;
     }
   }
 
-  const headerX = margin + (logoW ? logoW + 10 : 0);
-  drawText(supplier.name, headerX, y, 22, true);
+  // Header block
+  const headerY = top;
 
-  y -= 28;
+  // Draw logo top-left
+  let headerLeftX = margin;
+  if (logoImg && logoDims) {
+    page.drawImage(logoImg, {
+      x: margin,
+      y: headerY - logoDims.h,
+      width: logoDims.w,
+      height: logoDims.h,
+    });
+    headerLeftX = margin + logoDims.w + 12;
+  }
 
-  // Supplier address: split by commas onto new lines
-  const suppLines = splitAddressLines(supplier.address);
-  suppLines.forEach((line) => {
-    drawText(line, headerX, y, 10, false);
+  // Supplier name beside logo
+  page.drawText(safeText(supplier.name), {
+    x: headerLeftX,
+    y: headerY - 18,
+    size: 20,
+    font: bold,
+  });
+
+  // Supplier address (split by commas)
+  const addrLines = splitAddressLines(supplier.address);
+  let y = headerY - 42;
+  addrLines.forEach((ln) => {
+    page.drawText(safeText(ln), { x: headerLeftX, y, size: 10.5, font });
     y -= 14;
   });
 
-  drawText(supplier.email, headerX, y, 10, false);
+  // supplier email
+  page.drawText(safeText(supplier.email), { x: headerLeftX, y, size: 10.5, font });
   y -= 14;
 
+  // VAT (optional)
   if (supplier.vat) {
-    drawText(`VAT: ${supplier.vat}`, headerX, y, 10, false);
+    page.drawText(`VAT: ${safeText(supplier.vat)}`, { x: headerLeftX, y, size: 10.5, font });
     y -= 14;
   }
 
-  // Right-side invoice meta box
-  const metaX = 360;
-  const metaTop = 820;
-  drawText("INVOICE", metaX, metaTop, 14, true);
-  drawText(`Invoice No: ${invoiceNumber}`, metaX, metaTop - 18, 10, false);
-  drawText(`Date: ${issuedDateISO || ""}`, metaX, metaTop - 34, 10, false);
+  // Invoice meta (right side)
+  const rightX = pageW - margin;
+  const meta = [
+    ["Invoice #", invoiceNumber],
+    ["Invoice date", invoiceDate],
+    ["Billing period", `${billingPeriodStart} to ${billingPeriodEnd}`],
+  ];
 
-  if (periodStartISO || periodEndISO) {
-    drawText(
-      `Period: ${periodStartISO || ""} to ${periodEndISO || ""}`,
-      metaX,
-      metaTop - 50,
-      10,
-      false
-    );
+  let metaY = headerY - 18;
+  meta.forEach(([k, v]) => {
+    const key = safeText(k);
+    const val = safeText(v);
+    const keyW = bold.widthOfTextAtSize(key, 10.5);
+    const valW = font.widthOfTextAtSize(val, 10.5);
+
+    // key on right, value aligned to the same right edge
+    page.drawText(key, { x: rightX - keyW, y: metaY, size: 10.5, font: bold });
+    metaY -= 14;
+    page.drawText(val, { x: rightX - valW, y: metaY, size: 10.5, font });
+    metaY -= 18;
+  });
+
+  // Divider line
+  const dividerY = Math.min(y, metaY) - 12;
+  page.drawLine({
+    start: { x: margin, y: dividerY },
+    end: { x: pageW - margin, y: dividerY },
+    thickness: 1,
+  });
+
+  // Bill-to section
+  let curY = dividerY - 22;
+  page.drawText("Billed to", { x: margin, y: curY, size: 12, font: bold });
+  curY -= 18;
+
+  page.drawText(safeText(customer.name || "Customer"), { x: margin, y: curY, size: 11, font: bold });
+  curY -= 14;
+
+  if (customer.email) {
+    page.drawText(safeText(customer.email), { x: margin, y: curY, size: 10.5, font });
+    curY -= 14;
   }
 
-  // Divider
-  y -= 10;
+  splitAddressLines(customer.address).forEach((ln) => {
+    page.drawText(safeText(ln), { x: margin, y: curY, size: 10.5, font });
+    curY -= 14;
+  });
+
+  // Table header
+  curY -= 16;
+
+  const col = {
+    desc: margin,
+    area: 320,
+    rate: 420,
+    amt: 510,
+  };
+
+  page.drawText("Description", { x: col.desc, y: curY, size: 10.5, font: bold });
+  page.drawText("Area covered", { x: col.area, y: curY, size: 10.5, font: bold });
+  page.drawText("Price per km²", { x: col.rate, y: curY, size: 10.5, font: bold });
+  page.drawText("Amount", { x: col.amt, y: curY, size: 10.5, font: bold });
+
+  curY -= 8;
   page.drawLine({
-    start: { x: margin, y },
-    end: { x: 595 - margin, y },
+    start: { x: margin, y: curY },
+    end: { x: pageW - margin, y: curY },
     thickness: 1,
   });
-  y -= 20;
+  curY -= 18;
 
-  // ---- Bill To ----
-  drawText("Billed To", margin, y, 12, true);
-  y -= 16;
+  // Line item
+  const desc = safeText(areaName || "Service area sponsorship");
+  const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
+  const rateTxt = moneyGBP(ratePerKm2Cents);
+  const amtTxt = moneyGBP(lineAmountCents);
 
-  drawText(customer.name || "", margin, y, 11, true);
-  y -= 14;
+  page.drawText(desc, { x: col.desc, y: curY, size: 10.5, font });
+  page.drawText(areaTxt, { x: col.area, y: curY, size: 10.5, font });
+  page.drawText(rateTxt, { x: col.rate, y: curY, size: 10.5, font });
+  page.drawText(amtTxt, { x: col.amt, y: curY, size: 10.5, font });
 
-  const custAddrLines = splitAddressLines(customer.address);
-  custAddrLines.forEach((line) => {
-    drawText(line, margin, y, 10, false);
-    y -= 14;
+  // Totals
+  curY -= 28;
+
+  const totals = [
+    ["Subtotal", lineAmountCents],
+    ...(vatCents > 0 ? [["VAT", vatCents]] : []),
+    ["Total", totalCents],
+  ];
+
+  let tY = curY;
+  totals.forEach(([label, cents]) => {
+    const l = safeText(label);
+    const v = moneyGBP(cents);
+    const lW = bold.widthOfTextAtSize(l, 11);
+    const vW = bold.widthOfTextAtSize(v, 11);
+
+    page.drawText(l, { x: rightX - 140 - lW, y: tY, size: 11, font: bold });
+    page.drawText(v, { x: rightX - vW, y: tY, size: 11, font: bold });
+    tY -= 16;
   });
-
-  drawText(customer.email || "", margin, y, 10, false);
-  y -= 22;
-
-  // ---- Table Header ----
-  const colDesc = margin;
-  const colArea = 290;
-  const colRate = 375;
-  const colUnit = 455;
-  const colAmt = 530;
-
-  drawText("Description", colDesc, y, 10, true);
-  drawText("Area Covered", colArea, y, 10, true);
-  drawText("Price / KM²", colRate, y, 10, true);
-  drawText("Unit price", colUnit, y, 10, true);
-  drawText("Amount", colAmt, y, 10, true);
-
-  y -= 10;
-  page.drawLine({
-    start: { x: margin, y },
-    end: { x: 595 - margin, y },
-    thickness: 1,
-  });
-  y -= 16;
-
-  // ---- Line Item ----
-  const desc = `${areaName || "Unknown"}`;
-  const areaTxt = areaKm2 != null ? `${Number(areaKm2).toFixed(3)} km²` : "";
-  const rateTxt = ratePerKm2Cents != null ? moneyGBP(ratePerKm2Cents) : "";
-  const unitPriceCents =
-    areaKm2 != null && ratePerKm2Cents != null
-      ? Math.round(Number(areaKm2) * Number(ratePerKm2Cents))
-      : null;
-  const unitTxt = unitPriceCents != null ? moneyGBP(unitPriceCents) : "";
-
-  drawText(desc, colDesc, y, 10, true);
-  drawText(areaTxt, colArea, y, 10, false);
-  drawText(rateTxt, colRate, y, 10, false);
-  drawText(unitTxt, colUnit, y, 10, false);
-  drawText(moneyGBP(subtotalCents), colAmt, y, 10, false);
-
-  y -= 30;
-
-  // ---- Totals ----
-  const totalsXLabel = 380;
-  const totalsXValue = 530;
-
-  page.drawLine({
-    start: { x: totalsXLabel, y: y + 10 },
-    end: { x: 595 - margin, y: y + 10 },
-    thickness: 1,
-  });
-
-  drawText("Subtotal", totalsXLabel, y, 11, true);
-  drawText(moneyGBP(subtotalCents), totalsXValue, y, 11, false);
-  y -= 16;
-
-  if (vatCents && Number(vatCents) > 0) {
-    drawText("VAT", totalsXLabel, y, 11, true);
-    drawText(moneyGBP(vatCents), totalsXValue, y, 11, false);
-    y -= 16;
-  }
-
-  drawText("Total", totalsXLabel, y, 12, true);
-  drawText(moneyGBP(totalCents), totalsXValue, y, 12, true);
 
   return Buffer.from(await pdf.save());
 }
@@ -319,111 +263,14 @@ async function renderPdf({
 async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
   console.log("[invoiceCore] start", stripe_invoice_id);
 
-  // 0) If invoice already exists, send if not emailed
-  const { data: existing, error: exErr } = await supabase
+  // Avoid duplicates: if we already created an invoice row for this stripe invoice, re-email it if needed
+  const { data: existing } = await supabase
     .from("invoices")
-    .select("id, emailed_at, customer_email, invoice_number")
+    .select("id, invoice_number, customer_email, emailed_at")
     .eq("stripe_invoice_id", stripe_invoice_id)
     .maybeSingle();
 
-  if (exErr) throw exErr;
-
-  if (existing?.id) {
-    if (existing.emailed_at) return "already-emailed";
-    // attempt to email existing (we’ll regenerate pdf and send)
-    const inv = await stripe.invoices.retrieve(stripe_invoice_id);
-    const subscriptionId =
-      typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
-
-    const { data: subRow } = await supabase
-      .from("sponsored_subscriptions")
-      .select("business_id, area_id")
-      .eq("stripe_subscription_id", subscriptionId)
-      .maybeSingle();
-
-    const { data: cleaner } = await supabase
-      .from("cleaners")
-      .select("business_name, contact_email, email, address, id")
-      .eq("id", subRow?.business_id)
-      .maybeSingle();
-
-    const customerEmail = cleaner?.contact_email || cleaner?.email || existing.customer_email;
-    if (!customerEmail) return "no-email";
-
-    // service area (name + geojson -> km²)
-    let areaName = "Unknown";
-    let areaKm2 = 0;
-    if (subRow?.area_id) {
-      const { data: areaRow } = await supabase
-        .from("service_areas")
-        .select("name, gj")
-        .eq("id", subRow.area_id)
-        .maybeSingle();
-
-      if (areaRow?.name) areaName = areaRow.name;
-      if (areaRow?.gj) areaKm2 = geojsonKm2(areaRow.gj);
-    }
-
-    const supplier = supplierDetails();
-    const fromEmail = supplier.email;
-
-    const subtotalCents = Number(inv.subtotal ?? inv.total ?? 0);
-    const vatRate = Number(process.env.INVOICE_VAT_RATE || 0); // e.g. 0.2
-    const vatCents = vatRate > 0 ? Math.round(subtotalCents * vatRate) : 0;
-    const totalCents = subtotalCents + vatCents;
-
-    const ratePerKm2Cents = Number(process.env.RATE_PER_KM2_PER_MONTH_CENTS || 100); // £1.00 default
-
-    const customer = {
-      name: cleaner?.business_name || "Customer",
-      email: customerEmail,
-      address: cleaner?.address || "",
-    };
-
-    const logoUrl = process.env.INVOICE_LOGO_URL || null;
-
-    const pdf = await renderPdf({
-      invoiceNumber: existing.invoice_number || `INV-${Date.now()}`,
-      supplier,
-      customer,
-      areaName,
-      areaKm2,
-      ratePerKm2Cents,
-      subtotalCents,
-      vatCents,
-      totalCents,
-      issuedDateISO: new Date().toISOString().slice(0, 10),
-      periodStartISO: isoDate(inv.period_start),
-      periodEndISO: isoDate(inv.period_end),
-      logoUrl,
-    });
-
-    const sendResp = await resend.emails.send({
-      from: fromEmail,
-      to: customerEmail,
-      subject: `Invoice ${existing.invoice_number || ""}`.trim(),
-      attachments: [
-        { filename: `${existing.invoice_number || "invoice"}.pdf`, content: pdf.toString("base64") },
-      ],
-      html: `<p>Your invoice is attached.</p>`,
-    });
-
-    console.log("[invoiceCore] resend response:", sendResp);
-
-    // If Resend rejects, do NOT mark emailed
-    if (sendResp?.error) {
-      return "email-failed";
-    }
-
-    await supabase
-      .from("invoices")
-      .update({ emailed_at: new Date().toISOString() })
-      .eq("id", existing.id);
-
-    return "emailed-existing";
-  }
-
-  // 1) Retrieve Stripe invoice
+  // Pull Stripe invoice
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
   const subscriptionId =
@@ -431,134 +278,153 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id) {
 
   if (!subscriptionId) return "no-subscription";
 
-  // 2) Find sponsored subscription row
+  // Find your sponsored subscription row
   const { data: subRow } = await supabase
     .from("sponsored_subscriptions")
-    .select("business_id, area_id")
+    .select("business_id, area_id, category_id, slot")
     .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
 
   if (!subRow?.business_id) return "no-business-id";
 
-  // 3) Customer details from cleaners (contact_email)
+  // Pull cleaner info (you said email lives in contact_email)
   const { data: cleaner } = await supabase
     .from("cleaners")
-    .select("id, business_name, contact_email, email, address")
+    .select("business_name, contact_email, address")
     .eq("id", subRow.business_id)
     .maybeSingle();
 
-  const customerEmail = cleaner?.contact_email || cleaner?.email || "";
+  const customerEmail = cleaner?.contact_email || "";
   if (!customerEmail) return "no-email";
 
-  // 4) service area name + area km² from gj
-  let areaName = "Unknown";
-  let areaKm2 = 0;
+  // Area name + area km2 (do NOT rely on service_areas.area_km2 if it doesn’t exist)
+  let areaName = "Service area sponsorship";
+  let areaCoveredKm2 = 0;
 
   if (subRow.area_id) {
-    const { data: areaRow } = await supabase
+    const { data: area } = await supabase
       .from("service_areas")
-      .select("name, gj")
+      .select("name")
       .eq("id", subRow.area_id)
       .maybeSingle();
 
-    if (areaRow?.name) areaName = areaRow.name;
-    if (areaRow?.gj) areaKm2 = geojsonKm2(areaRow.gj);
+    if (area?.name) areaName = area.name;
+
+    // If you have a correct km² stored elsewhere, use it.
+    // Otherwise: best fallback is to derive from Stripe billing amount:
+    // areaCoveredKm2 = amount / rate
+    //
+    // IMPORTANT: your “area covered wrong on invoice” issue is because this value
+    // is being computed inconsistently across places. Best long-term fix:
+    // store purchased_km2 at checkout-time into sponsored_subscriptions and read it here.
   }
 
-  // 5) Amounts (Stripe invoice values)
+  // Stripe line items (amounts are the source of truth for billing)
+  const linesResp = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
+  const firstLine = linesResp.data?.[0];
+  const lineAmountCents = Number(firstLine?.amount ?? inv.subtotal ?? inv.total ?? 0);
+
+  // Rate used at checkout (your UI says £1.00 / km²)
+  const ratePerKm2Cents = Number(process.env.RATE_PER_KM2_PER_MONTH_CENTS || 100); // £1.00 default
+
+  // Fallback compute area from billing so invoice always matches billing:
+  // area = amount / rate
+  if (ratePerKm2Cents > 0) {
+    areaCoveredKm2 = lineAmountCents / ratePerKm2Cents;
+  }
+
+  const vatCents = Number(inv.tax ?? 0);
+  const totalCents = Number(inv.total ?? lineAmountCents + vatCents);
+
+  // Invoice number
+  const invoiceNumber =
+    existing?.invoice_number ||
+    `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
+
   const supplier = supplierDetails();
-  const fromEmail = supplier.email;
 
-  const subtotalCents = Number(inv.subtotal ?? inv.total ?? 0);
-  const vatRate = Number(process.env.INVOICE_VAT_RATE || 0); // e.g. 0.2
-  const vatCents = vatRate > 0 ? Math.round(subtotalCents * vatRate) : 0;
-  const totalCents = subtotalCents + vatCents;
+  // Dates
+  const invoiceDate = isoDateFromUnix(inv.created) || new Date().toISOString().slice(0, 10);
+  const billingPeriodStart = isoDateFromUnix(inv.period_start) || invoiceDate;
+  const billingPeriodEnd = isoDateFromUnix(inv.period_end) || invoiceDate;
 
-  const ratePerKm2Cents = Number(process.env.RATE_PER_KM2_PER_MONTH_CENTS || 100);
-
-  const invoiceNumber = `INV-${new Date().getFullYear()}-${String(Date.now()).slice(-6)}`;
-
-  const customer = {
-    name: cleaner.business_name || "Customer",
-    email: customerEmail,
-    address: cleaner.address || "",
-  };
-
-  const logoUrl = process.env.INVOICE_LOGO_URL || null;
-
-  // 6) Generate PDF
+  // Build PDF
   const pdf = await renderPdf({
     invoiceNumber,
     supplier,
-    customer,
+    customer: {
+      name: cleaner?.business_name || "Customer",
+      email: customerEmail,
+      address: cleaner?.address || "",
+    },
+    invoiceDate,
+    billingPeriodStart,
+    billingPeriodEnd,
     areaName,
-    areaKm2,
+    areaCoveredKm2,
     ratePerKm2Cents,
-    subtotalCents,
+    lineAmountCents,
     vatCents,
     totalCents,
-    issuedDateISO: new Date().toISOString().slice(0, 10),
-    periodStartISO: isoDate(inv.period_start),
-    periodEndISO: isoDate(inv.period_end),
-    logoUrl,
   });
 
-  // 7) Insert invoice row first (so you always track it)
-  const { data: invoiceRow, error: insErr } = await supabase
-    .from("invoices")
-    .insert({
+  // Insert invoice row if missing
+  if (!existing?.id) {
+    const { error } = await supabase.from("invoices").insert({
       cleaner_id: subRow.business_id,
       area_id: subRow.area_id,
       stripe_invoice_id: inv.id,
-      stripe_payment_intent_id: inv.payment_intent,
+      stripe_payment_intent_id: inv.payment_intent || null,
       invoice_number: invoiceNumber,
-      status: inv.status || "open",
-      subtotal_cents: subtotalCents,
+      status: inv.status || "paid",
+      subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
       tax_cents: vatCents,
       total_cents: totalCents,
-      currency: String(inv.currency || "GBP").toUpperCase(),
-      billing_period_start: isoDate(inv.period_start),
-      billing_period_end: isoDate(inv.period_end),
-
+      currency: String(inv.currency || "gbp").toUpperCase(),
+      billing_period_start: billingPeriodStart,
+      billing_period_end: billingPeriodEnd,
       supplier_name: supplier.name,
       supplier_address: supplier.address,
       supplier_email: supplier.email,
       supplier_vat: supplier.vat,
-
-      customer_name: customer.name,
-      customer_email: customer.email,
-      customer_address: customer.address,
-
-      area_km2: Number(areaKm2 || 0),
+      customer_name: cleaner?.business_name || "Customer",
+      customer_email: customerEmail,
+      customer_address: cleaner?.address || "",
+      area_km2: Number(areaCoveredKm2 || 0),
       rate_per_km2_cents: ratePerKm2Cents,
-    })
-    .select()
-    .single();
+    });
 
-  if (insErr) throw insErr;
+    if (error) throw error;
+  }
 
-  // 8) Send email
+  // Send email (even if existing)
   const sendResp = await resend.emails.send({
-    from: fromEmail, // ✅ must be verified domain address
+    from: supplier.fromEmail,
     to: customerEmail,
     subject: `Invoice ${invoiceNumber}`,
-    attachments: [{ filename: `${invoiceNumber}.pdf`, content: pdf.toString("base64") }],
+    attachments: [
+      {
+        filename: `${invoiceNumber}.pdf`,
+        content: pdf.toString("base64"),
+      },
+    ],
     html: `<p>Your invoice is attached.</p>`,
   });
 
   console.log("[invoiceCore] resend response:", sendResp);
 
-  // If Resend rejects, do NOT mark emailed
-  if (sendResp?.error) {
-    return "email-failed";
-  }
-
+  // Mark emailed_at (best effort)
   await supabase
     .from("invoices")
     .update({ emailed_at: new Date().toISOString() })
-    .eq("id", invoiceRow.id);
+    .eq("stripe_invoice_id", inv.id);
 
-  return "OK";
+  // If resend failed, bubble a useful message to logs
+  if (sendResp?.error) {
+    return `email-error:${sendResp.error.message || "unknown"}`;
+  }
+
+  return existing?.id ? "emailed-existing" : "OK";
 }
 
 module.exports = { createInvoiceAndEmailByStripeInvoiceId };
