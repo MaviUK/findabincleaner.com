@@ -1,4 +1,7 @@
 // netlify/functions/stripe-webhook.js
+
+console.log("LOADED stripe-webhook v2025-12-29-REFUND");
+
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -124,16 +127,40 @@ async function upsertSubscription(sub, meta = {}) {
 
     console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
 
-    if (
-      code === "23505" ||
-      msg.includes("overlaps an existing sponsored area") ||
-      msg.includes("duplicate") ||
-      msg.includes("unique")
-    ) {
-      await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
-      await releaseLockSafe(lock_id);
-      return;
+   if (
+  code === "23505" ||
+  msg.includes("overlaps an existing sponsored area") ||
+  msg.includes("duplicate") ||
+  msg.includes("unique") ||
+  msg.includes("uniq_active_slot_per_business")
+) {
+  // Refund the latest paid invoice for this subscription (if any)
+  try {
+    const invs = await stripe.invoices.list({ subscription: sub.id, limit: 5 });
+    const latest = invs?.data?.[0];
+    const paid = latest?.paid === true;
+    const pi = latest?.payment_intent;
+
+    const paymentIntentId = typeof pi === "string" ? pi : pi?.id;
+    if (paid && paymentIntentId) {
+      console.warn("[webhook] refunding payment_intent", { subId: sub.id, paymentIntentId, invoice: latest?.id });
+      await stripe.refunds.create({
+        payment_intent: paymentIntentId,
+        reason: "requested_by_customer",
+        metadata: { reason: "Overlap/uniqueness violation" },
+      });
+    } else {
+      console.warn("[webhook] no paid invoice/payment_intent to refund", { subId: sub.id, invoice: latest?.id });
     }
+  } catch (e) {
+    console.error("[webhook] refund failed:", sub.id, e?.message || e);
+  }
+
+  await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
+  await releaseLockSafe(lock_id);
+  return;
+}
+
 
     throw new Error("DB upsert(sponsored_subscriptions) failed");
   }
