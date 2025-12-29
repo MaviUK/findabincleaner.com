@@ -19,11 +19,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 /* ---------------- helpers ---------------- */
 
 function supplierDetails() {
-  // Make sure nibing.uy domain + sender are verified in Resend
   const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
-
-  // Best effort: derive supplier "email" shown on the invoice from the FROM address
-  // e.g. "Kleanly <kleanly@nibing.uy>" -> "kleanly@nibing.uy"
   const m = String(fromEmail).match(/<([^>]+)>/);
   const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "kleanly@nibing.uy";
 
@@ -33,7 +29,7 @@ function supplierDetails() {
     address: process.env.INVOICE_SUPPLIER_ADDRESS || "UK",
     email: displayEmail,
     vat: process.env.INVOICE_SUPPLIER_VAT || "",
-    logoUrl: process.env.INVOICE_LOGO_URL || "", // https://.../logo.png (PNG recommended)
+    logoUrl: process.env.INVOICE_LOGO_URL || "",
   };
 }
 
@@ -53,11 +49,10 @@ function splitAddressLines(addr) {
     .filter(Boolean);
 }
 
-// pdf-lib standard fonts are WinAnsi — replace characters that can crash (like →)
 function safeText(s) {
   return String(s ?? "")
-    .replace(/\u2192/g, "->") // →
-    .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, ""); // keep basic ASCII + £
+    .replace(/\u2192/g, "->")
+    .replace(/[^\x09\x0A\x0D\x20-\x7E£]/g, "");
 }
 
 async function fetchLogoBytes(url) {
@@ -119,7 +114,6 @@ function wrapByWidth(text, font, fontSize, maxWidth) {
       line = next;
     } else {
       if (line) lines.push(line);
-      // single word longer than maxWidth => hard break
       if (widthOf(w) > maxWidth) {
         let chunk = "";
         for (const ch of w) {
@@ -144,13 +138,9 @@ async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvo
   const bucket = process.env.INVOICE_PDF_BUCKET || "invoices";
   const prefix = process.env.INVOICE_PDF_PREFIX || "pdf";
   const fileName = `${invoiceNumber}.pdf`;
-
-  // Keep it stable + unique-ish
   const path = `${prefix}/${businessId}/${stripeInvoiceId || invoiceNumber}/${fileName}`;
 
   try {
-    // NOTE: This assumes the bucket exists (create it in Supabase Storage).
-    // We intentionally do not throw on errors here; invoices can still be emailed without storage.
     const { error: upErr } = await supabase.storage
       .from(bucket)
       .upload(path, pdfBuffer, {
@@ -198,7 +188,6 @@ async function renderPdf({
   const pageH = 842;
   const top = pageH - margin;
 
-  // optional logo (centered above title)
   let logoImg = null;
   let logoDims = null;
 
@@ -206,7 +195,7 @@ async function renderPdf({
   if (logoBytes) {
     try {
       logoImg = await pdf.embedPng(logoBytes);
-      const targetH = 64; // logo height
+      const targetH = 64;
       const scale = targetH / logoImg.height;
       logoDims = { w: logoImg.width * scale, h: logoImg.height * scale };
     } catch {
@@ -215,7 +204,6 @@ async function renderPdf({
     }
   }
 
-  // --- Header: logo above title (centered) ---
   let y = top;
 
   if (logoImg && logoDims) {
@@ -229,7 +217,6 @@ async function renderPdf({
     y -= logoDims.h + 10;
   }
 
-  // Supplier title centered
   const title = safeText(supplier.name);
   const titleSize = 22;
   const titleW = bold.widthOfTextAtSize(title, titleSize);
@@ -241,7 +228,6 @@ async function renderPdf({
   });
   y -= titleSize + 14;
 
-  // Supplier address block (left)
   const leftX = margin;
   const addrLines = splitAddressLines(supplier.address);
   addrLines.forEach((ln) => {
@@ -257,7 +243,6 @@ async function renderPdf({
     y -= 14;
   }
 
-  // Invoice meta (right side)
   const rightX = pageW - margin;
 
   const metaRows = [
@@ -267,7 +252,6 @@ async function renderPdf({
     ["Industry", industryName],
   ];
 
-  // Pin metaY to a safe position near top-right
   let metaY = pageH - margin - 40;
 
   metaRows.forEach(([k, v]) => {
@@ -283,7 +267,6 @@ async function renderPdf({
     metaY -= 18;
   });
 
-  // Divider line
   const dividerY = Math.min(y, metaY) - 12;
   page.drawLine({
     start: { x: margin, y: dividerY },
@@ -291,7 +274,6 @@ async function renderPdf({
     thickness: 1,
   });
 
-  // Bill-to section
   let curY = dividerY - 22;
   page.drawText("Billed to", { x: margin, y: curY, size: 12, font: bold });
   curY -= 18;
@@ -314,7 +296,6 @@ async function renderPdf({
     curY -= 14;
   });
 
-  // Table header
   curY -= 18;
 
   const col = {
@@ -338,30 +319,25 @@ async function renderPdf({
   curY -= 18;
 
   // Line item
-  // IMPORTANT: wrap the description so "Industry - Area" cannot look like it's missing.
   const descFontSize = 10.5;
-  const descMaxW = col.area - col.desc - 12; // leave a little gap before next column
+  const descMaxW = col.area - col.desc - 12;
   const descFull = `${industryName || "Industry"} - ${areaName || "Area"}`;
-  const descLines = wrapByWidth(descFull, font, descFontSize, descMaxW).slice(0, 2); // cap at 2 lines for tidy layout
+  const descLines = wrapByWidth(descFull, font, descFontSize, descMaxW).slice(0, 2);
 
   const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
   const rateTxt = moneyGBP(ratePerKm2Cents);
   const amtTxt = moneyGBP(lineAmountCents);
 
-  // draw description (multi-line)
   descLines.forEach((ln, i) => {
     page.drawText(safeText(ln), { x: col.desc, y: curY - i * 12, size: descFontSize, font });
   });
 
-  // align the other columns to the first line baseline
   page.drawText(areaTxt, { x: col.area, y: curY, size: 10.5, font });
   page.drawText(rateTxt, { x: col.rate, y: curY, size: 10.5, font });
   page.drawText(amtTxt, { x: col.amt, y: curY, size: 10.5, font });
 
-  // Move cursor down depending on whether we used 1 or 2 lines
   curY -= descLines.length > 1 ? 44 : 32;
 
-  // Totals block
   const totals = [
     ["Subtotal", lineAmountCents],
     ...(vatCents > 0 ? [["VAT", vatCents]] : []),
@@ -381,8 +357,16 @@ async function renderPdf({
     tY -= 16;
   });
 
-  // Footer
   page.drawText("Thank you for your business.", { x: margin, y: 60, size: 10, font });
+
+  // ✅ DEBUG FINGERPRINT (TEMP)
+  // If you do NOT see this in the PDF footer, Netlify is not using this file.
+  page.drawText("TEMPLATE: createInvoiceCore v2025-12-29-INDUSTRY", {
+    x: margin,
+    y: 45,
+    size: 8,
+    font,
+  });
 
   return Buffer.from(await pdf.save());
 }
@@ -393,10 +377,8 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   const force = !!opts.force;
   console.log("[invoiceCore] start", stripe_invoice_id, { force });
 
-  // Pull Stripe invoice
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-  // Existing invoice row?
   const { data: existing } = await supabase
     .from("invoices")
     .select("id, invoice_number, emailed_at")
@@ -412,7 +394,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   if (!subscriptionId) return "no-subscription";
 
-  // Find sponsored subscription row
   const { data: subRow } = await supabase
     .from("sponsored_subscriptions")
     .select("business_id, area_id, category_id, slot")
@@ -421,7 +402,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   if (!subRow?.business_id) return "no-business-id";
 
-  // Cleaner info (email is contact_email)
   const { data: cleaner } = await supabase
     .from("cleaners")
     .select("business_name, contact_email, address")
@@ -436,54 +416,61 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   if (subRow.area_id) {
     const { data: area } = await supabase
       .from("service_areas")
-      .select("name")
+      .select("name, category_id")
       .eq("id", subRow.area_id)
       .maybeSingle();
     if (area?.name) areaName = area.name;
+
+    // ✅ Strong fallback: if subscription row has no category_id, try it from the area
+    var areaCategoryId = area?.category_id || null;
   }
 
-  // Category/Industry:
-  // Sometimes category_id might be missing on sponsored_subscriptions (older rows / edge cases),
-  // so also try Stripe invoice metadata as a fallback.
+  // Category from:
+  // 1) sponsored_subscriptions.category_id
+  // 2) Stripe invoice metadata
+  // 3) service_areas.category_id
   const meta = inv.metadata || {};
   const metaCategoryId =
     meta.category_id || meta.categoryId || meta.service_category_id || meta.serviceCategoryId || null;
 
-  const categoryId = subRow.category_id || metaCategoryId || null;
+  const categoryId = subRow.category_id || metaCategoryId || areaCategoryId || null;
 
-  // Industry name
   const industryName = await getIndustryName(categoryId);
 
-  // Stripe amounts (source of truth)
+  // ✅ DEBUG LOG (TEMP)
+  console.log("[invoiceCore] industry debug", {
+    stripe_invoice_id,
+    subscriptionId,
+    subRow_category_id: subRow.category_id,
+    metaCategoryId,
+    areaCategoryId: areaCategoryId || null,
+    categoryId,
+    industryName,
+    areaName,
+  });
+
   const linesResp = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
   const firstLine = linesResp.data?.[0];
 
   const lineAmountCents = Number(firstLine?.amount ?? inv.subtotal ?? inv.total ?? 0);
 
-  // Rate used at checkout (defaults to £1.00 / km² if env not set)
-  // You can set RATE_PER_KM2_PER_MONTH_CENTS=100 in Netlify env
   const ratePerKm2Cents = Number(process.env.RATE_PER_KM2_PER_MONTH_CENTS || 100);
 
-  // Compute “area covered” from billing so it ALWAYS matches what was charged.
-  // This is correct when a user buys remaining area (partial) for an already-owned polygon.
   const areaCoveredKm2 = ratePerKm2Cents > 0 ? lineAmountCents / ratePerKm2Cents : 0;
 
   const vatCents = Number(inv.tax ?? 0);
   const totalCents = Number(inv.total ?? (lineAmountCents + vatCents));
 
-  // Invoice number
   const invoiceNumber =
     existing?.invoice_number ||
     `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
 
   const supplier = supplierDetails();
 
-  // Dates
   const invoiceDate = isoDateFromUnix(inv.created) || new Date().toISOString().slice(0, 10);
   const billingPeriodStart = isoDateFromUnix(inv.period_start) || invoiceDate;
   const billingPeriodEnd = isoDateFromUnix(inv.period_end) || invoiceDate;
 
-  // Build PDF
   const pdf = await renderPdf({
     invoiceNumber,
     supplier,
@@ -504,9 +491,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     totalCents,
   });
 
-  // ✅ Ensure invoice record is stored (and kept up to date)
-  // - If it doesn't exist: insert
-  // - If it exists: update (keeps totals/status aligned with Stripe)
   const invoiceRow = {
     cleaner_id: subRow.business_id,
     area_id: subRow.area_id,
@@ -529,11 +513,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     customer_address: cleaner?.address || "",
     area_km2: Number(areaCoveredKm2 || 0),
     rate_per_km2_cents: ratePerKm2Cents,
-
-    // nice-to-have fields (only work if columns exist; see "safe update" below)
-    // category_id: categoryId,
-    // industry_name: industryName,
-    // area_name: areaName,
   };
 
   if (!existing?.id) {
@@ -547,9 +526,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     if (error) throw error;
   }
 
-  // ✅ Optional: store the PDF so you can list/download invoices in-app
-  // This uploads to Supabase Storage bucket (default: "invoices") and then *tries*
-  // to write the path to the invoices row. If the column doesn't exist, it will not fail the invoice.
   const storePdf = String(process.env.STORE_INVOICE_PDF || "true").toLowerCase() !== "false";
   let storageInfo = null;
 
@@ -562,8 +538,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     });
 
     if (storageInfo?.ok) {
-      // Try to store in DB if you have a column like pdf_path/pdf_storage_path/pdf_bucket
-      // We intentionally ignore errors here so missing columns don't break invoicing.
       const tryUpdates = [
         { pdf_path: `${storageInfo.bucket}/${storageInfo.path}` },
         { pdf_storage_path: storageInfo.path, pdf_storage_bucket: storageInfo.bucket },
@@ -575,12 +549,11 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
           .from("invoices")
           .update(patch)
           .eq("stripe_invoice_id", inv.id);
-        if (!error) break; // success with one of the column-name combos
+        if (!error) break;
       }
     }
   }
 
-  // Send email
   console.log("[invoiceCore] sending email", { from: supplier.fromEmail, to: customerEmail });
 
   const emailLine = `${industryName} - ${areaName}`;
@@ -613,7 +586,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     return `email-error:${sendResp.error.message || "unknown"}`;
   }
 
-  // Mark emailed
   await supabase
     .from("invoices")
     .update({ emailed_at: new Date().toISOString() })
