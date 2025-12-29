@@ -2,11 +2,18 @@
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 
-const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
+const {
+  createInvoiceAndEmailByStripeInvoiceId,
+} = require("./_lib/createInvoiceCore");
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -15,7 +22,8 @@ const json = (statusCode, body) => ({
 });
 
 async function resolveContext({ meta, customerId }) {
-  const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
+  const business_id =
+    meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
   const slot = meta?.slot != null ? Number(meta.slot) : null;
   const category_id = meta?.category_id || meta?.categoryId || null;
@@ -44,7 +52,10 @@ async function resolveContext({ meta, customerId }) {
 async function releaseLockSafe(lockId) {
   if (!lockId) return;
   try {
-    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+    await supabase
+      .from("sponsored_locks")
+      .update({ is_active: false })
+      .eq("id", lockId);
   } catch (e) {
     console.error("[webhook] failed to release lock:", lockId, e?.message || e);
   }
@@ -61,8 +72,11 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
 }
 
 async function upsertSubscription(sub, meta = {}) {
-  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
-  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({ meta, customerId });
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+
+  const { business_id, area_id, slot, category_id, lock_id } =
+    await resolveContext({ meta, customerId });
 
   // ✅ CRITICAL GUARD: don’t upsert with null area/slot (your DB trigger rejects this)
   if (!area_id || slot == null) {
@@ -95,7 +109,9 @@ async function upsertSubscription(sub, meta = {}) {
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
 
     status: sub.status,
-    current_period_end: sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null,
+    current_period_end: sub.current_period_end
+      ? new Date(sub.current_period_end * 1000).toISOString()
+      : null,
   };
 
   const { error } = await supabase
@@ -126,7 +142,8 @@ async function upsertSubscription(sub, meta = {}) {
 }
 
 async function upsertInvoice(inv) {
-  const subscriptionId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+  const subscriptionId =
+    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
@@ -159,8 +176,12 @@ async function upsertInvoice(inv) {
     amount_due_pennies: inv.amount_due ?? null,
     currency: (inv.currency || "gbp")?.toLowerCase(),
     status: inv.status,
-    period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
-    period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
+    period_start: inv.period_start
+      ? new Date(inv.period_start * 1000).toISOString()
+      : null,
+    period_end: inv.period_end
+      ? new Date(inv.period_end * 1000).toISOString()
+      : null,
   };
 
   const { error } = await supabase
@@ -173,13 +194,35 @@ async function upsertInvoice(inv) {
   }
 }
 
+async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
+  try {
+    const result = await createInvoiceAndEmailByStripeInvoiceId(stripeInvoiceId, opts);
+    console.log("[webhook] createInvoiceAndEmail result:", stripeInvoiceId, result);
+    return result;
+  } catch (err) {
+    console.error(
+      "[webhook] createInvoiceAndEmail ERROR:",
+      stripeInvoiceId,
+      err?.message || err,
+      err?.stack || ""
+    );
+    return "error";
+  }
+}
+
 exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
-    return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
+    return json(200, {
+      ok: true,
+      note: "Stripe webhook is deployed. Use POST from Stripe.",
+    });
   }
-  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method not allowed" });
+  if (event.httpMethod !== "POST") {
+    return json(405, { ok: false, error: "Method not allowed" });
+  }
 
-  const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
+  const sig =
+    event.headers["stripe-signature"] || event.headers["Stripe-Signature"] || null;
   if (!sig) return json(400, { ok: false, error: "Missing stripe-signature header" });
 
   if (!process.env.STRIPE_WEBHOOK_SECRET) {
@@ -191,7 +234,12 @@ exports.handler = async (event) => {
     const rawBody = event.isBase64Encoded
       ? Buffer.from(event.body, "base64")
       : Buffer.from(event.body || "", "utf8");
-    stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, process.env.STRIPE_WEBHOOK_SECRET);
+
+    stripeEvent = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      process.env.STRIPE_WEBHOOK_SECRET
+    );
   } catch (err) {
     console.error("[webhook] bad signature:", err?.message);
     return json(400, { ok: false, error: "Bad signature" });
@@ -223,6 +271,7 @@ exports.handler = async (event) => {
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
           .eq("stripe_subscription_id", sub.id);
+
         if (error) throw new Error("DB cancel(sub) failed");
         break;
       }
@@ -230,26 +279,29 @@ exports.handler = async (event) => {
       case "invoice.finalized":
       case "invoice.paid":
       case "invoice.payment_failed":
-      case "invoice.voided": {
+      case "invoice.voided":
+      case "invoice.sent": {
         const inv = stripeEvent.data.object;
 
         await upsertInvoice(inv);
 
-        // ✅ only generate/send our branded invoice on finalized
+        // ✅ Branded invoice on finalized (normal path)
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
-          try {
-            const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-            console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
-          } catch (err) {
-            console.error(
-              "[webhook] createInvoiceAndEmail ERROR:",
-              inv.id,
-              err?.message || err,
-              err?.stack || ""
-            );
-          }
+          await safeCreateAndEmailInvoice(inv.id, { force: false });
         }
+
+        // ✅ Stripe dashboard “Resend invoice” typically fires invoice.sent
+        if (stripeEvent.type === "invoice.sent") {
+          console.log("[webhook] invoice.sent -> FORCE createInvoiceAndEmail", inv.id);
+          await safeCreateAndEmailInvoice(inv.id, { force: true });
+        }
+
+        // OPTIONAL: If you ALSO want paid to re-email (usually not)
+        // if (stripeEvent.type === "invoice.paid") {
+        //   console.log("[webhook] invoice.paid -> (optional) createInvoiceAndEmail", inv.id);
+        //   await safeCreateAndEmailInvoice(inv.id, { force: false });
+        // }
 
         break;
       }
