@@ -98,6 +98,78 @@ async function getIndustryName(categoryId) {
   return "Industry";
 }
 
+function clampStr(s, max = 120) {
+  const x = safeText(s);
+  if (x.length <= max) return x;
+  return x.slice(0, max - 1) + "…";
+}
+
+function wrapByWidth(text, font, fontSize, maxWidth) {
+  const s = safeText(text);
+  if (!s) return [""];
+  const words = s.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+
+  const widthOf = (t) => font.widthOfTextAtSize(t, fontSize);
+
+  for (const w of words) {
+    const next = line ? `${line} ${w}` : w;
+    if (widthOf(next) <= maxWidth) {
+      line = next;
+    } else {
+      if (line) lines.push(line);
+      // single word longer than maxWidth => hard break
+      if (widthOf(w) > maxWidth) {
+        let chunk = "";
+        for (const ch of w) {
+          const nxt = chunk + ch;
+          if (widthOf(nxt) <= maxWidth) chunk = nxt;
+          else {
+            if (chunk) lines.push(chunk);
+            chunk = ch;
+          }
+        }
+        line = chunk;
+      } else {
+        line = w;
+      }
+    }
+  }
+  if (line) lines.push(line);
+  return lines.length ? lines : [s];
+}
+
+async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvoiceId, pdfBuffer }) {
+  const bucket = process.env.INVOICE_PDF_BUCKET || "invoices";
+  const prefix = process.env.INVOICE_PDF_PREFIX || "pdf";
+  const fileName = `${invoiceNumber}.pdf`;
+
+  // Keep it stable + unique-ish
+  const path = `${prefix}/${businessId}/${stripeInvoiceId || invoiceNumber}/${fileName}`;
+
+  try {
+    // NOTE: This assumes the bucket exists (create it in Supabase Storage).
+    // We intentionally do not throw on errors here; invoices can still be emailed without storage.
+    const { error: upErr } = await supabase.storage
+      .from(bucket)
+      .upload(path, pdfBuffer, {
+        contentType: "application/pdf",
+        upsert: true,
+      });
+
+    if (upErr) {
+      console.warn("[invoiceCore] storage upload failed:", upErr);
+      return { ok: false, bucket, path, error: upErr };
+    }
+
+    return { ok: true, bucket, path };
+  } catch (e) {
+    console.warn("[invoiceCore] storage upload exception:", e);
+    return { ok: false, bucket, path, error: e };
+  }
+}
+
 /* ---------------- PDF ---------------- */
 
 async function renderPdf({
@@ -195,10 +267,8 @@ async function renderPdf({
     ["Industry", industryName],
   ];
 
-  let metaY = top - (logoImg && logoDims ? logoDims.h + 10 : 0) - 8;
-  // If the logo exists, meta needs to start below the title region, not at very top.
-  // We'll pin metaY to a safe position near top-right:
-  metaY = pageH - margin - 40;
+  // Pin metaY to a safe position near top-right
+  let metaY = pageH - margin - 40;
 
   metaRows.forEach(([k, v]) => {
     const key = safeText(k);
@@ -268,19 +338,30 @@ async function renderPdf({
   curY -= 18;
 
   // Line item
-  const desc = safeText(`${industryName || "Industry"} - ${areaName || "Area"}`);
+  // IMPORTANT: wrap the description so "Industry - Area" cannot look like it's missing.
+  const descFontSize = 10.5;
+  const descMaxW = col.area - col.desc - 12; // leave a little gap before next column
+  const descFull = `${industryName || "Industry"} - ${areaName || "Area"}`;
+  const descLines = wrapByWidth(descFull, font, descFontSize, descMaxW).slice(0, 2); // cap at 2 lines for tidy layout
+
   const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
   const rateTxt = moneyGBP(ratePerKm2Cents);
   const amtTxt = moneyGBP(lineAmountCents);
 
-  page.drawText(desc, { x: col.desc, y: curY, size: 10.5, font });
+  // draw description (multi-line)
+  descLines.forEach((ln, i) => {
+    page.drawText(safeText(ln), { x: col.desc, y: curY - i * 12, size: descFontSize, font });
+  });
+
+  // align the other columns to the first line baseline
   page.drawText(areaTxt, { x: col.area, y: curY, size: 10.5, font });
   page.drawText(rateTxt, { x: col.rate, y: curY, size: 10.5, font });
   page.drawText(amtTxt, { x: col.amt, y: curY, size: 10.5, font });
 
-  // Totals block
-  curY -= 32;
+  // Move cursor down depending on whether we used 1 or 2 lines
+  curY -= descLines.length > 1 ? 44 : 32;
 
+  // Totals block
   const totals = [
     ["Subtotal", lineAmountCents],
     ...(vatCents > 0 ? [["VAT", vatCents]] : []),
@@ -361,8 +442,17 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     if (area?.name) areaName = area.name;
   }
 
+  // Category/Industry:
+  // Sometimes category_id might be missing on sponsored_subscriptions (older rows / edge cases),
+  // so also try Stripe invoice metadata as a fallback.
+  const meta = inv.metadata || {};
+  const metaCategoryId =
+    meta.category_id || meta.categoryId || meta.service_category_id || meta.serviceCategoryId || null;
+
+  const categoryId = subRow.category_id || metaCategoryId || null;
+
   // Industry name
-  const industryName = await getIndustryName(subRow.category_id);
+  const industryName = await getIndustryName(categoryId);
 
   // Stripe amounts (source of truth)
   const linesResp = await stripe.invoices.listLineItems(inv.id, { limit: 100 });
@@ -414,39 +504,86 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     totalCents,
   });
 
-  // Insert invoice row if missing
+  // ✅ Ensure invoice record is stored (and kept up to date)
+  // - If it doesn't exist: insert
+  // - If it exists: update (keeps totals/status aligned with Stripe)
+  const invoiceRow = {
+    cleaner_id: subRow.business_id,
+    area_id: subRow.area_id,
+    stripe_invoice_id: inv.id,
+    stripe_payment_intent_id: inv.payment_intent || null,
+    invoice_number: invoiceNumber,
+    status: inv.status || "paid",
+    subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
+    tax_cents: vatCents,
+    total_cents: totalCents,
+    currency: String(inv.currency || "gbp").toUpperCase(),
+    billing_period_start: billingPeriodStart,
+    billing_period_end: billingPeriodEnd,
+    supplier_name: supplier.name,
+    supplier_address: supplier.address,
+    supplier_email: supplier.email,
+    supplier_vat: supplier.vat,
+    customer_name: cleaner?.business_name || "Customer",
+    customer_email: customerEmail,
+    customer_address: cleaner?.address || "",
+    area_km2: Number(areaCoveredKm2 || 0),
+    rate_per_km2_cents: ratePerKm2Cents,
+
+    // nice-to-have fields (only work if columns exist; see "safe update" below)
+    // category_id: categoryId,
+    // industry_name: industryName,
+    // area_name: areaName,
+  };
+
   if (!existing?.id) {
-    const { error } = await supabase.from("invoices").insert({
-      cleaner_id: subRow.business_id,
-      area_id: subRow.area_id,
-      stripe_invoice_id: inv.id,
-      stripe_payment_intent_id: inv.payment_intent || null,
-      invoice_number: invoiceNumber,
-      status: inv.status || "paid",
-      subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
-      tax_cents: vatCents,
-      total_cents: totalCents,
-      currency: String(inv.currency || "gbp").toUpperCase(),
-      billing_period_start: billingPeriodStart,
-      billing_period_end: billingPeriodEnd,
-      supplier_name: supplier.name,
-      supplier_address: supplier.address,
-      supplier_email: supplier.email,
-      supplier_vat: supplier.vat,
-      customer_name: cleaner?.business_name || "Customer",
-      customer_email: customerEmail,
-      customer_address: cleaner?.address || "",
-      area_km2: Number(areaCoveredKm2 || 0),
-      rate_per_km2_cents: ratePerKm2Cents,
-      // If you have a column for industry/category on invoices, add it here:
-      // industry_name: industryName,
+    const { error } = await supabase.from("invoices").insert(invoiceRow);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase
+      .from("invoices")
+      .update(invoiceRow)
+      .eq("stripe_invoice_id", inv.id);
+    if (error) throw error;
+  }
+
+  // ✅ Optional: store the PDF so you can list/download invoices in-app
+  // This uploads to Supabase Storage bucket (default: "invoices") and then *tries*
+  // to write the path to the invoices row. If the column doesn't exist, it will not fail the invoice.
+  const storePdf = String(process.env.STORE_INVOICE_PDF || "true").toLowerCase() !== "false";
+  let storageInfo = null;
+
+  if (storePdf) {
+    storageInfo = await uploadInvoicePdfToStorage({
+      invoiceNumber,
+      businessId: subRow.business_id,
+      stripeInvoiceId: inv.id,
+      pdfBuffer: pdf,
     });
 
-    if (error) throw error;
+    if (storageInfo?.ok) {
+      // Try to store in DB if you have a column like pdf_path/pdf_storage_path/pdf_bucket
+      // We intentionally ignore errors here so missing columns don't break invoicing.
+      const tryUpdates = [
+        { pdf_path: `${storageInfo.bucket}/${storageInfo.path}` },
+        { pdf_storage_path: storageInfo.path, pdf_storage_bucket: storageInfo.bucket },
+        { pdf_file_path: storageInfo.path, pdf_bucket: storageInfo.bucket },
+      ];
+
+      for (const patch of tryUpdates) {
+        const { error } = await supabase
+          .from("invoices")
+          .update(patch)
+          .eq("stripe_invoice_id", inv.id);
+        if (!error) break; // success with one of the column-name combos
+      }
+    }
   }
 
   // Send email
   console.log("[invoiceCore] sending email", { from: supplier.fromEmail, to: customerEmail });
+
+  const emailLine = `${industryName} - ${areaName}`;
 
   const sendResp = await resend.emails.send({
     from: supplier.fromEmail,
@@ -462,7 +599,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
       <div style="font-family:Arial,sans-serif;line-height:1.5">
         <p>Hi ${safeText(cleaner?.business_name || "there")},</p>
         <p>Please find your invoice <b>${safeText(invoiceNumber)}</b> attached.</p>
-        <p><b>${safeText(industryName)} - ${safeText(areaName)}</b></p>
+        <p><b>${safeText(clampStr(emailLine, 120))}</b></p>
         <p>Total: <b>${moneyGBP(totalCents)}</b></p>
         <p>Thanks,<br/>${safeText(supplier.name)}</p>
       </div>
