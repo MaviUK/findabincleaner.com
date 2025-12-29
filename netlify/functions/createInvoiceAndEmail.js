@@ -1,8 +1,12 @@
 // netlify/functions/_lib/createInvoiceCore.js
+
+console.log("LOADED createInvoiceCore v2025-12-29-INDUSTRY");
+
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
 const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
+
 
 // Node 18+ has global fetch
 const fetchFn = global.fetch;
