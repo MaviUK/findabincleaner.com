@@ -339,9 +339,28 @@ exports.handler = async (event) => {
 
         // ✅ Branded invoice on finalized (normal path)
         if (stripeEvent.type === "invoice.finalized") {
-          console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
-          await safeCreateAndEmailInvoice(inv.id, { force: false });
-        }
+  const subscriptionId =
+    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+
+  if (subscriptionId) {
+    const { data: okSub } = await supabase
+      .from("sponsored_subscriptions")
+      .select("id")
+      .eq("stripe_subscription_id", subscriptionId)
+      .maybeSingle();
+
+    if (!okSub?.id) {
+      console.warn("[webhook] invoice.finalized skipping createInvoiceAndEmail (no sponsored_subscriptions row)", {
+        invoice: inv.id,
+        subscriptionId,
+      });
+    } else {
+      console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
+      await safeCreateAndEmailInvoice(inv.id, { force: false });
+    }
+  }
+}
+
 
         // ✅ Stripe dashboard “Resend invoice” typically fires invoice.sent
         if (stripeEvent.type === "invoice.sent") {
