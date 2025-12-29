@@ -134,27 +134,52 @@ async function upsertSubscription(sub, meta = {}) {
   msg.includes("unique") ||
   msg.includes("uniq_active_slot_per_business")
 ) {
-  // Refund the latest paid invoice for this subscription (if any)
-  try {
+ // Refund the latest paid invoice for this subscription (if any) - ONCE
+try {
+  const subLive = await stripe.subscriptions.retrieve(sub.id);
+  const alreadyRefunded = subLive?.metadata?.kleanly_refunded === "1";
+
+  if (!alreadyRefunded) {
     const invs = await stripe.invoices.list({ subscription: sub.id, limit: 5 });
     const latest = invs?.data?.[0];
     const paid = latest?.paid === true;
     const pi = latest?.payment_intent;
 
     const paymentIntentId = typeof pi === "string" ? pi : pi?.id;
+
     if (paid && paymentIntentId) {
-      console.warn("[webhook] refunding payment_intent", { subId: sub.id, paymentIntentId, invoice: latest?.id });
+      console.warn("[webhook] refunding payment_intent", {
+        subId: sub.id,
+        paymentIntentId,
+        invoice: latest?.id,
+      });
+
       await stripe.refunds.create({
         payment_intent: paymentIntentId,
         reason: "requested_by_customer",
         metadata: { reason: "Overlap/uniqueness violation" },
       });
+
+      // mark so we don't refund twice on other events
+      await stripe.subscriptions.update(sub.id, {
+        metadata: { ...(subLive.metadata || {}), kleanly_refunded: "1" },
+      });
     } else {
-      console.warn("[webhook] no paid invoice/payment_intent to refund", { subId: sub.id, invoice: latest?.id });
+      console.warn("[webhook] no paid invoice/payment_intent to refund", {
+        subId: sub.id,
+        invoice: latest?.id,
+      });
+      await stripe.subscriptions.update(sub.id, {
+        metadata: { ...(subLive.metadata || {}), kleanly_refunded: "1" },
+      });
     }
-  } catch (e) {
-    console.error("[webhook] refund failed:", sub.id, e?.message || e);
+  } else {
+    console.warn("[webhook] already refunded for duplicate subscription", { subId: sub.id });
   }
+} catch (e) {
+  console.error("[webhook] refund failed:", sub.id, e?.message || e);
+}
+
 
   await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
   await releaseLockSafe(lock_id);
