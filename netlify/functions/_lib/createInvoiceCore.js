@@ -224,7 +224,7 @@ async function renderPdf({
   curY -= 18;
 
   // Line item
-  const desc = safeText(areaName || ["Industry", industry || "General"]); ,
+  const desc = safeText(areaName || "Service area sponsorship");
   const areaTxt = `${Number(areaCoveredKm2 || 0).toFixed(3)} km²`;
   const rateTxt = moneyGBP(ratePerKm2Cents);
   const amtTxt = moneyGBP(lineAmountCents);
