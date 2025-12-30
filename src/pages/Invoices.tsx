@@ -16,7 +16,11 @@ type CategoryRow = {
 
 type SponsoredInvoiceRow = {
   id: string;
-  cleaner_id: string;
+
+  // owner columns (one of these will exist depending on your schema)
+  cleaner_id?: string | null;
+  business_id?: string | null;
+
   area_id: string | null;
 
   stripe_invoice_id: string | null;
@@ -37,13 +41,13 @@ type SponsoredInvoiceRow = {
   pdf_url: string | null;
   pdf_signed_url: string | null;
 
-  // optional if you sometimes store it
+  // optional if you sometimes store it on invoice rows
   category_id?: string | null;
 };
 
 type UiInvoice = SponsoredInvoiceRow & {
   area_name: string | null;
-  category_id_norm: string | null; // normalized category id used for filters
+  category_id_norm: string | null; // used for filters
   category_name: string | null;
   month_key: string; // YYYY-MM
 };
@@ -55,10 +59,7 @@ function formatMoney(
   const c = Number(cents ?? 0);
   const cur = (currency || "GBP").toUpperCase();
   try {
-    return new Intl.NumberFormat("en-GB", {
-      style: "currency",
-      currency: cur,
-    }).format(c / 100);
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency: cur }).format(c / 100);
   } catch {
     return `£${(c / 100).toFixed(2)}`;
   }
@@ -104,24 +105,21 @@ function monthLabel(key: string) {
   return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
-async function fetchCategoriesForCleaner(cleanerId: string): Promise<CategoryRow[]> {
-  // 1) Try RPC you mentioned/used earlier
+async function fetchCategoriesForOwner(ownerId: string): Promise<CategoryRow[]> {
+  // Try your RPC first (best)
   {
     const { data, error } = await supabase.rpc("list_active_categories_for_cleaner", {
-      _cleaner_id: cleanerId,
+      _cleaner_id: ownerId,
     });
     if (!error && data) {
       const rows = Array.isArray(data) ? data : [];
       return rows
-        .map((r: any) => ({
-          id: String(r.id),
-          name: String(r.name),
-        }))
+        .map((r: any) => ({ id: String(r.id), name: String(r.name) }))
         .filter((r) => r.id && r.name);
     }
   }
 
-  // 2) Fallback: try categories table if it exists (some envs don’t)
+  // Fallback: categories table (if it exists)
   {
     const { data, error } = await supabase.from("categories").select("id,name");
     if (!error && data) {
@@ -129,22 +127,27 @@ async function fetchCategoriesForCleaner(cleanerId: string): Promise<CategoryRow
     }
   }
 
-  // 3) Otherwise no category names available
   return [];
+}
+
+function isMissingColumnError(e: any, columnName: string) {
+  const msg = String(e?.message || e || "").toLowerCase();
+  return msg.includes("does not exist") && msg.includes(columnName.toLowerCase());
 }
 
 export default function Invoices() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
-  const [cleanerId, setCleanerId] = useState<string | null>(null);
+  const [ownerId, setOwnerId] = useState<string | null>(null); // your cleaner/business id
+  const [ownerLabel, setOwnerLabel] = useState<"cleaner_id" | "business_id">("cleaner_id");
 
   const [invoices, setInvoices] = useState<UiInvoice[]>([]);
   const [areas, setAreas] = useState<ServiceAreaRow[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
 
-  const [industryFilter, setIndustryFilter] = useState<string>("all"); // category_id
-  const [monthFilter, setMonthFilter] = useState<string>("all"); // YYYY-MM
+  const [industryFilter, setIndustryFilter] = useState<string>("all");
+  const [monthFilter, setMonthFilter] = useState<string>("all");
 
   useEffect(() => {
     (async () => {
@@ -152,11 +155,11 @@ export default function Invoices() {
       setErr(null);
 
       try {
-        // 1) who is logged in?
+        // 1) session
         const { data: sess } = await supabase.auth.getSession();
         const userId = sess?.session?.user?.id;
         if (!userId) {
-          setCleanerId(null);
+          setOwnerId(null);
           setInvoices([]);
           setAreas([]);
           setCategories([]);
@@ -164,7 +167,7 @@ export default function Invoices() {
           return;
         }
 
-        // 2) map user -> cleaner id
+        // 2) map user -> cleaners.id (this is your owner id used throughout UI)
         const { data: cleaner, error: cErr } = await supabase
           .from("cleaners")
           .select("id")
@@ -174,52 +177,115 @@ export default function Invoices() {
         if (cErr) throw cErr;
         if (!cleaner?.id) throw new Error("Cleaner not found");
 
-        const cid = String(cleaner.id);
-        setCleanerId(cid);
+        const oid = String(cleaner.id);
+        setOwnerId(oid);
 
-        // 3) load invoices (NO joins — avoids schema-cache relationship errors)
-        const { data: invRows, error: invErr } = await supabase
-          .from("sponsored_invoices")
-          .select(
-            [
-              "id",
-              "cleaner_id",
-              "area_id",
-              "stripe_invoice_id",
-              "stripe_payment_intent_id",
-              "invoice_number",
-              "status",
-              "subtotal_cents",
-              "tax_cents",
-              "total_cents",
-              "currency",
-              "billing_period_start",
-              "billing_period_end",
-              "created_at",
-              "pdf_url",
-              "pdf_signed_url",
-              "category_id",
-            ].join(",")
-          )
-          .eq("cleaner_id", cid)
-          .order("created_at", { ascending: false });
+        // 3) invoices: try cleaner_id, fallback to business_id
+        let invRows: any[] = [];
+        let invOwnerCol: "cleaner_id" | "business_id" = "cleaner_id";
 
-        if (invErr) throw invErr;
+        {
+          const attempt = await supabase
+            .from("sponsored_invoices")
+            .select(
+              [
+                "id",
+                "cleaner_id",
+                "business_id",
+                "area_id",
+                "stripe_invoice_id",
+                "stripe_payment_intent_id",
+                "invoice_number",
+                "status",
+                "subtotal_cents",
+                "tax_cents",
+                "total_cents",
+                "currency",
+                "billing_period_start",
+                "billing_period_end",
+                "created_at",
+                "pdf_url",
+                "pdf_signed_url",
+                "category_id",
+              ].join(",")
+            )
+            .eq("cleaner_id", oid)
+            .order("created_at", { ascending: false });
 
-        // 4) load service areas for this cleaner (for area name + category_id)
-        const { data: areaRows, error: aErr } = await supabase
-          .from("service_areas")
-          .select("id,name,category_id")
-          .eq("cleaner_id", cid);
+          if (!attempt.error) {
+            invRows = attempt.data || [];
+            invOwnerCol = "cleaner_id";
+          } else if (isMissingColumnError(attempt.error, "cleaner_id")) {
+            const attempt2 = await supabase
+              .from("sponsored_invoices")
+              .select(
+                [
+                  "id",
+                  "cleaner_id",
+                  "business_id",
+                  "area_id",
+                  "stripe_invoice_id",
+                  "stripe_payment_intent_id",
+                  "invoice_number",
+                  "status",
+                  "subtotal_cents",
+                  "tax_cents",
+                  "total_cents",
+                  "currency",
+                  "billing_period_start",
+                  "billing_period_end",
+                  "created_at",
+                  "pdf_url",
+                  "pdf_signed_url",
+                  "category_id",
+                ].join(",")
+              )
+              .eq("business_id", oid)
+              .order("created_at", { ascending: false });
 
-        if (aErr) throw aErr;
+            if (attempt2.error) throw attempt2.error;
+            invRows = attempt2.data || [];
+            invOwnerCol = "business_id";
+          } else {
+            throw attempt.error;
+          }
+        }
 
-        // 5) categories list for names (safe fallbacks)
-        const catRows = await fetchCategoriesForCleaner(cid);
+        setOwnerLabel(invOwnerCol);
 
+        // 4) service areas: try cleaner_id, fallback to business_id
+        let areaRows: any[] = [];
+        {
+          const attempt = await supabase
+            .from("service_areas")
+            .select("id,name,category_id")
+            .eq("cleaner_id", oid);
+
+          if (!attempt.error) {
+            areaRows = attempt.data || [];
+          } else if (isMissingColumnError(attempt.error, "cleaner_id")) {
+            const attempt2 = await supabase
+              .from("service_areas")
+              .select("id,name,category_id")
+              .eq("business_id", oid);
+
+            if (attempt2.error) throw attempt2.error;
+            areaRows = attempt2.data || [];
+          } else {
+            throw attempt.error;
+          }
+        }
+
+        // 5) categories (names)
+        const catRows = await fetchCategoriesForOwner(oid);
+
+        // normalize data
         const safeInv: SponsoredInvoiceRow[] = (invRows || []).map((r: any) => ({
           id: String(r.id),
-          cleaner_id: String(r.cleaner_id),
+
+          cleaner_id: r.cleaner_id ? String(r.cleaner_id) : null,
+          business_id: r.business_id ? String(r.business_id) : null,
+
           area_id: r.area_id ? String(r.area_id) : null,
 
           stripe_invoice_id: r.stripe_invoice_id ? String(r.stripe_invoice_id) : null,
@@ -256,8 +322,6 @@ export default function Invoices() {
 
         const ui: UiInvoice[] = safeInv.map((inv) => {
           const area = inv.area_id ? areaById.get(inv.area_id) : null;
-
-          // Prefer invoice.category_id, else infer from area.category_id
           const categoryIdNorm = (inv.category_id ?? area?.category_id ?? null) || null;
 
           return {
@@ -283,25 +347,19 @@ export default function Invoices() {
     })();
   }, []);
 
-  // Industries this business is in = distinct category_id from service_areas
   const industryOptions = useMemo(() => {
     const set = new Set<string>();
     for (const a of areas) {
       if (a.category_id) set.add(a.category_id);
     }
     const ids = Array.from(set);
-
     const nameById = new Map(categories.map((c) => [c.id, c.name]));
 
     return ids
-      .map((id) => ({
-        id,
-        name: nameById.get(id) || "Industry",
-      }))
+      .map((id) => ({ id, name: nameById.get(id) || "Industry" }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [areas, categories]);
 
-  // Months from invoice created_at
   const monthOptions = useMemo(() => {
     const set = new Set<string>();
     for (const inv of invoices) set.add(inv.month_key);
@@ -312,12 +370,8 @@ export default function Invoices() {
 
   const filtered = useMemo(() => {
     return invoices.filter((inv) => {
-      if (industryFilter !== "all") {
-        if (inv.category_id_norm !== industryFilter) return false;
-      }
-      if (monthFilter !== "all") {
-        if (inv.month_key !== monthFilter) return false;
-      }
+      if (industryFilter !== "all" && inv.category_id_norm !== industryFilter) return false;
+      if (monthFilter !== "all" && inv.month_key !== monthFilter) return false;
       return true;
     });
   }, [invoices, industryFilter, monthFilter]);
@@ -424,7 +478,7 @@ export default function Invoices() {
                     const industry = inv.category_name || "—";
                     const area = inv.area_name || "—";
 
-                    // Billing period: ONLY start date (your request)
+                    // Only start date (your request)
                     const periodStart = formatDateOnly(inv.billing_period_start || inv.created_at);
                     const created = formatDateTime(inv.created_at);
 
@@ -466,7 +520,11 @@ export default function Invoices() {
               If “PDF” is blank, that invoice row doesn’t have a stored PDF URL yet.
             </p>
 
-            {cleanerId ? <p className="muted text-xs mt-2">Cleaner: {cleanerId}</p> : null}
+            {ownerId ? (
+              <p className="muted text-xs mt-2">
+                Cleaner: {ownerId} (queried via sponsored_invoices.{ownerLabel})
+              </p>
+            ) : null}
           </div>
         </div>
       </section>
