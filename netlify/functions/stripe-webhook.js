@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2025-12-30-UPSERT-BY-AREA-SLOT");
+console.log("LOADED stripe-webhook v2025-12-30-UPDATE-THEN-INSERT");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -27,7 +27,6 @@ async function resolveContext({ meta, customerId }) {
     return { business_id, area_id, slot, category_id: category_id || null, lock_id };
   }
 
-  // fallback by Stripe customer -> cleaners.stripe_customer_id
   if (customerId) {
     const { data } = await supabase
       .from("cleaners")
@@ -58,16 +57,16 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
     console.warn("[webhook] canceling subscription:", subId, reason || "");
     await stripe.subscriptions.cancel(subId);
   } catch (e) {
-    // Stripe sometimes deletes/cancels quickly, don’t spam errors
-    const msg = String(e?.message || e);
-    console.error("[webhook] failed to cancel subscription:", subId, msg);
+    console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
   }
 }
 
 /**
- * ✅ KEY CHANGE:
- * Upsert sponsored_subscriptions by (business_id, area_id, slot)
- * so repeat purchases / retries update the existing row instead of inserting a duplicate.
+ * ✅ Works even if there is NO usable unique constraint for ON CONFLICT.
+ * Strategy:
+ * 1) Try UPDATE the row for (business_id, area_id, slot)
+ * 2) If nothing updated, INSERT a new row
+ * 3) If INSERT fails due to uniqueness, treat as owned-by-other and cancel
  */
 async function upsertSubscription(sub, meta = {}) {
   const customerId =
@@ -76,7 +75,6 @@ async function upsertSubscription(sub, meta = {}) {
   const { business_id, area_id, slot, category_id, lock_id } =
     await resolveContext({ meta, customerId });
 
-  // Guard: must have area+slot for sponsored_subscriptions table
   if (!business_id || !area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing business/area/slot)", {
       sub_id: sub.id,
@@ -99,86 +97,80 @@ async function upsertSubscription(sub, meta = {}) {
     area_id,
     category_id: category_id || null,
     slot,
-
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
-
     price_monthly_pennies: price?.unit_amount ?? null,
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
-
     status: sub.status,
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
   };
 
-  // ✅ Upsert by business_id+area_id+slot (your unique constraint)
-  const { error } = await supabase
+  // 1) UPDATE first
+  const { data: updatedRows, error: updErr } = await supabase
     .from("sponsored_subscriptions")
-    .upsert(payload, { onConflict: "business_id,area_id,slot" });
+    .update({
+      stripe_customer_id: payload.stripe_customer_id,
+      stripe_subscription_id: payload.stripe_subscription_id,
+      price_monthly_pennies: payload.price_monthly_pennies,
+      currency: payload.currency,
+      status: payload.status,
+      current_period_end: payload.current_period_end,
+      category_id: payload.category_id,
+    })
+    .eq("business_id", business_id)
+    .eq("area_id", area_id)
+    .eq("slot", slot)
+    .select("id");
 
-  if (!error) {
+  if (updErr) {
+    console.error("[webhook] update sponsored_subscriptions error:", updErr, payload);
+    // continue to insert attempt
+  } else if ((updatedRows || []).length > 0) {
+    console.log("[webhook] updated existing sponsored_subscriptions row", {
+      business_id,
+      area_id,
+      slot,
+      sub_id: sub.id,
+    });
     await releaseLockSafe(lock_id);
     return;
   }
 
-  // If conflict still occurs, handle safely:
-  const msg = String(error?.message || "").toLowerCase();
-  const code = String(error?.code || "").toLowerCase();
-  console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
+  // 2) INSERT if no row was updated
+  const { error: insErr } = await supabase.from("sponsored_subscriptions").insert(payload);
 
-  // If it’s a duplicate/unique issue, check who owns that area/slot.
-  if (code === "23505" || msg.includes("duplicate") || msg.includes("unique")) {
-    const { data: existing, error: exErr } = await supabase
-      .from("sponsored_subscriptions")
-      .select("business_id, status, stripe_subscription_id")
-      .eq("area_id", area_id)
-      .eq("slot", slot)
-      .maybeSingle();
+  if (!insErr) {
+    console.log("[webhook] inserted sponsored_subscriptions row", {
+      business_id,
+      area_id,
+      slot,
+      sub_id: sub.id,
+    });
+    await releaseLockSafe(lock_id);
+    return;
+  }
 
-    if (exErr) {
-      console.error("[webhook] failed to fetch existing row after 23505:", exErr);
-      // fall through to cancel/refund safety
-    } else if (existing?.business_id && String(existing.business_id) === String(business_id)) {
-      // ✅ It’s the SAME business — just update the row with the new stripe_subscription_id
-      const { error: updErr } = await supabase
-        .from("sponsored_subscriptions")
-        .update({
-          stripe_customer_id: payload.stripe_customer_id,
-          stripe_subscription_id: payload.stripe_subscription_id,
-          price_monthly_pennies: payload.price_monthly_pennies,
-          currency: payload.currency,
-          status: payload.status,
-          current_period_end: payload.current_period_end,
-          category_id: payload.category_id,
-        })
-        .eq("area_id", area_id)
-        .eq("slot", slot)
-        .eq("business_id", business_id);
+  console.error("[webhook] insert sponsored_subscriptions error:", insErr, payload);
 
-      if (!updErr) {
-        console.warn("[webhook] recovered from 23505 by updating existing business row", {
-          area_id,
-          slot,
-          business_id,
-          sub_id: sub.id,
-        });
-        await releaseLockSafe(lock_id);
-        return;
-      }
+  // 3) If insert fails due to uniqueness/overlap, cancel subscription
+  const msg = String(insErr?.message || "").toLowerCase();
+  const code = String(insErr?.code || "").toLowerCase();
 
-      console.error("[webhook] failed to recover 23505 with update:", updErr);
-      // fall through to cancel/refund safety
-    }
-
-    // ❌ Owned by someone else or recovery failed => cancel
+  if (
+    code === "23505" ||
+    msg.includes("duplicate") ||
+    msg.includes("unique") ||
+    msg.includes("overlaps")
+  ) {
     await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
     await releaseLockSafe(lock_id);
     return;
   }
 
   await releaseLockSafe(lock_id);
-  throw new Error("DB upsert(sponsored_subscriptions) failed");
+  throw new Error("DB write(sponsored_subscriptions) failed");
 }
 
 async function upsertInvoice(inv) {
@@ -196,7 +188,6 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
-  // If invoice arrives before subscription row exists, hydrate it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -299,7 +290,6 @@ exports.handler = async (event) => {
           .from("sponsored_subscriptions")
           .update({ status: "canceled" })
           .eq("stripe_subscription_id", sub.id);
-
         if (error) throw new Error("DB cancel(sub) failed");
         break;
       }
