@@ -1,18 +1,27 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
+console.log("LOADED area-sponsorship v2025-12-30-SINGLE-SLOT");
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
+const corsHeaders = {
+  "content-type": "application/json",
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: corsHeaders,
   });
 
-// statuses that block purchase
+// statuses that should block purchase (treated as "taken")
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -23,7 +32,11 @@ const BLOCKING = new Set([
   "paused",
 ]);
 
+// ✅ default to SINGLE SLOT (Featured)
+const DEFAULT_SLOTS = [1];
+
 export default async (req) => {
+  if (req.method === "OPTIONS") return json({ ok: true }, 200);
   if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
 
   let body;
@@ -34,20 +47,26 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || null;
+
+  // Allow caller to request specific slots, but default to [1]
+  const slots = Array.isArray(body?.slots) && body.slots.length
+    ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+    : DEFAULT_SLOTS;
+
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull all rows for these areas/slots (we will select the most-recent BLOCKING row if present)
+    // Pull all rows for these areas/slots
     const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at")
-      .in("area_id", areaIds);
+      .in("area_id", areaIds)
+      .in("slot", slots);
 
     if (error) throw error;
 
-    // Build response:
-    // For each (area, slot): if there exists ANY row with blocking status,
-    // choose the most recent of those; otherwise choose the most recent row overall.
+    // Group by area:slot
     const byAreaSlot = new Map(); // key = `${area}:${slot}` -> array of rows
     for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
@@ -55,49 +74,44 @@ export default async (req) => {
       byAreaSlot.get(k).push(r);
     }
 
-    const byArea = new Map();
-    for (const areaId of areaIds) {
-      byArea.set(areaId, { area_id: areaId, slots: [] });
-    }
+    // Build response
+    const areasOut = [];
+    for (const area_id of areaIds) {
+      const areaObj = { area_id, slots: [] };
 
-    for (const [key, arr] of byAreaSlot.entries()) {
-      arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      const [areaId, slotStr] = key.split(":");
-      const slot = Number(slotStr);
+      for (const slot of slots) {
+        const k = `${area_id}:${slot}`;
+        const arr = byAreaSlot.get(k) || [];
 
-      // pick most recent BLOCKING row if any
-      const blocking = arr.find((r) => BLOCKING.has(String(r.status || "").toLowerCase()));
-      const chosen = blocking ?? arr[0];
+        // newest first
+        arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-      const taken = !!chosen && BLOCKING.has(String(chosen.status || "").toLowerCase());
-      const area = byArea.get(areaId);
-      if (!area) continue;
+        // prefer most recent BLOCKING row if any
+        const blockingRow = arr.find((r) =>
+          BLOCKING.has(String(r.status || "").toLowerCase())
+        );
+        const chosen = blockingRow ?? arr[0] ?? null;
 
-      area.slots.push({
-        slot,
-        taken,
-        status: chosen?.status ?? null,
-        owner_business_id: chosen?.business_id ?? null,
-      });
-    }
+        const status = chosen?.status ?? null;
+        const owner_business_id = chosen?.business_id ?? null;
 
-    // Ensure we have 3 slots (or 1 if you’ve already consolidated to single-slot) in the reply
-    for (const area of byArea.values()) {
-      const present = new Set(area.slots.map((s) => s.slot));
-      for (const s of [1, 2, 3]) {
-        if (!present.has(s)) {
-          area.slots.push({
-            slot: s,
-            taken: false,
-            status: null,
-            owner_business_id: null,
-          });
-        }
+        const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
+        const taken_by_me =
+          Boolean(cleaner_id) && Boolean(owner_business_id) && String(owner_business_id) === String(cleaner_id);
+
+        areaObj.slots.push({
+          slot,
+          taken,
+          taken_by_me,
+          status,
+          owner_business_id,
+        });
       }
-      area.slots.sort((a, b) => a.slot - b.slot);
+
+      areasOut.push(areaObj);
     }
 
-    return json({ areas: Array.from(byArea.values()) });
+    return json({ areas: areasOut });
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
