@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2025-12-29-IDEMPOTENT-REFUND-CANCEL");
+console.log("LOADED stripe-webhook v2025-12-30-UPSERT-BY-AREA-SLOT");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -27,6 +27,7 @@ async function resolveContext({ meta, customerId }) {
     return { business_id, area_id, slot, category_id: category_id || null, lock_id };
   }
 
+  // fallback by Stripe customer -> cleaners.stripe_customer_id
   if (customerId) {
     const { data } = await supabase
       .from("cleaners")
@@ -34,7 +35,9 @@ async function resolveContext({ meta, customerId }) {
       .eq("stripe_customer_id", customerId)
       .maybeSingle();
 
-    if (data?.id) return { business_id: data.id, area_id: null, slot: null, category_id: null, lock_id };
+    if (data?.id) {
+      return { business_id: data.id, area_id: null, slot: null, category_id: null, lock_id };
+    }
   }
 
   return { business_id: null, area_id: null, slot: null, category_id: null, lock_id };
@@ -49,120 +52,33 @@ async function releaseLockSafe(lockId) {
   }
 }
 
-/**
- * Refund the latest invoice payment intent for a subscription, but do it idempotently.
- * This removes race-condition errors when multiple webhook invocations try to refund at once.
- */
-async function refundLatestInvoiceOnce(subId) {
-  try {
-    const subLive = await stripe.subscriptions.retrieve(subId);
-    const alreadyRefunded = subLive?.metadata?.kleanly_refunded === "1";
-    if (alreadyRefunded) {
-      console.warn("[webhook] already refunded for duplicate subscription", { subId });
-      return;
-    }
-
-    const invs = await stripe.invoices.list({ subscription: subId, limit: 5 });
-    const latest = invs?.data?.[0];
-
-    const paid = latest?.paid === true;
-    const pi = latest?.payment_intent;
-    const paymentIntentId = typeof pi === "string" ? pi : pi?.id;
-
-    if (paid && paymentIntentId) {
-      console.warn("[webhook] refunding payment_intent", {
-        subId,
-        paymentIntentId,
-        invoice: latest?.id,
-      });
-
-      // ✅ Idempotency key makes the refund call safe across concurrent webhook invocations
-      const idempotencyKey = `kleanly-dup-refund-${paymentIntentId}`;
-
-      try {
-        await stripe.refunds.create(
-          {
-            payment_intent: paymentIntentId,
-            reason: "requested_by_customer",
-            metadata: { reason: "Overlap/uniqueness violation" },
-          },
-          { idempotencyKey }
-        );
-      } catch (e) {
-        const msg = String(e?.message || "").toLowerCase();
-        // If another invocation already refunded, treat as success
-        if (msg.includes("already been refunded") || msg.includes("has already been refunded")) {
-          console.warn("[webhook] refund already existed (race), treating as ok", { subId, paymentIntentId });
-        } else {
-          throw e;
-        }
-      }
-    } else {
-      console.warn("[webhook] no paid invoice/payment_intent to refund", { subId, invoice: latest?.id });
-    }
-
-    // ✅ Mark refunded so later events skip
-    await stripe.subscriptions.update(subId, {
-      metadata: { ...(subLive.metadata || {}), kleanly_refunded: "1" },
-    });
-  } catch (e) {
-    console.error("[webhook] refundLatestInvoiceOnce failed:", subId, e?.message || e);
-  }
-}
-
-/**
- * Cancel subscription idempotently-ish: use idempotencyKey + treat "No such subscription" as ok.
- */
-async function cancelSubscriptionOnce(subId, reason) {
+async function cancelStripeSubscriptionSafe(subId, reason) {
   if (!subId) return;
-
   try {
-    const subLive = await stripe.subscriptions.retrieve(subId);
-    const alreadyCanceled = subLive?.metadata?.kleanly_canceled === "1";
-
-    if (alreadyCanceled) {
-      console.warn("[webhook] already canceled for duplicate subscription", { subId });
-      return;
-    }
-
     console.warn("[webhook] canceling subscription:", subId, reason || "");
-
-    const idempotencyKey = `kleanly-dup-cancel-${subId}`;
-
-    try {
-      await stripe.subscriptions.cancel(subId, {}, { idempotencyKey });
-    } catch (e) {
-      const msg = String(e?.message || "").toLowerCase();
-      if (msg.includes("no such subscription")) {
-        console.warn("[webhook] cancel already done (race), treating as ok", { subId });
-      } else {
-        throw e;
-      }
-    }
-
-    await stripe.subscriptions.update(subId, {
-      metadata: { ...(subLive.metadata || {}), kleanly_canceled: "1" },
-    });
+    await stripe.subscriptions.cancel(subId);
   } catch (e) {
-    const msg = String(e?.message || "").toLowerCase();
-    if (msg.includes("no such subscription")) {
-      console.warn("[webhook] subscription missing (already gone), ok", { subId });
-      return;
-    }
-    console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
+    // Stripe sometimes deletes/cancels quickly, don’t spam errors
+    const msg = String(e?.message || e);
+    console.error("[webhook] failed to cancel subscription:", subId, msg);
   }
 }
 
+/**
+ * ✅ KEY CHANGE:
+ * Upsert sponsored_subscriptions by (business_id, area_id, slot)
+ * so repeat purchases / retries update the existing row instead of inserting a duplicate.
+ */
 async function upsertSubscription(sub, meta = {}) {
-  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId =
+    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
-    meta,
-    customerId,
-  });
+  const { business_id, area_id, slot, category_id, lock_id } =
+    await resolveContext({ meta, customerId });
 
-  if (!area_id || slot == null) {
-    console.warn("[webhook] skipping sponsored_subscriptions upsert (missing area_id/slot)", {
+  // Guard: must have area+slot for sponsored_subscriptions table
+  if (!business_id || !area_id || slot == null) {
+    console.warn("[webhook] skipping sponsored_subscriptions upsert (missing business/area/slot)", {
       sub_id: sub.id,
       customerId,
       business_id,
@@ -172,7 +88,7 @@ async function upsertSubscription(sub, meta = {}) {
       meta,
     });
     await releaseLockSafe(lock_id);
-    return { ok: false, reason: "missing_area_or_slot" };
+    return;
   }
 
   const firstItem = sub.items?.data?.[0];
@@ -183,50 +99,91 @@ async function upsertSubscription(sub, meta = {}) {
     area_id,
     category_id: category_id || null,
     slot,
+
     stripe_customer_id: customerId,
     stripe_subscription_id: sub.id,
+
     price_monthly_pennies: price?.unit_amount ?? null,
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
+
     status: sub.status,
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
   };
 
+  // ✅ Upsert by business_id+area_id+slot (your unique constraint)
   const { error } = await supabase
     .from("sponsored_subscriptions")
-    .upsert(payload, { onConflict: "stripe_subscription_id" });
+    .upsert(payload, { onConflict: "business_id,area_id,slot" });
 
-  if (error) {
-    const msg = String(error?.message || "").toLowerCase();
-    const code = String(error?.code || "").toLowerCase();
+  if (!error) {
+    await releaseLockSafe(lock_id);
+    return;
+  }
 
-    console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
+  // If conflict still occurs, handle safely:
+  const msg = String(error?.message || "").toLowerCase();
+  const code = String(error?.code || "").toLowerCase();
+  console.error("[webhook] upsert sponsored_subscriptions error:", error, payload);
 
-    const isDup =
-      code === "23505" ||
-      msg.includes("overlaps an existing sponsored area") ||
-      msg.includes("duplicate") ||
-      msg.includes("unique") ||
-      msg.includes("uniq_active_slot_per_business");
+  // If it’s a duplicate/unique issue, check who owns that area/slot.
+  if (code === "23505" || msg.includes("duplicate") || msg.includes("unique")) {
+    const { data: existing, error: exErr } = await supabase
+      .from("sponsored_subscriptions")
+      .select("business_id, status, stripe_subscription_id")
+      .eq("area_id", area_id)
+      .eq("slot", slot)
+      .maybeSingle();
 
-    if (isDup) {
-      await refundLatestInvoiceOnce(sub.id);
-      await cancelSubscriptionOnce(sub.id, "Overlap/uniqueness violation");
-      await releaseLockSafe(lock_id);
-      return { ok: false, reason: "duplicate" };
+    if (exErr) {
+      console.error("[webhook] failed to fetch existing row after 23505:", exErr);
+      // fall through to cancel/refund safety
+    } else if (existing?.business_id && String(existing.business_id) === String(business_id)) {
+      // ✅ It’s the SAME business — just update the row with the new stripe_subscription_id
+      const { error: updErr } = await supabase
+        .from("sponsored_subscriptions")
+        .update({
+          stripe_customer_id: payload.stripe_customer_id,
+          stripe_subscription_id: payload.stripe_subscription_id,
+          price_monthly_pennies: payload.price_monthly_pennies,
+          currency: payload.currency,
+          status: payload.status,
+          current_period_end: payload.current_period_end,
+          category_id: payload.category_id,
+        })
+        .eq("area_id", area_id)
+        .eq("slot", slot)
+        .eq("business_id", business_id);
+
+      if (!updErr) {
+        console.warn("[webhook] recovered from 23505 by updating existing business row", {
+          area_id,
+          slot,
+          business_id,
+          sub_id: sub.id,
+        });
+        await releaseLockSafe(lock_id);
+        return;
+      }
+
+      console.error("[webhook] failed to recover 23505 with update:", updErr);
+      // fall through to cancel/refund safety
     }
 
+    // ❌ Owned by someone else or recovery failed => cancel
+    await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
     await releaseLockSafe(lock_id);
-    throw new Error("DB upsert(sponsored_subscriptions) failed");
+    return;
   }
 
   await releaseLockSafe(lock_id);
-  return { ok: true };
+  throw new Error("DB upsert(sponsored_subscriptions) failed");
 }
 
 async function upsertInvoice(inv) {
-  const subscriptionId = typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+  const subscriptionId =
+    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
@@ -239,6 +196,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
+  // If invoice arrives before subscription row exists, hydrate it
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
@@ -356,26 +314,8 @@ exports.handler = async (event) => {
         await upsertInvoice(inv);
 
         if (stripeEvent.type === "invoice.finalized") {
-          const subscriptionId =
-            typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
-
-          if (subscriptionId) {
-            const { data: okSub } = await supabase
-              .from("sponsored_subscriptions")
-              .select("id")
-              .eq("stripe_subscription_id", subscriptionId)
-              .maybeSingle();
-
-            if (!okSub?.id) {
-              console.warn(
-                "[webhook] invoice.finalized skipping createInvoiceAndEmail (no sponsored_subscriptions row)",
-                { invoice: inv.id, subscriptionId }
-              );
-            } else {
-              console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
-              await safeCreateAndEmailInvoice(inv.id, { force: false });
-            }
-          }
+          console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
+          await safeCreateAndEmailInvoice(inv.id, { force: false });
         }
 
         if (stripeEvent.type === "invoice.sent") {
