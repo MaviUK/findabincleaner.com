@@ -14,48 +14,43 @@ type CategoryRow = {
   name: string;
 };
 
+type SponsoredSubscriptionRow = {
+  id: string;
+  cleaner_id: string;
+  area_id: string | null;
+  category_id: string | null;
+};
+
 type SponsoredInvoiceRow = {
   id: string;
-
-  // ✅ this exists in your data
-  cleaner_id: string;
-
-  area_id: string | null;
+  sponsored_subscription_id: string | null;
 
   stripe_invoice_id: string | null;
-  stripe_payment_intent_id: string | null;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
 
-  invoice_number: string | null;
+  amount_due_pennies: number | null;
+  currency: string | null;
   status: string | null;
 
-  subtotal_cents: number | null;
-  tax_cents: number | null;
-  total_cents: number | null;
-  currency: string | null;
-
-  billing_period_start: string | null; // date
-  billing_period_end: string | null; // date (not displayed)
+  period_start: string | null; // timestamp
+  period_end: string | null; // timestamp
   created_at: string;
-
-  pdf_url: string | null;
-  pdf_signed_url: string | null;
-
-  // optional if you sometimes store it on invoice rows
-  category_id?: string | null;
+  updated_at: string | null;
 };
 
 type UiInvoice = SponsoredInvoiceRow & {
+  area_id: string | null;
   area_name: string | null;
+
   category_id: string | null;
   category_name: string | null;
+
   month_key: string; // YYYY-MM
 };
 
-function formatMoney(
-  cents: number | null | undefined,
-  currency: string | null | undefined
-) {
-  const c = Number(cents ?? 0);
+function formatMoney(pennies: number | null | undefined, currency: string | null | undefined) {
+  const c = Number(pennies ?? 0);
   const cur = (currency || "GBP").toUpperCase();
   try {
     return new Intl.NumberFormat("en-GB", {
@@ -147,40 +142,79 @@ export default function Invoices() {
 
         if (cErr) throw cErr;
         if (!cleaner?.id) throw new Error("Cleaner not found");
+
         const cid = String(cleaner.id);
         setCleanerId(cid);
 
-        // 3) load invoices (NO joins)
-        // ✅ IMPORTANT: query via cleaner_id ONLY (your table does not have business_id)
+        // 3) load sponsored subscriptions for this cleaner
+        // (we need these to know which invoices belong to the cleaner,
+        // because sponsored_invoices DOES NOT contain cleaner_id)
+        const { data: subRows, error: subErr } = await supabase
+          .from("sponsored_subscriptions")
+          .select("id,cleaner_id,area_id,category_id")
+          .eq("cleaner_id", cid);
+
+        if (subErr) throw subErr;
+
+        const subs: SponsoredSubscriptionRow[] = (subRows || []).map((r: any) => ({
+          id: String(r.id),
+          cleaner_id: String(r.cleaner_id),
+          area_id: r.area_id ? String(r.area_id) : null,
+          category_id: r.category_id ? String(r.category_id) : null,
+        }));
+
+        const subIds = subs.map((s) => s.id).filter(Boolean);
+        const subById = new Map<string, SponsoredSubscriptionRow>(subs.map((s) => [s.id, s]));
+
+        // If no subs, then no invoices for this cleaner
+        if (subIds.length === 0) {
+          setInvoices([]);
+          setAreas([]);
+          setCategories([]);
+          setLoading(false);
+          return;
+        }
+
+        // 4) load invoices by sponsored_subscription_id IN (subIds)
         const { data: invRows, error: invErr } = await supabase
           .from("sponsored_invoices")
           .select(
             [
               "id",
-              "cleaner_id",
-              "area_id",
+              "sponsored_subscription_id",
               "stripe_invoice_id",
-              "stripe_payment_intent_id",
-              "invoice_number",
-              "status",
-              "subtotal_cents",
-              "tax_cents",
-              "total_cents",
+              "hosted_invoice_url",
+              "invoice_pdf",
+              "amount_due_pennies",
               "currency",
-              "billing_period_start",
-              "billing_period_end",
+              "status",
+              "period_start",
+              "period_end",
               "created_at",
-              "pdf_url",
-              "pdf_signed_url",
-              "category_id",
+              "updated_at",
             ].join(",")
           )
-          .eq("cleaner_id", cid)
+          .in("sponsored_subscription_id", subIds)
           .order("created_at", { ascending: false });
 
         if (invErr) throw invErr;
 
-        // 4) load service areas for this cleaner (area name + category_id)
+        const safeInv: SponsoredInvoiceRow[] = (invRows || []).map((r: any) => ({
+          id: String(r.id),
+          sponsored_subscription_id: r.sponsored_subscription_id ? String(r.sponsored_subscription_id) : null,
+          stripe_invoice_id: r.stripe_invoice_id ? String(r.stripe_invoice_id) : null,
+          hosted_invoice_url: r.hosted_invoice_url ? String(r.hosted_invoice_url) : null,
+          invoice_pdf: r.invoice_pdf ? String(r.invoice_pdf) : null,
+          amount_due_pennies: r.amount_due_pennies != null ? Number(r.amount_due_pennies) : null,
+          currency: r.currency ? String(r.currency) : null,
+          status: r.status ? String(r.status) : null,
+          period_start: r.period_start ? String(r.period_start) : null,
+          period_end: r.period_end ? String(r.period_end) : null,
+          created_at: String(r.created_at),
+          updated_at: r.updated_at ? String(r.updated_at) : null,
+        }));
+
+        // 5) load service areas for area names
         const { data: areaRows, error: aErr } = await supabase
           .from("service_areas")
           .select("id,name,category_id")
@@ -188,13 +222,17 @@ export default function Invoices() {
 
         if (aErr) throw aErr;
 
-        // 5) categories for names (optional RPC)
-        let catRows: CategoryRow[] = [];
-        const { data: cats, error: catErr } = await supabase.rpc(
-          "list_active_categories_for_cleaner",
-          { _cleaner_id: cid }
-        );
+        const safeAreas: ServiceAreaRow[] = (areaRows || []).map((a: any) => ({
+          id: String(a.id),
+          name: String(a.name),
+          category_id: a.category_id ? String(a.category_id) : null,
+        }));
 
+        // 6) categories list for names (optional RPC)
+        let catRows: CategoryRow[] = [];
+        const { data: cats, error: catErr } = await supabase.rpc("list_active_categories_for_cleaner", {
+          _cleaner_id: cid,
+        });
         if (!catErr && cats) {
           catRows = (Array.isArray(cats) ? cats : []).map((r: any) => ({
             id: String(r.id),
@@ -202,52 +240,24 @@ export default function Invoices() {
           }));
         }
 
-        const safeInv: SponsoredInvoiceRow[] = (invRows || []).map((r: any) => ({
-          id: String(r.id),
-          cleaner_id: String(r.cleaner_id),
-          area_id: r.area_id ? String(r.area_id) : null,
-
-          stripe_invoice_id: r.stripe_invoice_id ? String(r.stripe_invoice_id) : null,
-          stripe_payment_intent_id: r.stripe_payment_intent_id ? String(r.stripe_payment_intent_id) : null,
-
-          invoice_number: r.invoice_number ? String(r.invoice_number) : null,
-          status: r.status ? String(r.status) : null,
-
-          subtotal_cents: r.subtotal_cents != null ? Number(r.subtotal_cents) : null,
-          tax_cents: r.tax_cents != null ? Number(r.tax_cents) : null,
-          total_cents: r.total_cents != null ? Number(r.total_cents) : null,
-          currency: r.currency ? String(r.currency) : null,
-
-          billing_period_start: r.billing_period_start ? String(r.billing_period_start) : null,
-          billing_period_end: r.billing_period_end ? String(r.billing_period_end) : null,
-          created_at: String(r.created_at),
-
-          pdf_url: r.pdf_url ? String(r.pdf_url) : null,
-          pdf_signed_url: r.pdf_signed_url ? String(r.pdf_signed_url) : null,
-
-          category_id: r.category_id ? String(r.category_id) : null,
-        }));
-
-        const safeAreas: ServiceAreaRow[] = (areaRows || []).map((a: any) => ({
-          id: String(a.id),
-          name: String(a.name),
-          category_id: a.category_id ? String(a.category_id) : null,
-        }));
-
         const areaById = new Map<string, ServiceAreaRow>(safeAreas.map((a) => [a.id, a]));
         const catNameById = new Map<string, string>(catRows.map((c) => [c.id, c.name]));
 
+        // 7) build UI rows: invoice -> subscription -> area/category
         const ui: UiInvoice[] = safeInv.map((inv) => {
-          const area = inv.area_id ? areaById.get(inv.area_id) : null;
+          const sub = inv.sponsored_subscription_id ? subById.get(inv.sponsored_subscription_id) : null;
+          const area_id = sub?.area_id ?? null;
+          const category_id = sub?.category_id ?? null;
 
-          // Prefer category_id on invoice row if present, else infer from service area
-          const category_id = (inv.category_id ?? area?.category_id ?? null) || null;
+          const area = area_id ? areaById.get(area_id) : null;
+          const resolvedCategoryId = (category_id ?? area?.category_id ?? null) || null;
 
           return {
             ...inv,
+            area_id,
             area_name: area?.name ?? null,
-            category_id,
-            category_name: category_id ? catNameById.get(category_id) ?? null : null,
+            category_id: resolvedCategoryId,
+            category_name: resolvedCategoryId ? catNameById.get(resolvedCategoryId) ?? null : null,
             month_key: monthKeyFrom(inv.created_at),
           };
         });
@@ -266,7 +276,7 @@ export default function Invoices() {
     })();
   }, []);
 
-  // industries this business is in (from service_areas.category_id)
+  // Dropdown options: industries this business is in (from service_areas.category_id)
   const industryOptions = useMemo(() => {
     const set = new Set<string>();
     for (const a of areas) {
@@ -283,7 +293,7 @@ export default function Invoices() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [areas, categories]);
 
-  // months present (from invoice created_at)
+  // Dropdown options: months present (from invoice created_at)
   const monthOptions = useMemo(() => {
     const set = new Set<string>();
     for (const inv of invoices) set.add(inv.month_key);
@@ -294,8 +304,12 @@ export default function Invoices() {
 
   const filtered = useMemo(() => {
     return invoices.filter((inv) => {
-      if (industryFilter !== "all" && inv.category_id !== industryFilter) return false;
-      if (monthFilter !== "all" && inv.month_key !== monthFilter) return false;
+      if (industryFilter !== "all") {
+        if (inv.category_id !== industryFilter) return false;
+      }
+      if (monthFilter !== "all") {
+        if (inv.month_key !== monthFilter) return false;
+      }
       return true;
     });
   }, [invoices, industryFilter, monthFilter]);
@@ -398,20 +412,23 @@ export default function Invoices() {
                   </tr>
                 ) : (
                   filtered.map((inv) => {
-                    const label = inv.invoice_number || inv.stripe_invoice_id || inv.id;
+                    const label = inv.stripe_invoice_id || inv.id;
                     const industry = inv.category_name || "—";
                     const area = inv.area_name || "—";
 
-                    // ✅ only start date (as you asked)
-                    const periodStart = formatDateOnly(inv.billing_period_start || inv.created_at);
+                    // ✅ only start date (as requested)
+                    const periodStart = formatDateOnly(inv.period_start);
                     const created = formatDateTime(inv.created_at);
 
-                    const status = inv.status
-                      ? inv.status.charAt(0).toUpperCase() + inv.status.slice(1)
-                      : "—";
+                    const status =
+                      inv.status
+                        ? inv.status.charAt(0).toUpperCase() + inv.status.slice(1)
+                        : "—";
 
-                    const total = formatMoney(inv.total_cents, inv.currency);
-                    const pdfHref = inv.pdf_signed_url || inv.pdf_url || "";
+                    const total = formatMoney(inv.amount_due_pennies, inv.currency);
+
+                    // Prefer invoice_pdf for download (PDF), else hosted invoice URL
+                    const pdfHref = inv.invoice_pdf || inv.hosted_invoice_url || "";
 
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
