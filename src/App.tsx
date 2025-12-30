@@ -18,7 +18,8 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
 import Onboarding from "./pages/Onboarding"; // ✅ new
-import Analytics from "./pages/Analytics";    // ✅ NEW
+import Analytics from "./pages/Analytics"; // ✅ NEW
+import Invoices from "./pages/Invoices"; // ✅ NEW
 
 // Bump when you change the legal text to force re-acceptance
 const TERMS_VERSION = "2025-09-29";
@@ -56,7 +57,9 @@ function TermsGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session?.user) {
         setOk(false);
         setChecking(false);
@@ -114,9 +117,9 @@ export default function App() {
 
   useEffect(() => {
     // initial check
-    supabase.auth.getSession().then(({ data: { session } }) =>
-      setUser(session?.user ?? null)
-    );
+    supabase.auth
+      .getSession()
+      .then(({ data: { session } }) => setUser(session?.user ?? null));
 
     // keep in sync with auth changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
@@ -157,13 +160,25 @@ export default function App() {
             }
           />
 
-          {/* ✅ NEW: Analytics route (protected + terms-gated) */}
+          {/* ✅ Analytics route (protected + terms-gated) */}
           <Route
             path="/analytics"
             element={
               <ProtectedRoute user={user} loading={loading}>
                 <TermsGate>
                   <Analytics />
+                </TermsGate>
+              </ProtectedRoute>
+            }
+          />
+
+          {/* ✅ NEW: Invoices route (protected + terms-gated) */}
+          <Route
+            path="/invoices"
+            element={
+              <ProtectedRoute user={user} loading={loading}>
+                <TermsGate>
+                  <Invoices />
                 </TermsGate>
               </ProtectedRoute>
             }
