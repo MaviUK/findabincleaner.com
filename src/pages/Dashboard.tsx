@@ -278,48 +278,52 @@ export default function Dashboard() {
         </section>
       ) : (
         <>
-          <section className="card">
-            <div className="card-pad grid grid-cols-1 sm:grid-cols-[auto_1fr] lg:grid-cols-[auto_1fr_auto] gap-4">
-              {cleaner.logo_url ? (
-                <img
-                  src={cleaner.logo_url}
-                  alt="logo"
-                  className="h-16 w-16 object-contain rounded-lg bg-white ring-1 ring-ink-100"
-                />
-              ) : (
-                <div className="h-16 w-16 rounded-lg bg-ink-100" />
-              )}
+        <section className="card">
+  <div className="card-pad grid grid-cols-1 sm:grid-cols-[auto_1fr] lg:grid-cols-[auto_1fr_auto] gap-4">
+    {cleaner.logo_url ? (
+      <img
+        src={cleaner.logo_url}
+        alt="logo"
+        className="h-16 w-16 object-contain rounded-lg bg-white ring-1 ring-ink-100"
+      />
+    ) : (
+      <div className="h-16 w-16 rounded-lg bg-ink-100" />
+    )}
 
-              <div className="min-w-0">
-                <div className="font-semibold truncate">{cleaner.business_name}</div>
-                <div className="muted truncate">{cleaner.address || "No address yet"}</div>
-              </div>
+    <div className="min-w-0">
+      <div className="font-semibold truncate">
+        {cleaner.business_name}
+      </div>
+      <div className="muted truncate">
+        {cleaner.address || "No address yet"}
+      </div>
+    </div>
 
-             <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
-  <Link
-    to="/settings"
-    className="btn btn-primary w-full sm:w-auto"
-  >
-    Edit profile
-  </Link>
+    <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
+      <Link
+        to="/settings"
+        className="btn btn-primary w-full sm:w-auto"
+      >
+        Edit profile
+      </Link>
 
-  <Link
-    to="/invoices"
-    className="btn w-full sm:w-auto"
-  >
-    Invoices
-  </Link>
+      <Link
+        to="/invoices"
+        className="btn w-full sm:w-auto"
+      >
+        Invoices
+      </Link>
 
-  <button
-    className="btn w-full sm:w-auto"
-    onClick={openBillingPortal}
-    disabled={openingPortal}
-  >
-    {openingPortal ? "Opening…" : "Manage billing"}
-  </button>
-</div>
-
-          </section>
+      <button
+        className="btn w-full sm:w-auto"
+        onClick={openBillingPortal}
+        disabled={openingPortal}
+      >
+        {openingPortal ? "Opening…" : "Manage billing"}
+      </button>
+    </div>
+  </div>
+</section>
 
           <section className="card">
             <div className="card-pad space-y-4">
