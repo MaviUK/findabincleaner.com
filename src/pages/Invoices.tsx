@@ -9,6 +9,12 @@ type CategoryRow = {
   slug?: string | null;
 };
 
+type JoinedAreaRow = {
+  id: string;
+  name: string;
+  category_id?: string | null;
+};
+
 type InvoiceRow = {
   id: string;
   cleaner_id: string;
@@ -30,12 +36,8 @@ type InvoiceRow = {
   pdf_signed_url: string | null;
   pdf_storage_path: string | null;
 
-  // joined
-  service_areas?: {
-    id: string;
-    name: string;
-    category_id?: string | null;
-  } | null;
+  // Supabase nested select returns arrays
+  service_areas?: JoinedAreaRow[] | null;
 };
 
 function moneyFromCents(
@@ -44,7 +46,6 @@ function moneyFromCents(
 ) {
   const c = Number.isFinite(Number(cents)) ? Number(cents) : 0;
   const cur = (currency || "GBP").toUpperCase();
-  // stored as cents, so 317 => 3.17
   const amount = c / 100;
 
   try {
@@ -53,7 +54,6 @@ function moneyFromCents(
       currency: cur,
     }).format(amount);
   } catch {
-    // fallback
     const sym = cur === "GBP" ? "£" : "";
     return `${sym}${amount.toFixed(2)}`;
   }
@@ -61,7 +61,6 @@ function moneyFromCents(
 
 function fmtDateTime(iso: string) {
   const d = new Date(iso);
-  // "30 Dec 2025, 00:42"
   return d.toLocaleString("en-GB", {
     day: "2-digit",
     month: "short",
@@ -73,7 +72,6 @@ function fmtDateTime(iso: string) {
 
 function fmtDateOnly(iso: string) {
   const d = new Date(iso);
-  // "2025-12-30" style
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
@@ -88,8 +86,9 @@ function monthKeyFromISO(iso: string) {
 }
 
 function monthLabelFromKey(key: string) {
-  // key: YYYY-MM
-  const [y, m] = key.split("-").map((x) => Number(x));
+  const [yStr, mStr] = key.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
   const d = new Date(y, (m || 1) - 1, 1);
   return d.toLocaleString("en-GB", { month: "long", year: "numeric" });
 }
@@ -149,8 +148,7 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        // 1) Load industries (categories) the business is in
-        // Prefer RPC if you already have it (your Network shows list_active_categories_for_cleaner).
+        // Load industries (categories) the business is in (RPC you already have)
         let catRows: CategoryRow[] = [];
         const { data: rpcCats, error: rpcErr } = await supabase.rpc(
           "list_active_categories_for_cleaner",
@@ -169,8 +167,7 @@ export default function Invoices() {
 
         if (alive) setCategories(catRows);
 
-        // 2) Load invoices (ALL initially)
-        // Join service_areas for area name + category_id (to map to industry)
+        // Load invoices (ALL initially)
         const { data: invData, error: invErr } = await supabase
           .from("sponsored_invoices")
           .select(
@@ -214,8 +211,16 @@ export default function Invoices() {
 
         if (invErr) throw invErr;
 
+        // ✅ Fix the TS mismatch: cast via unknown, and normalize service_areas to array
+        const normalized: InvoiceRow[] = ((invData || []) as unknown as any[]).map(
+          (row) => ({
+            ...row,
+            service_areas: Array.isArray(row.service_areas) ? row.service_areas : [],
+          })
+        );
+
         if (alive) {
-          setInvoices((invData as InvoiceRow[]) || []);
+          setInvoices(normalized);
           setLoading(false);
         }
       } catch (e: any) {
@@ -251,7 +256,8 @@ export default function Invoices() {
 
     if (industryFilter !== "all") {
       list = list.filter((inv) => {
-        const catId = inv.service_areas?.category_id || null;
+        const area = inv.service_areas?.[0] || null;
+        const catId = area?.category_id || null;
         return catId === industryFilter;
       });
     }
@@ -273,9 +279,7 @@ export default function Invoices() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="section-title text-2xl mb-1">Invoices</h1>
-          <p className="muted">
-            Your invoice history ({filtered.length})
-          </p>
+          <p className="muted">Your invoice history ({filtered.length})</p>
         </div>
 
         <Link to="/dashboard" className="btn">
@@ -325,9 +329,7 @@ export default function Invoices() {
             </button>
           </div>
 
-          {errorMsg ? (
-            <div className="alert alert-error mt-4">{errorMsg}</div>
-          ) : null}
+          {errorMsg ? <div className="alert alert-error mt-4">{errorMsg}</div> : null}
         </div>
       </section>
 
@@ -355,10 +357,12 @@ export default function Invoices() {
 
                 <tbody>
                   {filtered.map((inv) => {
-                    const catId = inv.service_areas?.category_id || null;
+                    const area = inv.service_areas?.[0] || null;
+
+                    const catId = area?.category_id || null;
                     const industry = catId ? categoryNameById.get(catId) : null;
 
-                    // ✅ You asked: billing period only needs start date
+                    // ✅ Only need start date
                     const periodStart = inv.billing_period_start
                       ? fmtDateOnly(inv.billing_period_start)
                       : inv.created_at
@@ -367,27 +371,20 @@ export default function Invoices() {
 
                     const pdfLink = inv.pdf_signed_url || inv.pdf_url || null;
 
+                    // ✅ replaceAll -> split/join
+                    const statusLabel = (inv.status || "—").toString().split("_").join(" ");
+
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
-                        <td className="py-3 pr-3 font-medium">
-                          {inv.invoice_number || "—"}
-                        </td>
+                        <td className="py-3 pr-3 font-medium">{inv.invoice_number || "—"}</td>
 
-                        <td className="py-3 pr-3">
-                          {industry || "—"}
-                        </td>
+                        <td className="py-3 pr-3">{industry || "—"}</td>
 
-                        <td className="py-3 pr-3">
-                          {inv.service_areas?.name || "—"}
-                        </td>
+                        <td className="py-3 pr-3">{area?.name || "—"}</td>
 
-                        <td className="py-3 pr-3">
-                          {periodStart}
-                        </td>
+                        <td className="py-3 pr-3">{periodStart}</td>
 
-                        <td className="py-3 pr-3">
-                          {(inv.status || "—").toString().replaceAll("_", " ")}
-                        </td>
+                        <td className="py-3 pr-3">{statusLabel}</td>
 
                         <td className="py-3 pr-3">
                           {moneyFromCents(inv.total_cents, inv.currency)}
@@ -399,12 +396,7 @@ export default function Invoices() {
 
                         <td className="py-3">
                           {pdfLink ? (
-                            <a
-                              className="link"
-                              href={pdfLink}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
+                            <a className="link" href={pdfLink} target="_blank" rel="noreferrer">
                               PDF
                             </a>
                           ) : (
@@ -424,6 +416,11 @@ export default function Invoices() {
           )}
         </div>
       </section>
+
+      {/* tiny debug helper if you ever need it */}
+      {cleanerId ? (
+        <div className="mt-6 text-xs muted">Cleaner: {cleanerId}</div>
+      ) : null}
     </div>
   );
 }
