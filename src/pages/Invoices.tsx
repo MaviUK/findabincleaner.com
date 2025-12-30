@@ -3,68 +3,64 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-type ServiceAreaRow = {
-  id: string;
-  name: string;
-  category_id: string | null;
-};
-
 type CategoryRow = {
   id: string;
   name: string;
+  slug?: string | null;
 };
 
-type SponsoredSubscriptionRow = {
+type JoinedAreaRow = {
+  id: string;
+  name: string;
+  category_id?: string | null;
+};
+
+type InvoiceRow = {
   id: string;
   cleaner_id: string;
   area_id: string | null;
-  category_id: string | null;
-};
 
-type SponsoredInvoiceRow = {
-  id: string;
-  sponsored_subscription_id: string | null;
-
-  stripe_invoice_id: string | null;
-  hosted_invoice_url: string | null;
-  invoice_pdf: string | null;
-
-  amount_due_pennies: number | null;
-  currency: string | null;
+  invoice_number: string | null;
   status: string | null;
 
-  period_start: string | null; // timestamp
-  period_end: string | null; // timestamp
+  subtotal_cents: number | null;
+  tax_cents: number | null;
+  total_cents: number | null;
+  currency: string | null;
+
+  billing_period_start: string | null;
+  billing_period_end: string | null;
   created_at: string;
-  updated_at: string | null;
+
+  pdf_url: string | null;
+  pdf_signed_url: string | null;
+  pdf_storage_path: string | null;
+
+  // ✅ many invoices -> one service area
+  service_area?: JoinedAreaRow | null;
 };
 
-type UiInvoice = SponsoredInvoiceRow & {
-  area_id: string | null;
-  area_name: string | null;
-
-  category_id: string | null;
-  category_name: string | null;
-
-  month_key: string; // YYYY-MM
-};
-
-function formatMoney(pennies: number | null | undefined, currency: string | null | undefined) {
-  const c = Number(pennies ?? 0);
+function moneyFromCents(
+  cents: number | null | undefined,
+  currency: string | null | undefined
+) {
+  const c = Number.isFinite(Number(cents)) ? Number(cents) : 0;
   const cur = (currency || "GBP").toUpperCase();
+  const amount = c / 100;
+
   try {
     return new Intl.NumberFormat("en-GB", {
       style: "currency",
       currency: cur,
-    }).format(c / 100);
+    }).format(amount);
   } catch {
-    return `£${(c / 100).toFixed(2)}`;
+    const sym = cur === "GBP" ? "£" : "";
+    return `${sym}${amount.toFixed(2)}`;
   }
 }
 
-function formatDateTime(iso: string) {
+function fmtDateTime(iso: string) {
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString("en-GB", {
     day: "2-digit",
     month: "short",
@@ -74,244 +70,209 @@ function formatDateTime(iso: string) {
   });
 }
 
-function formatDateOnly(isoOrDate: string | null | undefined) {
-  if (!isoOrDate) return "—";
-  const d = new Date(isoOrDate);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleDateString("en-GB", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-}
-
-function monthKeyFrom(dateIsoOrDate: string | null | undefined) {
-  if (!dateIsoOrDate) return "unknown";
-  const d = new Date(dateIsoOrDate);
-  if (Number.isNaN(d.getTime())) return "unknown";
+function fmtDateOnly(iso: string) {
+  const d = new Date(iso);
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
-  return `${y}-${m}`;
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
-function monthLabel(key: string) {
-  if (!key || key === "unknown") return "Unknown";
-  const [y, m] = key.split("-");
-  const d = new Date(Number(y), Number(m) - 1, 1);
-  if (Number.isNaN(d.getTime())) return key;
-  return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+function monthKeyFromISO(iso: string) {
+  const d = new Date(iso);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`; // YYYY-MM
+}
+
+function monthLabelFromKey(key: string) {
+  const [yStr, mStr] = key.split("-");
+  const y = Number(yStr);
+  const m = Number(mStr);
+  const d = new Date(y, (m || 1) - 1, 1);
+  return d.toLocaleString("en-GB", { month: "long", year: "numeric" });
 }
 
 export default function Invoices() {
   const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const [cleanerId, setCleanerId] = useState<string | null>(null);
 
-  const [invoices, setInvoices] = useState<UiInvoice[]>([]);
-  const [areas, setAreas] = useState<ServiceAreaRow[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
 
-  const [industryFilter, setIndustryFilter] = useState<string>("all"); // category_id
-  const [monthFilter, setMonthFilter] = useState<string>("all"); // YYYY-MM
+  // Filters
+  const [industryFilter, setIndustryFilter] = useState<string>("all"); // category_id OR "all"
+  const [monthFilter, setMonthFilter] = useState<string>("all"); // YYYY-MM OR "all"
 
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       setLoading(true);
-      setErr(null);
+      setErrorMsg(null);
 
       try {
-        // 1) who is logged in?
-        const { data: sess } = await supabase.auth.getSession();
-        const userId = sess?.session?.user?.id;
-        if (!userId) {
-          setCleanerId(null);
-          setInvoices([]);
-          setAreas([]);
-          setCategories([]);
-          setLoading(false);
+        const {
+          data: { session },
+          error: sessErr,
+        } = await supabase.auth.getSession();
+
+        if (sessErr) throw sessErr;
+        if (!session?.user) {
+          if (alive) {
+            setErrorMsg("You must be logged in to view invoices.");
+            setLoading(false);
+          }
           return;
         }
 
-        // 2) map user -> cleaner id
-        const { data: cleaner, error: cErr } = await supabase
+        // Get cleaner id for this user
+        const { data: cleaner, error: cleanerErr } = await supabase
           .from("cleaners")
           .select("id")
-          .eq("user_id", userId)
+          .eq("user_id", session.user.id)
           .maybeSingle();
 
-        if (cErr) throw cErr;
-        if (!cleaner?.id) throw new Error("Cleaner not found");
-
-        const cid = String(cleaner.id);
-        setCleanerId(cid);
-
-        // 3) load sponsored subscriptions for this cleaner
-        // (we need these to know which invoices belong to the cleaner,
-        // because sponsored_invoices DOES NOT contain cleaner_id)
-        const { data: subRows, error: subErr } = await supabase
-          .from("sponsored_subscriptions")
-          .select("id,cleaner_id,area_id,category_id")
-          .eq("cleaner_id", cid);
-
-        if (subErr) throw subErr;
-
-        const subs: SponsoredSubscriptionRow[] = (subRows || []).map((r: any) => ({
-          id: String(r.id),
-          cleaner_id: String(r.cleaner_id),
-          area_id: r.area_id ? String(r.area_id) : null,
-          category_id: r.category_id ? String(r.category_id) : null,
-        }));
-
-        const subIds = subs.map((s) => s.id).filter(Boolean);
-        const subById = new Map<string, SponsoredSubscriptionRow>(subs.map((s) => [s.id, s]));
-
-        // If no subs, then no invoices for this cleaner
-        if (subIds.length === 0) {
-          setInvoices([]);
-          setAreas([]);
-          setCategories([]);
-          setLoading(false);
+        if (cleanerErr) throw cleanerErr;
+        if (!cleaner?.id) {
+          if (alive) {
+            setErrorMsg("Could not find your business profile.");
+            setLoading(false);
+          }
           return;
         }
 
-        // 4) load invoices by sponsored_subscription_id IN (subIds)
-        const { data: invRows, error: invErr } = await supabase
+        const cid = String(cleaner.id);
+        if (!alive) return;
+        setCleanerId(cid);
+
+        // Load industries (categories) the business is in (RPC you already have)
+        let catRows: CategoryRow[] = [];
+        const { data: rpcCats, error: rpcErr } = await supabase.rpc(
+          "list_active_categories_for_cleaner",
+          { _cleaner_id: cid }
+        );
+
+        if (!rpcErr && Array.isArray(rpcCats)) {
+          catRows = rpcCats
+            .map((r: any) => ({
+              id: String(r.id),
+              name: String(r.name),
+              slug: r.slug ? String(r.slug) : null,
+            }))
+            .filter((r) => r.id && r.name);
+        }
+
+        if (alive) setCategories(catRows);
+
+        // ✅ Load invoices with joined AREA (many->one join)
+        const { data: invData, error: invErr } = await supabase
           .from("sponsored_invoices")
           .select(
-            [
-              "id",
-              "sponsored_subscription_id",
-              "stripe_invoice_id",
-              "hosted_invoice_url",
-              "invoice_pdf",
-              "amount_due_pennies",
-              "currency",
-              "status",
-              "period_start",
-              "period_end",
-              "created_at",
-              "updated_at",
-            ].join(",")
+            `
+            id,
+            cleaner_id,
+            area_id,
+            stripe_invoice_id,
+            stripe_payment_intent_id,
+            invoice_number,
+            status,
+            subtotal_cents,
+            tax_cents,
+            total_cents,
+            currency,
+            billing_period_start,
+            billing_period_end,
+            pdf_url,
+            emailed_at,
+            created_at,
+            supplier_name,
+            supplier_address,
+            supplier_email,
+            supplier_vat,
+            customer_name,
+            customer_email,
+            customer_address,
+            area_km2,
+            rate_per_km2_cents,
+            pdf_storage_path,
+            pdf_signed_url,
+            service_area:service_areas (
+              id,
+              name,
+              category_id
+            )
+          `
           )
-          .in("sponsored_subscription_id", subIds)
+          .eq("cleaner_id", cid)
           .order("created_at", { ascending: false });
 
         if (invErr) throw invErr;
 
-        const safeInv: SponsoredInvoiceRow[] = (invRows || []).map((r: any) => ({
-          id: String(r.id),
-          sponsored_subscription_id: r.sponsored_subscription_id ? String(r.sponsored_subscription_id) : null,
-          stripe_invoice_id: r.stripe_invoice_id ? String(r.stripe_invoice_id) : null,
-          hosted_invoice_url: r.hosted_invoice_url ? String(r.hosted_invoice_url) : null,
-          invoice_pdf: r.invoice_pdf ? String(r.invoice_pdf) : null,
-          amount_due_pennies: r.amount_due_pennies != null ? Number(r.amount_due_pennies) : null,
-          currency: r.currency ? String(r.currency) : null,
-          status: r.status ? String(r.status) : null,
-          period_start: r.period_start ? String(r.period_start) : null,
-          period_end: r.period_end ? String(r.period_end) : null,
-          created_at: String(r.created_at),
-          updated_at: r.updated_at ? String(r.updated_at) : null,
-        }));
+        // ✅ Normalize join (sometimes Supabase can return object; keep it as object)
+        const normalized: InvoiceRow[] = ((invData || []) as unknown as any[]).map(
+          (row) => {
+            const sa = row.service_area;
 
-        // 5) load service areas for area names
-        const { data: areaRows, error: aErr } = await supabase
-          .from("service_areas")
-          .select("id,name,category_id")
-          .eq("cleaner_id", cid);
+            // if it ever comes back as array for any reason, take first
+            const service_area = Array.isArray(sa) ? sa[0] || null : sa || null;
 
-        if (aErr) throw aErr;
+            return {
+              ...row,
+              service_area,
+            };
+          }
+        );
 
-        const safeAreas: ServiceAreaRow[] = (areaRows || []).map((a: any) => ({
-          id: String(a.id),
-          name: String(a.name),
-          category_id: a.category_id ? String(a.category_id) : null,
-        }));
-
-        // 6) categories list for names (optional RPC)
-        let catRows: CategoryRow[] = [];
-        const { data: cats, error: catErr } = await supabase.rpc("list_active_categories_for_cleaner", {
-          _cleaner_id: cid,
-        });
-        if (!catErr && cats) {
-          catRows = (Array.isArray(cats) ? cats : []).map((r: any) => ({
-            id: String(r.id),
-            name: String(r.name),
-          }));
+        if (alive) {
+          setInvoices(normalized);
+          setLoading(false);
         }
-
-        const areaById = new Map<string, ServiceAreaRow>(safeAreas.map((a) => [a.id, a]));
-        const catNameById = new Map<string, string>(catRows.map((c) => [c.id, c.name]));
-
-        // 7) build UI rows: invoice -> subscription -> area/category
-        const ui: UiInvoice[] = safeInv.map((inv) => {
-          const sub = inv.sponsored_subscription_id ? subById.get(inv.sponsored_subscription_id) : null;
-          const area_id = sub?.area_id ?? null;
-          const category_id = sub?.category_id ?? null;
-
-          const area = area_id ? areaById.get(area_id) : null;
-          const resolvedCategoryId = (category_id ?? area?.category_id ?? null) || null;
-
-          return {
-            ...inv,
-            area_id,
-            area_name: area?.name ?? null,
-            category_id: resolvedCategoryId,
-            category_name: resolvedCategoryId ? catNameById.get(resolvedCategoryId) ?? null : null,
-            month_key: monthKeyFrom(inv.created_at),
-          };
-        });
-
-        setAreas(safeAreas);
-        setCategories(catRows);
-        setInvoices(ui);
       } catch (e: any) {
-        setErr(e?.message || "Failed to load invoices");
-        setInvoices([]);
-        setAreas([]);
-        setCategories([]);
-      } finally {
-        setLoading(false);
+        console.error(e);
+        if (alive) {
+          setErrorMsg(e?.message || "Failed to load invoices.");
+          setLoading(false);
+        }
       }
     })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
-  // Dropdown options: industries this business is in (from service_areas.category_id)
-  const industryOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const a of areas) {
-      if (a.category_id) set.add(a.category_id);
+  const categoryNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of categories) m.set(c.id, c.name);
+    return m;
+  }, [categories]);
+
+  const allMonths = useMemo(() => {
+    const keys = new Set<string>();
+    for (const inv of invoices) {
+      if (inv?.created_at) keys.add(monthKeyFromISO(inv.created_at));
     }
-    const ids = Array.from(set);
-
-    const nameById = new Map(categories.map((c) => [c.id, c.name]));
-    return ids
-      .map((id) => ({
-        id,
-        name: nameById.get(id) || "Industry",
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [areas, categories]);
-
-  // Dropdown options: months present (from invoice created_at)
-  const monthOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const inv of invoices) set.add(inv.month_key);
-    const keys = Array.from(set).filter(Boolean);
-    keys.sort((a, b) => b.localeCompare(a)); // newest first
-    return keys.map((k) => ({ key: k, label: monthLabel(k) }));
+    return Array.from(keys).sort((a, b) => (a < b ? 1 : -1)); // newest first
   }, [invoices]);
 
   const filtered = useMemo(() => {
-    return invoices.filter((inv) => {
-      if (industryFilter !== "all") {
-        if (inv.category_id !== industryFilter) return false;
-      }
-      if (monthFilter !== "all") {
-        if (inv.month_key !== monthFilter) return false;
-      }
-      return true;
-    });
+    let list = invoices.slice();
+
+    if (industryFilter !== "all") {
+      list = list.filter((inv) => {
+        const catId = inv.service_area?.category_id || null;
+        return catId === industryFilter;
+      });
+    }
+
+    if (monthFilter !== "all") {
+      list = list.filter((inv) => monthKeyFromISO(inv.created_at) === monthFilter);
+    }
+
+    return list;
   }, [invoices, industryFilter, monthFilter]);
 
   const clearFilters = () => {
@@ -321,24 +282,22 @@ export default function Invoices() {
 
   return (
     <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-10">
-      <div className="flex items-start justify-between gap-4 mb-6">
+      <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="section-title text-2xl mb-1">Invoices</h1>
           <p className="muted">Your invoice history ({filtered.length})</p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Link to="/dashboard" className="btn">
-            Back to dashboard
-          </Link>
-        </div>
+        <Link to="/dashboard" className="btn">
+          Back to dashboard
+        </Link>
       </div>
 
-      <section className="card">
+      <section className="card mt-6">
         <div className="card-pad">
           <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-4 items-end">
             <div>
-              <label className="text-sm font-medium block mb-1">Sort by industry</label>
+              <label className="block text-sm font-medium mb-1">Sort by industry</label>
               <select
                 className="input w-full"
                 value={industryFilter}
@@ -346,16 +305,16 @@ export default function Invoices() {
                 disabled={loading}
               >
                 <option value="all">All industries</option>
-                {industryOptions.map((opt) => (
-                  <option key={opt.id} value={opt.id}>
-                    {opt.name}
+                {categories.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
                   </option>
                 ))}
               </select>
             </div>
 
             <div>
-              <label className="text-sm font-medium block mb-1">Month issued</label>
+              <label className="block text-sm font-medium mb-1">Month issued</label>
               <select
                 className="input w-full"
                 value={monthFilter}
@@ -363,85 +322,88 @@ export default function Invoices() {
                 disabled={loading}
               >
                 <option value="all">All months</option>
-                {monthOptions.map((m) => (
-                  <option key={m.key} value={m.key}>
-                    {m.label}
+                {allMonths.map((k) => (
+                  <option key={k} value={k}>
+                    {monthLabelFromKey(k)}
                   </option>
                 ))}
               </select>
             </div>
 
-            <button className="btn" onClick={clearFilters} disabled={loading}>
+            <button className="btn md:justify-self-end" onClick={clearFilters} disabled={loading}>
               Clear
             </button>
           </div>
 
-          {err ? (
-            <div className="mt-4 rounded-lg border border-red-200 bg-red-50 text-red-800 px-4 py-3">
-              {err}
-            </div>
-          ) : null}
+          {errorMsg ? <div className="alert alert-error mt-4">{errorMsg}</div> : null}
+        </div>
+      </section>
 
-          <div className="mt-6 overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left border-b border-ink-100">
-                  <th className="py-3 pr-4">Invoice</th>
-                  <th className="py-3 pr-4">Industry</th>
-                  <th className="py-3 pr-4">Area</th>
-                  <th className="py-3 pr-4">Period start</th>
-                  <th className="py-3 pr-4">Status</th>
-                  <th className="py-3 pr-4">Total</th>
-                  <th className="py-3 pr-4">Created</th>
-                  <th className="py-3">Download</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={8} className="py-6 muted">
-                      Loading…
-                    </td>
+      <section className="card mt-6">
+        <div className="card-pad">
+          {loading ? (
+            <div className="muted">Loading…</div>
+          ) : filtered.length === 0 ? (
+            <div className="muted">No invoices found.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-ink-100">
+                    <th className="text-left py-3 pr-3">Invoice</th>
+                    <th className="text-left py-3 pr-3">Industry</th>
+                    <th className="text-left py-3 pr-3">Area</th>
+                    <th className="text-left py-3 pr-3">Period</th>
+                    <th className="text-left py-3 pr-3">Status</th>
+                    <th className="text-left py-3 pr-3">Total</th>
+                    <th className="text-left py-3 pr-3">Created</th>
+                    <th className="text-left py-3">Download</th>
                   </tr>
-                ) : filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={8} className="py-6 muted">
-                      No invoices found.
-                    </td>
-                  </tr>
-                ) : (
-                  filtered.map((inv) => {
-                    const label = inv.stripe_invoice_id || inv.id;
-                    const industry = inv.category_name || "—";
-                    const area = inv.area_name || "—";
+                </thead>
 
-                    // ✅ only start date (as requested)
-                    const periodStart = formatDateOnly(inv.period_start);
-                    const created = formatDateTime(inv.created_at);
+                <tbody>
+                  {filtered.map((inv) => {
+                    const area = inv.service_area || null;
 
-                    const status =
-                      inv.status
-                        ? inv.status.charAt(0).toUpperCase() + inv.status.slice(1)
-                        : "—";
+                    const catId = area?.category_id || null;
+                    const industry = catId ? categoryNameById.get(catId) : null;
 
-                    const total = formatMoney(inv.amount_due_pennies, inv.currency);
+                    // ✅ Only need start date
+                    const periodStart = inv.billing_period_start
+                      ? fmtDateOnly(inv.billing_period_start)
+                      : inv.created_at
+                      ? fmtDateOnly(inv.created_at)
+                      : "—";
 
-                    // Prefer invoice_pdf for download (PDF), else hosted invoice URL
-                    const pdfHref = inv.invoice_pdf || inv.hosted_invoice_url || "";
+                    const pdfLink = inv.pdf_signed_url || inv.pdf_url || null;
+
+                    // ✅ replaceAll -> split/join
+                    const statusLabel = (inv.status || "—").toString().split("_").join(" ");
 
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
-                        <td className="py-3 pr-4 font-medium whitespace-nowrap">{label}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{industry}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{area}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{periodStart}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{status}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{total}</td>
-                        <td className="py-3 pr-4 whitespace-nowrap">{created}</td>
-                        <td className="py-3 whitespace-nowrap">
-                          {pdfHref ? (
-                            <a className="link" href={pdfHref} target="_blank" rel="noreferrer">
+                        <td className="py-3 pr-3 font-medium">{inv.invoice_number || "—"}</td>
+
+                        <td className="py-3 pr-3">{industry || "—"}</td>
+
+                        {/* ✅ This will now actually show */}
+                        <td className="py-3 pr-3">{area?.name || inv.area_id || "—"}</td>
+
+                        <td className="py-3 pr-3">{periodStart}</td>
+
+                        <td className="py-3 pr-3">{statusLabel}</td>
+
+                        <td className="py-3 pr-3">
+                          {moneyFromCents(inv.total_cents, inv.currency)}
+                        </td>
+
+                        <td className="py-3 pr-3">
+                          {inv.created_at ? fmtDateTime(inv.created_at) : "—"}
+                        </td>
+
+                        <td className="py-3">
+                          {pdfLink ? (
+                            <a className="link" href={pdfLink} target="_blank" rel="noreferrer">
                               PDF
                             </a>
                           ) : (
@@ -450,19 +412,20 @@ export default function Invoices() {
                         </td>
                       </tr>
                     );
-                  })
-                )}
-              </tbody>
-            </table>
+                  })}
+                </tbody>
+              </table>
 
-            <p className="muted text-xs mt-3">
-              If “PDF” is blank, that invoice row doesn’t have a stored PDF URL yet.
-            </p>
-
-            {cleanerId ? <p className="muted text-xs mt-2">Cleaner: {cleanerId}</p> : null}
-          </div>
+              <p className="muted mt-3 text-xs">
+                If “PDF” is blank, it means this invoice row doesn’t have a stored PDF URL yet.
+              </p>
+            </div>
+          )}
         </div>
       </section>
+
+      {/* tiny debug helper if you ever need it */}
+      {cleanerId ? <div className="mt-6 text-xs muted">Cleaner: {cleanerId}</div> : null}
     </div>
   );
 }
