@@ -14,9 +14,9 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
 const SUBJECT = "Reminder: Your sponsorship renews in 72 hours";
 
-// Run window: 72h ± 30 minutes (if running hourly)
-// If you run daily, increase this window (e.g. ±12h)
-const WINDOW_MINUTES = Number(process.env.BILLING_REMINDER_WINDOW_MINUTES || 30);
+/// Run window: 72h ± 12 hours (good for a once-per-day run)
+const WINDOW_MINUTES = Number(process.env.BILLING_REMINDER_WINDOW_MINUTES || 720);
+
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
