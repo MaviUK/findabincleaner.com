@@ -31,24 +31,27 @@ type SponsoredInvoiceRow = {
   currency: string | null;
 
   billing_period_start: string | null; // date
-  billing_period_end: string | null; // date (we won't display)
+  billing_period_end: string | null; // date (not displayed)
   created_at: string;
 
   pdf_url: string | null;
   pdf_signed_url: string | null;
 
-  // sometimes you store this on invoice rows
+  // optional if you sometimes store it
   category_id?: string | null;
 };
 
 type UiInvoice = SponsoredInvoiceRow & {
   area_name: string | null;
-  category_id: string | null;
+  category_id_norm: string | null; // normalized category id used for filters
   category_name: string | null;
   month_key: string; // YYYY-MM
 };
 
-function formatMoney(cents: number | null | undefined, currency: string | null | undefined) {
+function formatMoney(
+  cents: number | null | undefined,
+  currency: string | null | undefined
+) {
   const c = Number(cents ?? 0);
   const cur = (currency || "GBP").toUpperCase();
   try {
@@ -101,6 +104,35 @@ function monthLabel(key: string) {
   return d.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
+async function fetchCategoriesForCleaner(cleanerId: string): Promise<CategoryRow[]> {
+  // 1) Try RPC you mentioned/used earlier
+  {
+    const { data, error } = await supabase.rpc("list_active_categories_for_cleaner", {
+      _cleaner_id: cleanerId,
+    });
+    if (!error && data) {
+      const rows = Array.isArray(data) ? data : [];
+      return rows
+        .map((r: any) => ({
+          id: String(r.id),
+          name: String(r.name),
+        }))
+        .filter((r) => r.id && r.name);
+    }
+  }
+
+  // 2) Fallback: try categories table if it exists (some envs don’t)
+  {
+    const { data, error } = await supabase.from("categories").select("id,name");
+    if (!error && data) {
+      return (data as any[]).map((r) => ({ id: String(r.id), name: String(r.name) }));
+    }
+  }
+
+  // 3) Otherwise no category names available
+  return [];
+}
+
 export default function Invoices() {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -141,6 +173,7 @@ export default function Invoices() {
 
         if (cErr) throw cErr;
         if (!cleaner?.id) throw new Error("Cleaner not found");
+
         const cid = String(cleaner.id);
         setCleanerId(cid);
 
@@ -165,7 +198,6 @@ export default function Invoices() {
               "created_at",
               "pdf_url",
               "pdf_signed_url",
-              // keep if you happen to store it on invoice rows
               "category_id",
             ].join(",")
           )
@@ -182,18 +214,8 @@ export default function Invoices() {
 
         if (aErr) throw aErr;
 
-        // 5) load categories list for names (you have an RPC for this)
-        // If the RPC doesn't exist on a dev db, we fail gracefully.
-        let catRows: CategoryRow[] = [];
-        const { data: cats, error: catErr } = await supabase.rpc("list_active_categories_for_cleaner", {
-          _cleaner_id: cid,
-        });
-        if (!catErr && cats) {
-          catRows = (Array.isArray(cats) ? cats : []).map((r: any) => ({
-            id: String(r.id),
-            name: String(r.name),
-          }));
-        }
+        // 5) categories list for names (safe fallbacks)
+        const catRows = await fetchCategoriesForCleaner(cid);
 
         const safeInv: SponsoredInvoiceRow[] = (invRows || []).map((r: any) => ({
           id: String(r.id),
@@ -201,7 +223,9 @@ export default function Invoices() {
           area_id: r.area_id ? String(r.area_id) : null,
 
           stripe_invoice_id: r.stripe_invoice_id ? String(r.stripe_invoice_id) : null,
-          stripe_payment_intent_id: r.stripe_payment_intent_id ? String(r.stripe_payment_intent_id) : null,
+          stripe_payment_intent_id: r.stripe_payment_intent_id
+            ? String(r.stripe_payment_intent_id)
+            : null,
 
           invoice_number: r.invoice_number ? String(r.invoice_number) : null,
           status: r.status ? String(r.status) : null,
@@ -233,14 +257,14 @@ export default function Invoices() {
         const ui: UiInvoice[] = safeInv.map((inv) => {
           const area = inv.area_id ? areaById.get(inv.area_id) : null;
 
-          // Prefer category_id on invoice row if present, else infer from service area
-          const category_id = (inv.category_id ?? area?.category_id ?? null) || null;
+          // Prefer invoice.category_id, else infer from area.category_id
+          const categoryIdNorm = (inv.category_id ?? area?.category_id ?? null) || null;
 
           return {
             ...inv,
             area_name: area?.name ?? null,
-            category_id,
-            category_name: category_id ? catNameById.get(category_id) ?? null : null,
+            category_id_norm: categoryIdNorm,
+            category_name: categoryIdNorm ? catNameById.get(categoryIdNorm) ?? null : null,
             month_key: monthKeyFrom(inv.created_at),
           };
         });
@@ -259,7 +283,7 @@ export default function Invoices() {
     })();
   }, []);
 
-  // Dropdown options: industries this business is in (from service_areas.category_id)
+  // Industries this business is in = distinct category_id from service_areas
   const industryOptions = useMemo(() => {
     const set = new Set<string>();
     for (const a of areas) {
@@ -267,8 +291,8 @@ export default function Invoices() {
     }
     const ids = Array.from(set);
 
-    // map names from categories RPC; fallback to id
     const nameById = new Map(categories.map((c) => [c.id, c.name]));
+
     return ids
       .map((id) => ({
         id,
@@ -277,19 +301,19 @@ export default function Invoices() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [areas, categories]);
 
-  // Dropdown options: months present (from invoice created_at)
+  // Months from invoice created_at
   const monthOptions = useMemo(() => {
     const set = new Set<string>();
     for (const inv of invoices) set.add(inv.month_key);
     const keys = Array.from(set).filter(Boolean);
-    keys.sort((a, b) => b.localeCompare(a)); // newest first
+    keys.sort((a, b) => b.localeCompare(a));
     return keys.map((k) => ({ key: k, label: monthLabel(k) }));
   }, [invoices]);
 
   const filtered = useMemo(() => {
     return invoices.filter((inv) => {
       if (industryFilter !== "all") {
-        if (inv.category_id !== industryFilter) return false;
+        if (inv.category_id_norm !== industryFilter) return false;
       }
       if (monthFilter !== "all") {
         if (inv.month_key !== monthFilter) return false;
@@ -308,9 +332,7 @@ export default function Invoices() {
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
           <h1 className="section-title text-2xl mb-1">Invoices</h1>
-          <p className="muted">
-            Your invoice history ({filtered.length})
-          </p>
+          <p className="muted">Your invoice history ({filtered.length})</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -402,6 +424,7 @@ export default function Invoices() {
                     const industry = inv.category_name || "—";
                     const area = inv.area_name || "—";
 
+                    // Billing period: ONLY start date (your request)
                     const periodStart = formatDateOnly(inv.billing_period_start || inv.created_at);
                     const created = formatDateTime(inv.created_at);
 
@@ -412,14 +435,11 @@ export default function Invoices() {
 
                     const total = formatMoney(inv.total_cents, inv.currency);
 
-                    // Prefer signed URL if present, else pdf_url if present
                     const pdfHref = inv.pdf_signed_url || inv.pdf_url || "";
 
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
-                        <td className="py-3 pr-4 font-medium whitespace-nowrap">
-                          {label}
-                        </td>
+                        <td className="py-3 pr-4 font-medium whitespace-nowrap">{label}</td>
                         <td className="py-3 pr-4 whitespace-nowrap">{industry}</td>
                         <td className="py-3 pr-4 whitespace-nowrap">{area}</td>
                         <td className="py-3 pr-4 whitespace-nowrap">{periodStart}</td>
@@ -428,12 +448,7 @@ export default function Invoices() {
                         <td className="py-3 pr-4 whitespace-nowrap">{created}</td>
                         <td className="py-3 whitespace-nowrap">
                           {pdfHref ? (
-                            <a
-                              className="link"
-                              href={pdfHref}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
+                            <a className="link" href={pdfHref} target="_blank" rel="noreferrer">
                               PDF
                             </a>
                           ) : (
@@ -451,9 +466,7 @@ export default function Invoices() {
               If “PDF” is blank, that invoice row doesn’t have a stored PDF URL yet.
             </p>
 
-            {cleanerId ? (
-              <p className="muted text-xs mt-2">Cleaner: {cleanerId}</p>
-            ) : null}
+            {cleanerId ? <p className="muted text-xs mt-2">Cleaner: {cleanerId}</p> : null}
           </div>
         </div>
       </section>
