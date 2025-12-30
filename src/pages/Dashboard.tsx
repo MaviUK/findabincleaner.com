@@ -295,15 +295,30 @@ export default function Dashboard() {
                 <div className="muted truncate">{cleaner.address || "No address yet"}</div>
               </div>
 
-              <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
-                <Link to="/settings" className="btn btn-primary w-full sm:w-auto">
-                  Edit profile
-                </Link>
-                <button className="btn w-full sm:w-auto" onClick={openBillingPortal} disabled={openingPortal}>
-                  {openingPortal ? "Opening…" : "Manage billing"}
-                </button>
-              </div>
-            </div>
+             <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
+  <Link
+    to="/settings"
+    className="btn btn-primary w-full sm:w-auto"
+  >
+    Edit profile
+  </Link>
+
+  <Link
+    to="/invoices"
+    className="btn w-full sm:w-auto"
+  >
+    Invoices
+  </Link>
+
+  <button
+    className="btn w-full sm:w-auto"
+    onClick={openBillingPortal}
+    disabled={openingPortal}
+  >
+    {openingPortal ? "Opening…" : "Manage billing"}
+  </button>
+</div>
+
           </section>
 
           <section className="card">
