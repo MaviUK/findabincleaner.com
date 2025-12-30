@@ -140,7 +140,8 @@
   status = 200
 
 [functions."billing-reminders"]
-  schedule = "@hourly"
+  schedule = "@daily"
+
 
 
   external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf", "resend", "pdf-lib"]
