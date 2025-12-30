@@ -140,9 +140,10 @@ export default function Invoices() {
         let catsMap: Record<string, CategoryRow> = {};
         if (catIds.length) {
           const { data: cats, error: catErr } = await supabase
-            .from("categories")
-            .select("id,name,slug")
-            .in("id", catIds);
+  .from("active_categories")
+  .select("id,name,slug")
+  .in("id", catIds);
+
 
           if (catErr) throw catErr;
 
