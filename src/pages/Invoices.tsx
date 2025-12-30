@@ -318,7 +318,7 @@ export default function Invoices() {
                     return (
                       <tr key={inv.id} className="border-b border-ink-100 last:border-b-0">
                         <td className="py-3 pr-3 font-medium whitespace-nowrap">
-                          {inv.invoice_number || inv.stripe_invoice_id || "—"}
+                          {inv.invoice_number || "—"}
                         </td>
                         <td className="py-3 pr-3">{industry}</td>
                         <td className="py-3 pr-3 whitespace-nowrap">{period}</td>
