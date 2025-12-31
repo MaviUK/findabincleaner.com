@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2025-12-30-UPDATE-THEN-INSERT");
+console.log("LOADED stripe-webhook v2025-12-31-INVOICE-REFRESH-SUB");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -69,11 +69,12 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
  * 3) If INSERT fails due to uniqueness, treat as owned-by-other and cancel
  */
 async function upsertSubscription(sub, meta = {}) {
-  const customerId =
-    typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
+  const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
-  const { business_id, area_id, slot, category_id, lock_id } =
-    await resolveContext({ meta, customerId });
+  const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
+    meta,
+    customerId,
+  });
 
   if (!business_id || !area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing business/area/slot)", {
@@ -118,6 +119,7 @@ async function upsertSubscription(sub, meta = {}) {
       status: payload.status,
       current_period_end: payload.current_period_end,
       category_id: payload.category_id,
+      updated_at: new Date().toISOString(),
     })
     .eq("business_id", business_id)
     .eq("area_id", area_id)
@@ -133,13 +135,18 @@ async function upsertSubscription(sub, meta = {}) {
       area_id,
       slot,
       sub_id: sub.id,
+      status: sub.status,
     });
     await releaseLockSafe(lock_id);
     return;
   }
 
   // 2) INSERT if no row was updated
-  const { error: insErr } = await supabase.from("sponsored_subscriptions").insert(payload);
+  const { error: insErr } = await supabase.from("sponsored_subscriptions").insert({
+    ...payload,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
 
   if (!insErr) {
     console.log("[webhook] inserted sponsored_subscriptions row", {
@@ -147,6 +154,7 @@ async function upsertSubscription(sub, meta = {}) {
       area_id,
       slot,
       sub_id: sub.id,
+      status: sub.status,
     });
     await releaseLockSafe(lock_id);
     return;
@@ -158,12 +166,7 @@ async function upsertSubscription(sub, meta = {}) {
   const msg = String(insErr?.message || "").toLowerCase();
   const code = String(insErr?.code || "").toLowerCase();
 
-  if (
-    code === "23505" ||
-    msg.includes("duplicate") ||
-    msg.includes("unique") ||
-    msg.includes("overlaps")
-  ) {
+  if (code === "23505" || msg.includes("duplicate") || msg.includes("unique") || msg.includes("overlaps")) {
     await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
     await releaseLockSafe(lock_id);
     return;
@@ -177,15 +180,10 @@ async function upsertInvoice(inv) {
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
-  // If invoice has no subscription, we can't map area/subscription reliably
-  if (!subscriptionId) {
-    console.warn("[webhook] invoice has no subscription id:", inv.id);
-  }
-
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
-    .select("id, area_id")
-    .eq("stripe_subscription_id", subscriptionId || "__none__")
+    .select("id")
+    .eq("stripe_subscription_id", subscriptionId)
     .maybeSingle();
 
   if (findErr) {
@@ -193,12 +191,13 @@ async function upsertInvoice(inv) {
     throw new Error("DB find(sub) for invoice failed");
   }
 
+  // If we don't have a sub row yet, retrieve sub from Stripe and upsert it first
   if (!subRow && subscriptionId) {
     const sub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(sub, sub.metadata || {});
     const refetch = await supabase
       .from("sponsored_subscriptions")
-      .select("id, area_id")
+      .select("id")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
     subRow = refetch.data ?? null;
@@ -206,10 +205,6 @@ async function upsertInvoice(inv) {
 
   const payload = {
     sponsored_subscription_id: subRow?.id ?? null,
-
-    // ✅ IMPORTANT: record the area on the invoice row
-    service_area_id: subRow?.area_id ?? null,
-
     stripe_invoice_id: inv.id,
     hosted_invoice_url: inv.hosted_invoice_url ?? null,
     invoice_pdf: inv.invoice_pdf ?? null,
@@ -218,6 +213,7 @@ async function upsertInvoice(inv) {
     status: inv.status,
     period_start: inv.period_start ? new Date(inv.period_start * 1000).toISOString() : null,
     period_end: inv.period_end ? new Date(inv.period_end * 1000).toISOString() : null,
+    updated_at: new Date().toISOString(),
   };
 
   const { error } = await supabase
@@ -228,13 +224,25 @@ async function upsertInvoice(inv) {
     console.error("[webhook] upsert sponsored_invoices error:", error, payload);
     throw new Error("DB upsert(sponsored_invoices) failed");
   }
+}
 
-  console.log("[webhook] upsertInvoice ok", {
-    stripe_invoice_id: inv.id,
-    subscriptionId,
-    sponsored_subscription_id: payload.sponsored_subscription_id,
-    service_area_id: payload.service_area_id,
-  });
+/**
+ * ✅ KEY FIX:
+ * When invoice is paid/finalized/etc, pull the subscription from Stripe and upsert it.
+ * This moves sponsored_subscriptions.status from incomplete -> active even if the subscription.updated webhook is missed.
+ */
+async function refreshSubscriptionFromInvoice(inv) {
+  try {
+    const subId =
+      typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
+    if (!subId) return;
+
+    const sub = await stripe.subscriptions.retrieve(subId);
+    await upsertSubscription(sub, sub.metadata || {});
+  } catch (e) {
+    console.error("[webhook] refreshSubscriptionFromInvoice failed:", e?.message || e);
+    // don't throw; invoice record is more important than this refresh
+  }
 }
 
 async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
@@ -304,8 +312,9 @@ exports.handler = async (event) => {
         const sub = stripeEvent.data.object;
         const { error } = await supabase
           .from("sponsored_subscriptions")
-          .update({ status: "canceled" })
+          .update({ status: "canceled", updated_at: new Date().toISOString() })
           .eq("stripe_subscription_id", sub.id);
+
         if (error) throw new Error("DB cancel(sub) failed");
         break;
       }
@@ -317,7 +326,12 @@ exports.handler = async (event) => {
       case "invoice.sent": {
         const inv = stripeEvent.data.object;
 
+        // Record invoice row
         await upsertInvoice(inv);
+
+        // ✅ NEW: Refresh subscription status from Stripe after invoice events
+        // This ensures incomplete -> active gets persisted even if sub.updated webhook is missed.
+        await refreshSubscriptionFromInvoice(inv);
 
         if (stripeEvent.type === "invoice.finalized") {
           console.log("[webhook] invoice.finalized -> createInvoiceAndEmail", inv.id);
