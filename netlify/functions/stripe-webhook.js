@@ -177,10 +177,15 @@ async function upsertInvoice(inv) {
   const subscriptionId =
     typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
 
+  // If invoice has no subscription, we can't map area/subscription reliably
+  if (!subscriptionId) {
+    console.warn("[webhook] invoice has no subscription id:", inv.id);
+  }
+
   let { data: subRow, error: findErr } = await supabase
     .from("sponsored_subscriptions")
-    .select("id")
-    .eq("stripe_subscription_id", subscriptionId)
+    .select("id, area_id")
+    .eq("stripe_subscription_id", subscriptionId || "__none__")
     .maybeSingle();
 
   if (findErr) {
@@ -193,7 +198,7 @@ async function upsertInvoice(inv) {
     await upsertSubscription(sub, sub.metadata || {});
     const refetch = await supabase
       .from("sponsored_subscriptions")
-      .select("id")
+      .select("id, area_id")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
     subRow = refetch.data ?? null;
@@ -201,6 +206,10 @@ async function upsertInvoice(inv) {
 
   const payload = {
     sponsored_subscription_id: subRow?.id ?? null,
+
+    // ✅ IMPORTANT: record the area on the invoice row
+    service_area_id: subRow?.area_id ?? null,
+
     stripe_invoice_id: inv.id,
     hosted_invoice_url: inv.hosted_invoice_url ?? null,
     invoice_pdf: inv.invoice_pdf ?? null,
@@ -219,6 +228,13 @@ async function upsertInvoice(inv) {
     console.error("[webhook] upsert sponsored_invoices error:", error, payload);
     throw new Error("DB upsert(sponsored_invoices) failed");
   }
+
+  console.log("[webhook] upsertInvoice ok", {
+    stripe_invoice_id: inv.id,
+    subscriptionId,
+    sponsored_subscription_id: payload.sponsored_subscription_id,
+    service_area_id: payload.service_area_id,
+  });
 }
 
 async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
