@@ -15,38 +15,41 @@ type JoinedAreaRow = {
   category_id?: string | null;
 };
 
+type SubscriptionJoin = {
+  id: string;
+  business_id: string | null;
+  area_id: string | null;
+};
+
 type InvoiceRow = {
   id: string;
-  cleaner_id: string;
-  area_id: string | null;
 
-  invoice_number: string | null;
+  sponsored_subscription_id: string | null;
+  stripe_invoice_id: string | null;
+
   status: string | null;
-
-  subtotal_cents: number | null;
-  tax_cents: number | null;
-  total_cents: number | null;
+  amount_due_pennies: number | null;
   currency: string | null;
 
-  billing_period_start: string | null;
-  billing_period_end: string | null;
+  period_start: string | null;
+  period_end: string | null;
   created_at: string;
 
-  pdf_url: string | null;
-  pdf_signed_url: string | null;
-  pdf_storage_path: string | null;
+  hosted_invoice_url: string | null;
+  invoice_pdf: string | null;
 
-  // ✅ many invoices -> one service area
+  // joins
+  sponsored_subscription?: SubscriptionJoin | null;
   service_area?: JoinedAreaRow | null;
 };
 
-function moneyFromCents(
-  cents: number | null | undefined,
+function moneyFromPennies(
+  pennies: number | null | undefined,
   currency: string | null | undefined
 ) {
-  const c = Number.isFinite(Number(cents)) ? Number(cents) : 0;
+  const p = Number.isFinite(Number(pennies)) ? Number(pennies) : 0;
   const cur = (currency || "GBP").toUpperCase();
-  const amount = c / 100;
+  const amount = p / 100;
 
   try {
     return new Intl.NumberFormat("en-GB", {
@@ -120,6 +123,7 @@ export default function Invoices() {
         } = await supabase.auth.getSession();
 
         if (sessErr) throw sessErr;
+
         if (!session?.user) {
           if (alive) {
             setErrorMsg("You must be logged in to view invoices.");
@@ -128,7 +132,7 @@ export default function Invoices() {
           return;
         }
 
-        // Get cleaner id for this user
+        // Get cleaner/business id for this user
         const { data: cleaner, error: cleanerErr } = await supabase
           .from("cleaners")
           .select("id")
@@ -148,7 +152,7 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        // Load industries (categories) the business is in (RPC you already have)
+        // Load industries (categories) the business is in
         let catRows: CategoryRow[] = [];
         const { data: rpcCats, error: rpcErr } = await supabase.rpc(
           "list_active_categories_for_cleaner",
@@ -164,41 +168,36 @@ export default function Invoices() {
             }))
             .filter((r) => r.id && r.name);
         }
-
         if (alive) setCategories(catRows);
 
-        // ✅ Load invoices with joined AREA (many->one join)
+        /**
+         * ✅ Correct invoice query:
+         * - sponsored_invoices has NO cleaner_id
+         * - filter via sponsored_subscriptions.business_id
+         * - join service_areas via service_area_id (FK)
+         */
         const { data: invData, error: invErr } = await supabase
           .from("sponsored_invoices")
           .select(
             `
             id,
-            cleaner_id,
-            area_id,
+            sponsored_subscription_id,
             stripe_invoice_id,
-            stripe_payment_intent_id,
-            invoice_number,
             status,
-            subtotal_cents,
-            tax_cents,
-            total_cents,
+            amount_due_pennies,
             currency,
-            billing_period_start,
-            billing_period_end,
-            pdf_url,
-            emailed_at,
+            period_start,
+            period_end,
             created_at,
-            supplier_name,
-            supplier_address,
-            supplier_email,
-            supplier_vat,
-            customer_name,
-            customer_email,
-            customer_address,
-            area_km2,
-            rate_per_km2_cents,
-            pdf_storage_path,
-            pdf_signed_url,
+            hosted_invoice_url,
+            invoice_pdf,
+
+            sponsored_subscription:sponsored_subscriptions (
+              id,
+              business_id,
+              area_id
+            ),
+
             service_area:service_areas (
               id,
               name,
@@ -206,22 +205,21 @@ export default function Invoices() {
             )
           `
           )
-          .eq("cleaner_id", cid)
+          .eq("sponsored_subscription.business_id", cid)
           .order("created_at", { ascending: false });
 
         if (invErr) throw invErr;
 
-        // ✅ Normalize join (sometimes Supabase can return object; keep it as object)
         const normalized: InvoiceRow[] = ((invData || []) as unknown as any[]).map(
           (row) => {
             const sa = row.service_area;
-
-            // if it ever comes back as array for any reason, take first
-            const service_area = Array.isArray(sa) ? sa[0] || null : sa || null;
+            const ss = row.sponsored_subscription;
 
             return {
               ...row,
-              service_area,
+              // normalize any weird array returns (defensive)
+              service_area: Array.isArray(sa) ? sa[0] || null : sa || null,
+              sponsored_subscription: Array.isArray(ss) ? ss[0] || null : ss || null,
             };
           }
         );
@@ -330,7 +328,11 @@ export default function Invoices() {
               </select>
             </div>
 
-            <button className="btn md:justify-self-end" onClick={clearFilters} disabled={loading}>
+            <button
+              className="btn md:justify-self-end"
+              onClick={clearFilters}
+              disabled={loading}
+            >
               Clear
             </button>
           </div>
@@ -350,12 +352,12 @@ export default function Invoices() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-ink-100">
-                    <th className="text-left py-3 pr-3">Invoice</th>
+                    <th className="text-left py-3 pr-3">Stripe invoice</th>
                     <th className="text-left py-3 pr-3">Industry</th>
                     <th className="text-left py-3 pr-3">Area</th>
-                    <th className="text-left py-3 pr-3">Period</th>
+                    <th className="text-left py-3 pr-3">Period start</th>
                     <th className="text-left py-3 pr-3">Status</th>
-                    <th className="text-left py-3 pr-3">Total</th>
+                    <th className="text-left py-3 pr-3">Amount due</th>
                     <th className="text-left py-3 pr-3">Created</th>
                     <th className="text-left py-3">Download</th>
                   </tr>
@@ -364,37 +366,34 @@ export default function Invoices() {
                 <tbody>
                   {filtered.map((inv) => {
                     const area = inv.service_area || null;
-
                     const catId = area?.category_id || null;
                     const industry = catId ? categoryNameById.get(catId) : null;
 
-                    // ✅ Only need start date
-                    const periodStart = inv.billing_period_start
-                      ? fmtDateOnly(inv.billing_period_start)
+                    const periodStart = inv.period_start
+                      ? fmtDateOnly(inv.period_start)
                       : inv.created_at
                       ? fmtDateOnly(inv.created_at)
                       : "—";
 
-                    const pdfLink = inv.pdf_signed_url || inv.pdf_url || null;
-
-                    // ✅ replaceAll -> split/join
+                    const pdfLink = inv.invoice_pdf || inv.hosted_invoice_url || null;
                     const statusLabel = (inv.status || "—").toString().split("_").join(" ");
 
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
-                        <td className="py-3 pr-3 font-medium">{inv.invoice_number || "—"}</td>
+                        <td className="py-3 pr-3 font-medium">
+                          {inv.stripe_invoice_id || "—"}
+                        </td>
 
                         <td className="py-3 pr-3">{industry || "—"}</td>
 
-                        {/* ✅ This will now actually show */}
-                        <td className="py-3 pr-3">{area?.name || inv.area_id || "—"}</td>
+                        <td className="py-3 pr-3">{area?.name || "—"}</td>
 
                         <td className="py-3 pr-3">{periodStart}</td>
 
                         <td className="py-3 pr-3">{statusLabel}</td>
 
                         <td className="py-3 pr-3">
-                          {moneyFromCents(inv.total_cents, inv.currency)}
+                          {moneyFromPennies(inv.amount_due_pennies, inv.currency)}
                         </td>
 
                         <td className="py-3 pr-3">
@@ -417,14 +416,14 @@ export default function Invoices() {
               </table>
 
               <p className="muted mt-3 text-xs">
-                If “PDF” is blank, it means this invoice row doesn’t have a stored PDF URL yet.
+                If “PDF” is blank, it means Stripe hasn’t provided an invoice PDF yet for that
+                invoice.
               </p>
             </div>
           )}
         </div>
       </section>
 
-      {/* tiny debug helper if you ever need it */}
       {cleanerId ? <div className="mt-6 text-xs muted">Cleaner: {cleanerId}</div> : null}
     </div>
   );
