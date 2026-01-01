@@ -39,6 +39,10 @@ const BLOCKING = new Set([
 
 const EPS = 1e-6;
 
+function firstRow(maybeArray) {
+  return Array.isArray(maybeArray) ? maybeArray[0] : maybeArray;
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
 
@@ -55,11 +59,7 @@ export default async (req) => {
 
   // ✅ Accept both old + new naming
   const cleanerId = String(
-    body.cleanerId ||
-      body.cleaner_id ||
-      body.businessId ||
-      body.business_id ||
-      ""
+    body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
   ).trim();
 
   const areaId = String(body.areaId || body.area_id || "").trim();
@@ -72,18 +72,15 @@ export default async (req) => {
   // optional lock id if you are using sponsored_locks
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  // OPTIONAL: if later you implement “top-up remaining area” for an existing sponsor,
-  // you can call this endpoint with { allowTopUp: true } and adjust the flow.
+  // OPTIONAL: if later you implement “top-up remaining area”
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-
-  // ✅ right now you only support slot 1
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken? (use MOST RECENT blocking row)
+    // 1) Is slot taken for THIS area_id? (use MOST RECENT blocking row)
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at")
@@ -105,7 +102,6 @@ export default async (req) => {
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
-    // ✅ If already sponsored by someone else, block purchase
     if (ownedByOther) {
       return json(
         {
@@ -118,7 +114,6 @@ export default async (req) => {
       );
     }
 
-    // ✅ If already sponsored by YOU, do NOT create another subscription (avoids dupes/unique errors)
     if (ownedByMe && !allowTopUp) {
       return json(
         {
@@ -132,37 +127,54 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview (first check)
-    const { data: previewRow, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_slot: slot,
-      }
-    );
-
+    // 2) Remaining area preview (for pricing/UX)
+    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
+      p_area_id: areaId,
+      p_slot: slot,
+    });
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow)
-      ? previewRow[0] || {}
-      : previewRow || {};
-
+    const preview = firstRow(previewRow) || {};
     const rawAvailable =
-      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
+      preview.available_km2 ?? preview.area_km2 ?? preview.remaining_km2 ?? 0;
 
     let available_km2 = Number(rawAvailable);
     if (!Number.isFinite(available_km2)) available_km2 = 0;
     available_km2 = Math.max(0, available_km2);
 
-    if (available_km2 <= EPS) {
+    // 🔒 2b) HARD guard — must match DB overlap logic (prevents “pay then cancel”)
+    // IMPORTANT: this RPC must apply the SAME overlap rules as your DB constraint/trigger.
+    const { data: remainRow, error: remainErr } = await sb.rpc(
+      "check_area_remaining_km2",
+      {
+        p_area_id: areaId,
+        p_category_id: categoryId,
+        p_slot: slot,
+      }
+    );
+    if (remainErr) throw remainErr;
+
+    const remain = firstRow(remainRow) || {};
+    let remaining_km2 = Number(
+      remain.remaining_km2 ?? remain.available_km2 ?? remain.km2 ?? 0
+    );
+    if (!Number.isFinite(remaining_km2)) remaining_km2 = 0;
+    remaining_km2 = Math.max(0, remaining_km2);
+
+    if (remaining_km2 <= EPS) {
       return json(
         {
           ok: false,
           code: "no_remaining",
-          message: "No purchasable area left for this slot.",
+          message: "No purchasable area available (sold out / overlaps existing sponsorship).",
         },
         409
       );
+    }
+
+    // If preview was zero but hard-guard says there IS remaining, keep remaining for pricing sanity.
+    if (available_km2 <= EPS) {
+      available_km2 = remaining_km2;
     }
 
     // 3) Price
@@ -185,12 +197,9 @@ export default async (req) => {
       );
     }
 
-    const amount_cents = Math.max(
-      1,
-      Math.round(available_km2 * rate_per_km2 * 100)
-    );
+    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
 
-    // 4) Get or create Stripe customer (CLEANERS schema)
+    // 4) Get or create Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
       .select("id, stripe_customer_id, business_name, contact_email")
@@ -219,7 +228,7 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // ✅ metadata used by webhook to resolve context
+    // metadata used by webhook to resolve context
     const meta = {
       cleaner_id: cleaner.id,
       business_id: cleaner.id, // back-compat
@@ -228,37 +237,6 @@ export default async (req) => {
       category_id: categoryId || "",
       lock_id: lockId || "",
     };
-
-    // 🔒 HARD AVAILABILITY GUARD (fix: use sb, and use the same preview RPC)
-    // This prevents “sold out” races right before Stripe session creation.
-    const { data: preview2, error: prevErr2 } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_slot: slot,
-      }
-    );
-
-    if (prevErr2) throw prevErr2;
-
-    const row2 = Array.isArray(preview2) ? preview2[0] || {} : preview2 || {};
-    const rawAvailable2 =
-      row2.available_km2 ?? row2.area_km2 ?? row2.remaining_km2 ?? 0;
-
-    let available2 = Number(rawAvailable2);
-    if (!Number.isFinite(available2)) available2 = 0;
-    available2 = Math.max(0, available2);
-
-    if (available2 <= EPS) {
-      return json(
-        {
-          ok: false,
-          code: "sold_out",
-          message: "This area is sold out and cannot be purchased.",
-        },
-        409
-      );
-    }
 
     // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
