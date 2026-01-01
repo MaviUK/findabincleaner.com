@@ -13,12 +13,14 @@ type JoinedAreaRow = {
   id: string;
   name: string;
   category_id?: string | null;
+  category?: CategoryRow | null; // joined categories row
 };
 
 type SubscriptionJoin = {
   id: string;
   business_id: string | null;
   area_id: string | null;
+  service_area?: JoinedAreaRow | null; // deep-join area via subscription
 };
 
 type InvoiceRow = {
@@ -40,7 +42,6 @@ type InvoiceRow = {
 
   // joins
   sponsored_subscription?: SubscriptionJoin | null;
-  service_area?: JoinedAreaRow | null;
 };
 
 function moneyFromPennies(
@@ -152,29 +153,35 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        // Load industries (categories) the business is in
-        let catRows: CategoryRow[] = [];
-        const { data: rpcCats, error: rpcErr } = await supabase.rpc(
-          "list_active_categories_for_cleaner",
-          { _cleaner_id: cid }
-        );
+        /**
+         * ✅ IMPORTANT FIX:
+         * We cannot join sponsored_invoices -> service_areas directly.
+         * We must go: sponsored_invoices -> sponsored_subscriptions -> service_areas -> categories
+         *
+         * Step 1: get this business's subscriptions (ids)
+         */
+        const { data: subs, error: subsErr } = await supabase
+          .from("sponsored_subscriptions")
+          .select("id")
+          .eq("business_id", cid);
 
-        if (!rpcErr && Array.isArray(rpcCats)) {
-          catRows = rpcCats
-            .map((r: any) => ({
-              id: String(r.id),
-              name: String(r.name),
-              slug: r.slug ? String(r.slug) : null,
-            }))
-            .filter((r) => r.id && r.name);
+        if (subsErr) throw subsErr;
+
+        const subIds = (subs || [])
+          .map((s: any) => String(s.id))
+          .filter(Boolean);
+
+        if (subIds.length === 0) {
+          if (alive) {
+            setInvoices([]);
+            setCategories([]);
+            setLoading(false);
+          }
+          return;
         }
-        if (alive) setCategories(catRows);
 
         /**
-         * ✅ Correct invoice query:
-         * - sponsored_invoices has NO cleaner_id
-         * - filter via sponsored_subscriptions.business_id
-         * - join service_areas via service_area_id (FK)
+         * Step 2: fetch invoices for those subscription ids with deep joins
          */
         const { data: invData, error: invErr } = await supabase
           .from("sponsored_invoices")
@@ -195,236 +202,18 @@ export default function Invoices() {
             sponsored_subscription:sponsored_subscriptions (
               id,
               business_id,
-              area_id
-            ),
-
-            service_area:service_areas (
-              id,
-              name,
-              category_id
+              area_id,
+              service_area:service_areas (
+                id,
+                name,
+                category_id,
+                category:categories (
+                  id,
+                  name,
+                  slug
+                )
+              )
             )
           `
           )
-          .eq("sponsored_subscription.business_id", cid)
-          .order("created_at", { ascending: false });
-
-        if (invErr) throw invErr;
-
-        const normalized: InvoiceRow[] = ((invData || []) as unknown as any[]).map(
-          (row) => {
-            const sa = row.service_area;
-            const ss = row.sponsored_subscription;
-
-            return {
-              ...row,
-              // normalize any weird array returns (defensive)
-              service_area: Array.isArray(sa) ? sa[0] || null : sa || null,
-              sponsored_subscription: Array.isArray(ss) ? ss[0] || null : ss || null,
-            };
-          }
-        );
-
-        if (alive) {
-          setInvoices(normalized);
-          setLoading(false);
-        }
-      } catch (e: any) {
-        console.error(e);
-        if (alive) {
-          setErrorMsg(e?.message || "Failed to load invoices.");
-          setLoading(false);
-        }
-      }
-    })();
-
-    return () => {
-      alive = false;
-    };
-  }, []);
-
-  const categoryNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of categories) m.set(c.id, c.name);
-    return m;
-  }, [categories]);
-
-  const allMonths = useMemo(() => {
-    const keys = new Set<string>();
-    for (const inv of invoices) {
-      if (inv?.created_at) keys.add(monthKeyFromISO(inv.created_at));
-    }
-    return Array.from(keys).sort((a, b) => (a < b ? 1 : -1)); // newest first
-  }, [invoices]);
-
-  const filtered = useMemo(() => {
-    let list = invoices.slice();
-
-    if (industryFilter !== "all") {
-      list = list.filter((inv) => {
-        const catId = inv.service_area?.category_id || null;
-        return catId === industryFilter;
-      });
-    }
-
-    if (monthFilter !== "all") {
-      list = list.filter((inv) => monthKeyFromISO(inv.created_at) === monthFilter);
-    }
-
-    return list;
-  }, [invoices, industryFilter, monthFilter]);
-
-  const clearFilters = () => {
-    setIndustryFilter("all");
-    setMonthFilter("all");
-  };
-
-  return (
-    <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-10">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="section-title text-2xl mb-1">Invoices</h1>
-          <p className="muted">Your invoice history ({filtered.length})</p>
-        </div>
-
-        <Link to="/dashboard" className="btn">
-          Back to dashboard
-        </Link>
-      </div>
-
-      <section className="card mt-6">
-        <div className="card-pad">
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_1fr_auto] gap-4 items-end">
-            <div>
-              <label className="block text-sm font-medium mb-1">Sort by industry</label>
-              <select
-                className="input w-full"
-                value={industryFilter}
-                onChange={(e) => setIndustryFilter(e.target.value)}
-                disabled={loading}
-              >
-                <option value="all">All industries</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1">Month issued</label>
-              <select
-                className="input w-full"
-                value={monthFilter}
-                onChange={(e) => setMonthFilter(e.target.value)}
-                disabled={loading}
-              >
-                <option value="all">All months</option>
-                {allMonths.map((k) => (
-                  <option key={k} value={k}>
-                    {monthLabelFromKey(k)}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <button
-              className="btn md:justify-self-end"
-              onClick={clearFilters}
-              disabled={loading}
-            >
-              Clear
-            </button>
-          </div>
-
-          {errorMsg ? <div className="alert alert-error mt-4">{errorMsg}</div> : null}
-        </div>
-      </section>
-
-      <section className="card mt-6">
-        <div className="card-pad">
-          {loading ? (
-            <div className="muted">Loading…</div>
-          ) : filtered.length === 0 ? (
-            <div className="muted">No invoices found.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-ink-100">
-                    <th className="text-left py-3 pr-3">Stripe invoice</th>
-                    <th className="text-left py-3 pr-3">Industry</th>
-                    <th className="text-left py-3 pr-3">Area</th>
-                    <th className="text-left py-3 pr-3">Period start</th>
-                    <th className="text-left py-3 pr-3">Status</th>
-                    <th className="text-left py-3 pr-3">Amount due</th>
-                    <th className="text-left py-3 pr-3">Created</th>
-                    <th className="text-left py-3">Download</th>
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {filtered.map((inv) => {
-                    const area = inv.service_area || null;
-                    const catId = area?.category_id || null;
-                    const industry = catId ? categoryNameById.get(catId) : null;
-
-                    const periodStart = inv.period_start
-                      ? fmtDateOnly(inv.period_start)
-                      : inv.created_at
-                      ? fmtDateOnly(inv.created_at)
-                      : "—";
-
-                    const pdfLink = inv.invoice_pdf || inv.hosted_invoice_url || null;
-                    const statusLabel = (inv.status || "—").toString().split("_").join(" ");
-
-                    return (
-                      <tr key={inv.id} className="border-b border-ink-50">
-                        <td className="py-3 pr-3 font-medium">
-                          {inv.stripe_invoice_id || "—"}
-                        </td>
-
-                        <td className="py-3 pr-3">{industry || "—"}</td>
-
-                        <td className="py-3 pr-3">{area?.name || "—"}</td>
-
-                        <td className="py-3 pr-3">{periodStart}</td>
-
-                        <td className="py-3 pr-3">{statusLabel}</td>
-
-                        <td className="py-3 pr-3">
-                          {moneyFromPennies(inv.amount_due_pennies, inv.currency)}
-                        </td>
-
-                        <td className="py-3 pr-3">
-                          {inv.created_at ? fmtDateTime(inv.created_at) : "—"}
-                        </td>
-
-                        <td className="py-3">
-                          {pdfLink ? (
-                            <a className="link" href={pdfLink} target="_blank" rel="noreferrer">
-                              PDF
-                            </a>
-                          ) : (
-                            <span className="muted">—</span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-
-              <p className="muted mt-3 text-xs">
-                If “PDF” is blank, it means Stripe hasn’t provided an invoice PDF yet for that
-                invoice.
-              </p>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {cleanerId ? <div className="mt-6 text-xs muted">Cleaner: {cleanerId}</div> : null}
-    </div>
-  );
-}
+          .in("sponsored_subscripti_
