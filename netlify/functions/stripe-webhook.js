@@ -178,29 +178,79 @@ async function upsertSubscription(sub, meta = {}) {
 
 async function upsertInvoice(inv) {
   const subscriptionId =
-    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id;
+    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
 
-  let { data: subRow, error: findErr } = await supabase
-    .from("sponsored_subscriptions")
-    .select("id")
-    .eq("stripe_subscription_id", subscriptionId)
-    .maybeSingle();
+  let subRow = null;
 
-  if (findErr) {
-    console.error("[webhook] find sub for invoice error:", findErr);
-    throw new Error("DB find(sub) for invoice failed");
-  }
-
-  // If we don't have a sub row yet, retrieve sub from Stripe and upsert it first
-  if (!subRow && subscriptionId) {
-    const sub = await stripe.subscriptions.retrieve(subscriptionId);
-    await upsertSubscription(sub, sub.metadata || {});
-    const refetch = await supabase
+  // 1) First try: match by stripe_subscription_id
+  if (subscriptionId) {
+    const { data, error } = await supabase
       .from("sponsored_subscriptions")
       .select("id")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
-    subRow = refetch.data ?? null;
+
+    if (error) {
+      console.error("[webhook] find sub by stripe_subscription_id error:", error);
+    } else {
+      subRow = data ?? null;
+    }
+  }
+
+  // 2) If not found, retrieve subscription from Stripe, upsert it, then try again
+  let stripeSub = null;
+  if (!subRow && subscriptionId) {
+    stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
+    await upsertSubscription(stripeSub, stripeSub.metadata || {});
+
+    const { data, error } = await supabase
+      .from("sponsored_subscriptions")
+      .select("id")
+      .eq("stripe_subscription_id", subscriptionId)
+      .maybeSingle();
+
+    if (error) {
+      console.error("[webhook] refetch sub by stripe_subscription_id error:", error);
+    } else {
+      subRow = data ?? null;
+    }
+  }
+
+  // 3) ✅ NEW FALLBACK:
+  // If still not found, use metadata identity (business_id + area_id + slot)
+  if (!subRow && subscriptionId) {
+    if (!stripeSub) stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
+    const meta = stripeSub.metadata || {};
+
+    const business_id = meta.business_id || meta.cleaner_id || meta.businessId || null;
+    const area_id = meta.area_id || meta.areaId || null;
+    const slot = meta.slot != null ? Number(meta.slot) : null;
+
+    if (business_id && area_id && slot != null) {
+      const { data, error } = await supabase
+        .from("sponsored_subscriptions")
+        .select("id")
+        .eq("business_id", business_id)
+        .eq("area_id", area_id)
+        .eq("slot", slot)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error("[webhook] fallback find sub by business/area/slot error:", error);
+      } else {
+        subRow = data ?? null;
+      }
+    } else {
+      console.warn("[webhook] invoice fallback skipped: missing meta keys", {
+        subscriptionId,
+        business_id,
+        area_id,
+        slot,
+        meta,
+      });
+    }
   }
 
   const payload = {
@@ -225,6 +275,7 @@ async function upsertInvoice(inv) {
     throw new Error("DB upsert(sponsored_invoices) failed");
   }
 }
+
 
 /**
  * ✅ KEY FIX:
