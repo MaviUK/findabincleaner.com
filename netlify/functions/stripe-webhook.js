@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-01-PAYMENT-FAILED-NOTIFY");
+console.log("LOADED stripe-webhook v2026-01-01-PAYFAIL-NOTIFY-SUBID-FIRST");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -7,6 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (statusCode, body) => ({
@@ -60,21 +61,160 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
   }
 }
 
+/** -------- Email helpers (Resend REST API) -------- */
+async function sendResendEmail({ to, subject, html }) {
+  const { RESEND_API_KEY, BILLING_FROM } = process.env;
+  if (!RESEND_API_KEY || !BILLING_FROM) {
+    console.warn("[webhook] Resend not configured (RESEND_API_KEY/BILLING_FROM missing)");
+    return false;
+  }
+  if (!to) return false;
+
+  const r = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: BILLING_FROM,
+      to,
+      subject,
+      html,
+    }),
+  });
+
+  if (!r.ok) {
+    const txt = await r.text().catch(() => "");
+    console.error("[webhook] Resend error:", txt || r.statusText);
+    return false;
+  }
+  return true;
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function getCleanerByStripeCustomerId(customerId) {
+  if (!customerId) return null;
+  const { data, error } = await supabase
+    .from("cleaners")
+    .select("id, business_name, contact_email, stripe_customer_id")
+    .eq("stripe_customer_id", customerId)
+    .maybeSingle();
+  if (error) {
+    console.error("[webhook] getCleanerByStripeCustomerId error:", error);
+    return null;
+  }
+  return data || null;
+}
+
+async function notifyPaymentFailed(inv) {
+  try {
+    const customerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
+    const cleaner = await getCleanerByStripeCustomerId(customerId);
+
+    const toCustomer = cleaner?.contact_email || inv.customer_email || null;
+    const adminTo = process.env.BILLING_ADMIN_TO || null;
+
+    const amount = (Number(inv.amount_due ?? inv.amount_remaining ?? 0) / 100).toFixed(2);
+    const currency = (inv.currency || "gbp").toUpperCase();
+    const hostedUrl = inv.hosted_invoice_url || null;
+
+    const subject = `Payment failed: ${currency} ${amount}`;
+    const html =
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5">` +
+      `<h2>${esc(subject)}</h2>` +
+      `<p>We couldn’t take payment for your sponsored listing.</p>` +
+      `<p><strong>Business:</strong> ${esc(cleaner?.business_name || "Unknown")}</p>` +
+      `<p><strong>Invoice:</strong> ${esc(inv.id)}<br/>` +
+      `<strong>Amount due:</strong> ${esc(currency)} ${esc(amount)}</p>` +
+      (hostedUrl
+        ? `<p><a href="${hostedUrl}" target="_blank" rel="noreferrer">Pay / view invoice</a></p>`
+        : "") +
+      `<p style="color:#6b7280;font-size:12px">If you believe this is a mistake, try another payment method or contact support.</p>` +
+      `</div>`;
+
+    if (toCustomer) await sendResendEmail({ to: toCustomer, subject, html });
+    if (adminTo) await sendResendEmail({ to: adminTo, subject: `[ALERT] ${subject}`, html });
+
+    return true;
+  } catch (e) {
+    console.error("[webhook] notifyPaymentFailed error:", e?.message || e);
+    return false;
+  }
+}
+
 /**
  * ✅ Works even if there is NO usable unique constraint for ON CONFLICT.
- * Strategy:
- * 1) Try UPDATE the row for (business_id, area_id, slot)
- * 2) If nothing updated, INSERT a new row
- * 3) If INSERT fails due to uniqueness, treat as owned-by-other and cancel
+ * KEY IMPROVEMENT:
+ * - Update by stripe_subscription_id FIRST (most reliable)
+ * - Then fall back to business/area/slot if needed
  */
 async function upsertSubscription(sub, meta = {}) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
 
+  const firstItem = sub.items?.data?.[0];
+  const price = firstItem?.price;
+
+  // We'll still resolve context so we can populate business/area/slot/category if missing
   const { business_id, area_id, slot, category_id, lock_id } = await resolveContext({
     meta,
     customerId,
   });
 
+  const payload = {
+    business_id: business_id || null,
+    area_id: area_id || null,
+    category_id: category_id || null,
+    slot: slot != null ? slot : null,
+    stripe_customer_id: customerId,
+    stripe_subscription_id: sub.id,
+    price_monthly_pennies: price?.unit_amount ?? null,
+    currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
+    status: sub.status,
+    current_period_end: sub.current_period_end
+      ? new Date(sub.current_period_end * 1000).toISOString()
+      : null,
+  };
+
+  // 0) ✅ UPDATE BY stripe_subscription_id FIRST
+  {
+    const { data: rows, error } = await supabase
+      .from("sponsored_subscriptions")
+      .update({
+        // Only overwrite identity fields if we actually have them:
+        ...(payload.business_id ? { business_id: payload.business_id } : {}),
+        ...(payload.area_id ? { area_id: payload.area_id } : {}),
+        ...(payload.slot != null ? { slot: payload.slot } : {}),
+        category_id: payload.category_id,
+        stripe_customer_id: payload.stripe_customer_id,
+        price_monthly_pennies: payload.price_monthly_pennies,
+        currency: payload.currency,
+        status: payload.status,
+        current_period_end: payload.current_period_end,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("stripe_subscription_id", sub.id)
+      .select("id");
+
+    if (error) {
+      console.error("[webhook] update-by-subid error:", error, { sub_id: sub.id });
+    } else if ((rows || []).length > 0) {
+      console.log("[webhook] updated sponsored_subscriptions by stripe_subscription_id", {
+        sub_id: sub.id,
+        status: sub.status,
+      });
+      await releaseLockSafe(lock_id);
+      return;
+    }
+  }
+
+  // If we don't have business/area/slot we can't safely place it in your model
   if (!business_id || !area_id || slot == null) {
     console.warn("[webhook] skipping sponsored_subscriptions upsert (missing business/area/slot)", {
       sub_id: sub.id,
@@ -89,25 +229,7 @@ async function upsertSubscription(sub, meta = {}) {
     return;
   }
 
-  const firstItem = sub.items?.data?.[0];
-  const price = firstItem?.price;
-
-  const payload = {
-    business_id,
-    area_id,
-    category_id: category_id || null,
-    slot,
-    stripe_customer_id: customerId,
-    stripe_subscription_id: sub.id,
-    price_monthly_pennies: price?.unit_amount ?? null,
-    currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
-    status: sub.status,
-    current_period_end: sub.current_period_end
-      ? new Date(sub.current_period_end * 1000).toISOString()
-      : null,
-  };
-
-  // 1) UPDATE first
+  // 1) UPDATE by (business_id, area_id, slot)
   const { data: updatedRows, error: updErr } = await supabase
     .from("sponsored_subscriptions")
     .update({
@@ -181,74 +303,26 @@ async function upsertInvoice(inv) {
 
   let subRow = null;
 
-  // 1) First try: match by stripe_subscription_id
+  // Try match by stripe_subscription_id
   if (subscriptionId) {
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("sponsored_subscriptions")
       .select("id")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
-
-    if (error) {
-      console.error("[webhook] find sub by stripe_subscription_id error:", error);
-    } else {
-      subRow = data ?? null;
-    }
+    subRow = data ?? null;
   }
 
-  // 2) If not found, retrieve subscription from Stripe, upsert it, then try again
-  let stripeSub = null;
+  // If missing, retrieve subscription + upsert, then try again
   if (!subRow && subscriptionId) {
-    stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
+    const stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
     await upsertSubscription(stripeSub, stripeSub.metadata || {});
-
-    const { data, error } = await supabase
+    const { data } = await supabase
       .from("sponsored_subscriptions")
       .select("id")
       .eq("stripe_subscription_id", subscriptionId)
       .maybeSingle();
-
-    if (error) {
-      console.error("[webhook] refetch sub by stripe_subscription_id error:", error);
-    } else {
-      subRow = data ?? null;
-    }
-  }
-
-  // 3) ✅ FALLBACK: use metadata identity (business_id + area_id + slot)
-  if (!subRow && subscriptionId) {
-    if (!stripeSub) stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
-    const meta = stripeSub.metadata || {};
-
-    const business_id = meta.business_id || meta.cleaner_id || meta.businessId || null;
-    const area_id = meta.area_id || meta.areaId || null;
-    const slot = meta.slot != null ? Number(meta.slot) : null;
-
-    if (business_id && area_id && slot != null) {
-      const { data, error } = await supabase
-        .from("sponsored_subscriptions")
-        .select("id")
-        .eq("business_id", business_id)
-        .eq("area_id", area_id)
-        .eq("slot", slot)
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (error) {
-        console.error("[webhook] fallback find sub by business/area/slot error:", error);
-      } else {
-        subRow = data ?? null;
-      }
-    } else {
-      console.warn("[webhook] invoice fallback skipped: missing meta keys", {
-        subscriptionId,
-        business_id,
-        area_id,
-        slot,
-        meta,
-      });
-    }
+    subRow = data ?? null;
   }
 
   const payload = {
@@ -272,13 +346,8 @@ async function upsertInvoice(inv) {
     console.error("[webhook] upsert sponsored_invoices error:", error, payload);
     throw new Error("DB upsert(sponsored_invoices) failed");
   }
-
-  return { sponsored_subscription_id: payload.sponsored_subscription_id || null };
 }
 
-/**
- * When invoice events happen, refresh subscription status.
- */
 async function refreshSubscriptionFromInvoice(inv) {
   try {
     const subId =
@@ -305,99 +374,6 @@ async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
       err?.stack || ""
     );
     return "error";
-  }
-}
-
-/**
- * Send "Payment failed" notification to the business.
- * Uses Resend if RESEND_API_KEY is set.
- */
-async function notifyPaymentFailed(inv, sponsored_subscription_id) {
-  try {
-    // Resolve business email
-    let business = null;
-
-    if (sponsored_subscription_id) {
-      // join: sponsored_subscriptions -> cleaners
-      const { data, error } = await supabase
-        .from("sponsored_subscriptions")
-        .select("business_id, area_id, slot, category_id, cleaners:business_id ( id, business_name, contact_email )")
-        .eq("id", sponsored_subscription_id)
-        .maybeSingle();
-
-      if (error) {
-        console.error("[webhook] notifyPaymentFailed join error:", error);
-      } else {
-        business = data || null;
-      }
-    }
-
-    // Fallback: try customer email from Stripe invoice if no cleaner row
-    const toEmail =
-      business?.cleaners?.contact_email ||
-      inv.customer_email ||
-      null;
-
-    if (!toEmail) {
-      console.warn("[webhook] notifyPaymentFailed: no email found", {
-        invoice_id: inv.id,
-        sponsored_subscription_id,
-      });
-      return;
-    }
-
-    const fromEmail = process.env.BILLING_FROM_EMAIL || "billing@clean.ly";
-    const payUrl = inv.hosted_invoice_url || null;
-    const amount = typeof inv.amount_due === "number" ? (inv.amount_due / 100).toFixed(2) : null;
-    const currency = (inv.currency || "gbp").toUpperCase();
-
-    const bizName = business?.cleaners?.business_name || "your account";
-
-    const subject = `Payment failed – action required (${currency}${amount ?? ""})`;
-
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.5">
-        <h2 style="margin:0 0 12px">Payment failed – action required</h2>
-        <p>Hi ${bizName},</p>
-        <p>We tried to take payment for your sponsored listing, but the payment didn’t go through.</p>
-        <p><strong>Invoice:</strong> ${inv.id}<br/>
-           <strong>Amount due:</strong> ${amount ? `${currency} ${amount}` : currency}</p>
-        ${
-          payUrl
-            ? `<p><a href="${payUrl}" style="display:inline-block;padding:10px 14px;background:#111;color:#fff;text-decoration:none;border-radius:8px">
-                 Fix payment / Pay now
-               </a></p>`
-            : `<p>Please log in to update your payment method.</p>`
-        }
-        <p style="color:#666;font-size:13px">
-          Your sponsorship stays in place during Stripe’s retry window (if retries are enabled). If payment continues to fail, Stripe may pause or cancel the subscription.
-        </p>
-      </div>
-    `;
-
-    // If no Resend key, log only
-    if (!process.env.RESEND_API_KEY) {
-      console.warn("[webhook] RESEND_API_KEY not set. Would have emailed:", {
-        to: toEmail,
-        subject,
-        payUrl,
-      });
-      return;
-    }
-
-    const { Resend } = require("resend");
-    const resend = new Resend(process.env.RESEND_API_KEY);
-
-    await resend.emails.send({
-      from: fromEmail,
-      to: toEmail,
-      subject,
-      html,
-    });
-
-    console.log("[webhook] notifyPaymentFailed sent", { toEmail, invoice_id: inv.id });
-  } catch (e) {
-    console.error("[webhook] notifyPaymentFailed failed:", e?.message || e);
   }
 }
 
@@ -466,25 +442,35 @@ exports.handler = async (event) => {
       case "invoice.sent": {
         const inv = stripeEvent.data.object;
 
-        // Record invoice row
-        const { sponsored_subscription_id } = await upsertInvoice(inv);
+        // Always record invoice row
+        await upsertInvoice(inv);
 
-        // Refresh subscription status from Stripe after invoice events
+        // Keep subscription status synced after invoice events
         await refreshSubscriptionFromInvoice(inv);
 
-        // ✅ CHANGE: Only email your invoice/receipt on PAID
-        if (stripeEvent.type === "invoice.paid") {
+        // ✅ Email rules:
+        // - charge_automatically: email only on PAID (receipt), and on PAYMENT_FAILED (failure notice)
+        // - send_invoice: email on SENT (manual invoice)
+        const collection = inv.collection_method || "charge_automatically";
+
+        if (stripeEvent.type === "invoice.paid" && collection === "charge_automatically") {
           console.log("[webhook] invoice.paid -> createInvoiceAndEmail", inv.id);
-          await safeCreateAndEmailInvoice(inv.id, { force: false });
+          await safeCreateAndEmailInvoice(inv.id, { force: true });
         }
 
-        // ✅ NEW: Payment failed notification (action required)
-        if (stripeEvent.type === "invoice.payment_failed") {
+        if (stripeEvent.type === "invoice.payment_failed" && collection === "charge_automatically") {
           console.log("[webhook] invoice.payment_failed -> notifyPaymentFailed", inv.id);
-          await notifyPaymentFailed(inv, sponsored_subscription_id);
+          await notifyPaymentFailed(inv);
         }
 
-        // ❌ REMOVED: finalized/sent invoice emailing (prevents confusion)
+        if (stripeEvent.type === "invoice.sent" && collection === "send_invoice") {
+          console.log("[webhook] invoice.sent (manual) -> createInvoiceAndEmail", inv.id);
+          await safeCreateAndEmailInvoice(inv.id, { force: true });
+        }
+
+        // NOTE: We intentionally do NOT email on invoice.finalized for auto-charge
+        // because payment may still fail right after.
+
         break;
       }
 
