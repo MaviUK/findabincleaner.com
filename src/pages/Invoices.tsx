@@ -299,10 +299,6 @@ export default function Invoices() {
           <h1 className="section-title text-2xl mb-1">Invoices</h1>
           <p className="muted">Your invoice history ({filtered.length})</p>
         </div>
-
-        <Link to="/dashboard" className="btn">
-          Back to dashboard
-        </Link>
       </div>
 
       <section className="card mt-6">
