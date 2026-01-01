@@ -2,12 +2,9 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-01-HARD-GUARD-FIX");
+console.log("LOADED sponsored-checkout v2026-01-01-LOCK-REMAINING-GEOM");
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -39,10 +36,6 @@ const BLOCKING = new Set([
 
 const EPS = 1e-6;
 
-function firstRow(maybeArray) {
-  return Array.isArray(maybeArray) ? maybeArray[0] : maybeArray;
-}
-
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
 
@@ -65,22 +58,23 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // optional but recommended if you have categories
-  const categoryId =
-    String(body.categoryId || body.category_id || "").trim() || null;
+  // category is REQUIRED for correct availability calcs
+  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
 
   // optional lock id if you are using sponsored_locks
-  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
+  const providedLockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  // OPTIONAL: if later you implement “top-up remaining area”
+  // OPTIONAL: if later you implement “top-up remaining area” for an existing sponsor,
+  // you can call this endpoint with { allowTopUp: true } and adjust the flow.
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken for THIS area_id? (use MOST RECENT blocking row)
+    // 1) Is slot taken? (use MOST RECENT blocking row)
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at")
@@ -95,13 +89,11 @@ export default async (req) => {
     );
 
     const latestBlocking = blockingRows[0] || null;
-    const ownerBusinessId = latestBlocking?.business_id
-      ? String(latestBlocking.business_id)
-      : null;
-
+    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
+    // ✅ If already sponsored by someone else, block purchase
     if (ownedByOther) {
       return json(
         {
@@ -114,6 +106,7 @@ export default async (req) => {
       );
     }
 
+    // ✅ If already sponsored by YOU, do NOT create another subscription
     if (ownedByMe && !allowTopUp) {
       return json(
         {
@@ -127,63 +120,36 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview (for pricing/UX)
+    // 2) Remaining area preview (MUST include categoryId)
     const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
+      p_category_id: categoryId,
       p_slot: slot,
     });
+
     if (prevErr) throw prevErr;
 
-    const preview = firstRow(previewRow) || {};
-    const rawAvailable =
-      preview.available_km2 ?? preview.area_km2 ?? preview.remaining_km2 ?? 0;
+    const row = Array.isArray(previewRow) ? previewRow[0] || {} : previewRow || {};
+    const rawAvailable = row.available_km2 ?? row.remaining_km2 ?? row.area_km2 ?? 0;
 
     let available_km2 = Number(rawAvailable);
     if (!Number.isFinite(available_km2)) available_km2 = 0;
     available_km2 = Math.max(0, available_km2);
 
-    // 🔒 2b) HARD guard — must match DB overlap logic (prevents “pay then cancel”)
-    // IMPORTANT: this RPC must apply the SAME overlap rules as your DB constraint/trigger.
-    const { data: remainRow, error: remainErr } = await sb.rpc(
-      "check_area_remaining_km2",
-      {
-        p_area_id: areaId,
-        p_category_id: categoryId,
-        p_slot: slot,
-      }
-    );
-    if (remainErr) throw remainErr;
-
-    const remain = firstRow(remainRow) || {};
-    let remaining_km2 = Number(
-      remain.remaining_km2 ?? remain.available_km2 ?? remain.km2 ?? 0
-    );
-    if (!Number.isFinite(remaining_km2)) remaining_km2 = 0;
-    remaining_km2 = Math.max(0, remaining_km2);
-
-    if (remaining_km2 <= EPS) {
+    if (available_km2 <= EPS) {
       return json(
         {
           ok: false,
           code: "no_remaining",
-          message: "No purchasable area available (sold out / overlaps existing sponsorship).",
+          message: "No purchasable area left for this slot.",
         },
         409
       );
     }
 
-    // If preview was zero but hard-guard says there IS remaining, keep remaining for pricing sanity.
-    if (available_km2 <= EPS) {
-      available_km2 = remaining_km2;
-    }
-
     // 3) Price
     const rate_per_km2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
-          process.env.RATE_PER_KM2_PER_MONTH ??
-          0
-      ) || 0;
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
     if (!rate_per_km2 || rate_per_km2 <= 0) {
       return json(
@@ -228,14 +194,50 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // metadata used by webhook to resolve context
+    // 4.5) Create (or reuse) a lock that stores the *remaining* purchasable geometry
+    // so the webhook can insert the correct geometry and avoid overlap constraints.
+    let lock_id = providedLockId;
+
+    if (!lock_id) {
+      const remainingGeojson = row.gj ?? null;
+      if (!remainingGeojson) {
+        return json(
+          {
+            ok: false,
+            code: "missing_remaining_geom",
+            message:
+              "Remaining area geometry is missing from preview. Ensure area_remaining_preview returns a 'gj' field.",
+          },
+          500
+        );
+      }
+
+      const { data: lockRow, error: lockErr } = await sb
+        .from("sponsored_locks")
+        .insert({
+          business_id: cleanerId,
+          area_id: areaId,
+          category_id: categoryId,
+          slot,
+          is_active: true,
+          final_geojson: remainingGeojson,
+          available_km2,
+        })
+        .select("id")
+        .single();
+
+      if (lockErr) throw lockErr;
+      lock_id = lockRow?.id || null;
+    }
+
+    // ✅ metadata used by webhook to resolve context
     const meta = {
       cleaner_id: cleaner.id,
       business_id: cleaner.id, // back-compat
       area_id: areaId,
       slot: String(slot),
       category_id: categoryId || "",
-      lock_id: lockId || "",
+      lock_id: lock_id || "",
     };
 
     // 5) Subscription checkout session
