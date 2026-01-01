@@ -210,6 +210,22 @@ export default async (req) => {
       lock_id: lockId || "",
     };
 
+// 🔒 HARD AVAILABILITY GUARD
+const { data: taken } = await supabase.rpc(
+  "check_area_remaining_km2",
+  {
+    p_area_id: areaId,
+    p_category_id: categoryId,
+    p_slot: slot
+  }
+);
+
+if (!taken || taken.remaining_km2 <= 0) {
+  return json({
+    error: "This area is sold out and cannot be purchased"
+  }, 409);
+}
+    
     // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
