@@ -9,46 +9,44 @@ type ServiceCategoryRow = {
   slug?: string | null;
 };
 
-type JoinedAreaRow = {
+type AreaRow = {
   id: string;
   name: string;
-  category_id?: string | null; // references service_categories.id
+  category_id: string | null;
 };
 
-type SubscriptionJoin = {
+type InvoiceDbRow = {
   id: string;
-  business_id: string | null;
+  cleaner_id: string | null;
   area_id: string | null;
-  service_area?: JoinedAreaRow | null;
-};
 
-type InvoiceRow = {
-  id: string;
-
-  sponsored_subscription_id: string | null;
   stripe_invoice_id: string | null;
+  stripe_payment_intent_id: string | null;
+  invoice_number: string | null;
 
   status: string | null;
-  amount_due_pennies: number | null;
+
+  subtotal_cents: number | null;
+  tax_cents: number | null;
+  total_cents: number | null;
   currency: string | null;
 
-  period_start: string | null;
-  period_end: string | null;
+  billing_period_start: string | null; // date
+  billing_period_end: string | null; // date
+
+  pdf_url: string | null;
+  pdf_signed_url: string | null;
+
   created_at: string;
-
-  hosted_invoice_url: string | null;
-  invoice_pdf: string | null;
-
-  sponsored_subscription?: SubscriptionJoin | null;
 };
 
-function moneyFromPennies(
-  pennies: number | null | undefined,
+function moneyFromCents(
+  cents: number | null | undefined,
   currency: string | null | undefined
 ) {
-  const p = Number.isFinite(Number(pennies)) ? Number(pennies) : 0;
+  const c = Number.isFinite(Number(cents)) ? Number(cents) : 0;
   const cur = (currency || "GBP").toUpperCase();
-  const amount = p / 100;
+  const amount = c / 100;
 
   try {
     return new Intl.NumberFormat("en-GB", {
@@ -72,12 +70,10 @@ function fmtDateTime(iso: string) {
   });
 }
 
-function fmtDateOnly(iso: string) {
-  const d = new Date(iso);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function fmtDateOnlyFromDateString(dateStr: string) {
+  // billing_period_start is a DATE (YYYY-MM-DD) from Postgres
+  // Force it to render consistently in table
+  return dateStr;
 }
 
 function monthKeyFromISO(iso: string) {
@@ -102,7 +98,8 @@ export default function Invoices() {
   const [cleanerId, setCleanerId] = useState<string | null>(null);
 
   const [categories, setCategories] = useState<ServiceCategoryRow[]>([]);
-  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
+  const [areasById, setAreasById] = useState<Map<string, AreaRow>>(new Map());
+  const [invoices, setInvoices] = useState<InvoiceDbRow[]>([]);
 
   // Filters
   const [industryFilter, setIndustryFilter] = useState<string>("all"); // service_categories.id OR "all"
@@ -151,86 +148,71 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        // 1) get this business's subscription ids
-        const { data: subs, error: subsErr } = await supabase
-          .from("sponsored_subscriptions")
-          .select("id")
-          .eq("business_id", cid);
-
-        if (subsErr) throw subsErr;
-
-        const subIds = (subs || [])
-          .map((s: any) => String(s.id))
-          .filter(Boolean);
-
-        if (subIds.length === 0) {
-          if (alive) {
-            setInvoices([]);
-            setCategories([]);
-            setLoading(false);
-          }
-          return;
-        }
-
-        /**
-         * 2) fetch invoices + join to subscriptions + join to service_areas
-         * (no join to service_categories here — we’ll fetch those separately)
-         */
+        // 1) Load invoices from public.invoices (this is the correct table)
         const { data: invData, error: invErr } = await supabase
-          .from("sponsored_invoices")
+          .from("invoices")
           .select(
             `
             id,
-            sponsored_subscription_id,
+            cleaner_id,
+            area_id,
             stripe_invoice_id,
+            stripe_payment_intent_id,
+            invoice_number,
             status,
-            amount_due_pennies,
+            subtotal_cents,
+            tax_cents,
+            total_cents,
             currency,
-            period_start,
-            period_end,
-            created_at,
-            hosted_invoice_url,
-            invoice_pdf,
-
-            sponsored_subscription:sponsored_subscriptions (
-              id,
-              business_id,
-              area_id,
-              service_area:service_areas (
-                id,
-                name,
-                category_id
-              )
-            )
+            billing_period_start,
+            billing_period_end,
+            pdf_url,
+            pdf_signed_url,
+            created_at
           `
           )
-          .in("sponsored_subscription_id", subIds)
+          .eq("cleaner_id", cid)
           .order("created_at", { ascending: false });
 
         if (invErr) throw invErr;
 
-        const normalized: InvoiceRow[] = ((invData || []) as any[]).map((row) => {
-          const ss = row.sponsored_subscription;
-          const ssObj = Array.isArray(ss) ? ss[0] || null : ss || null;
+        const normalizedInvoices: InvoiceDbRow[] = (invData || []).map((r: any) => ({
+          ...r,
+        }));
 
-          if (ssObj?.service_area && Array.isArray(ssObj.service_area)) {
-            ssObj.service_area = ssObj.service_area[0] || null;
+        // 2) Load service areas referenced by these invoices
+        const areaIds = Array.from(
+          new Set(
+            normalizedInvoices
+              .map((i) => i.area_id)
+              .filter((x): x is string => !!x)
+          )
+        );
+
+        let areaMap = new Map<string, AreaRow>();
+        if (areaIds.length > 0) {
+          const { data: areaRows, error: areaErr } = await supabase
+            .from("service_areas")
+            .select("id,name,category_id")
+            .in("id", areaIds);
+
+          if (areaErr) throw areaErr;
+
+          for (const a of areaRows || []) {
+            areaMap.set(String(a.id), {
+              id: String(a.id),
+              name: String(a.name),
+              category_id: a.category_id ? String(a.category_id) : null,
+            });
           }
+        }
 
-          return {
-            ...row,
-            sponsored_subscription: ssObj,
-          };
-        });
-
-        /**
-         * 3) Fetch service categories for dropdown + display
-         */
+        // 3) Load categories for dropdown/display based on those areas
         const catIds = Array.from(
           new Set(
-            normalized
-              .map((inv) => inv.sponsored_subscription?.service_area?.category_id || null)
-              .filter(Boolean) as string[]
+            Array.from(areaMap.values())
+              .map((a) => a.category_id)
+              .filter((x): x is string => !!x)
           )
         );
 
@@ -254,7 +236,8 @@ export default function Invoices() {
         }
 
         if (alive) {
-          setInvoices(normalized);
+          setInvoices(normalizedInvoices);
+          setAreasById(areaMap);
           setCategories(catRows);
           setLoading(false);
         }
@@ -291,7 +274,8 @@ export default function Invoices() {
 
     if (industryFilter !== "all") {
       list = list.filter((inv) => {
-        const catId = inv.sponsored_subscription?.service_area?.category_id || null;
+        const area = inv.area_id ? areasById.get(inv.area_id) : null;
+        const catId = area?.category_id || null;
         return catId === industryFilter;
       });
     }
@@ -301,7 +285,7 @@ export default function Invoices() {
     }
 
     return list;
-  }, [invoices, industryFilter, monthFilter]);
+  }, [invoices, industryFilter, monthFilter, areasById]);
 
   const clearFilters = () => {
     setIndustryFilter("all");
@@ -391,17 +375,17 @@ export default function Invoices() {
 
                 <tbody>
                   {filtered.map((inv) => {
-                    const area = inv.sponsored_subscription?.service_area || null;
+                    const area = inv.area_id ? areasById.get(inv.area_id) : null;
                     const catId = area?.category_id || null;
                     const industry = catId ? categoryNameById.get(catId) : null;
 
-                    const periodStart = inv.period_start
-                      ? fmtDateOnly(inv.period_start)
+                    const periodStart = inv.billing_period_start
+                      ? fmtDateOnlyFromDateString(inv.billing_period_start)
                       : inv.created_at
-                      ? fmtDateOnly(inv.created_at)
+                      ? fmtDateOnlyFromDateString(inv.created_at.slice(0, 10))
                       : "—";
 
-                    const pdfLink = inv.invoice_pdf || inv.hosted_invoice_url || null;
+                    const pdfLink = inv.pdf_signed_url || inv.pdf_url || null;
                     const statusLabel = (inv.status || "—").toString().split("_").join(" ");
 
                     return (
@@ -412,7 +396,7 @@ export default function Invoices() {
                         <td className="py-3 pr-3">{periodStart}</td>
                         <td className="py-3 pr-3">{statusLabel}</td>
                         <td className="py-3 pr-3">
-                          {moneyFromPennies(inv.amount_due_pennies, inv.currency)}
+                          {moneyFromCents(inv.total_cents ?? inv.subtotal_cents, inv.currency)}
                         </td>
                         <td className="py-3 pr-3">{inv.created_at ? fmtDateTime(inv.created_at) : "—"}</td>
                         <td className="py-3">
@@ -431,7 +415,7 @@ export default function Invoices() {
               </table>
 
               <p className="muted mt-3 text-xs">
-                If “PDF” is blank, it means Stripe hasn’t provided an invoice PDF yet for that invoice.
+                If “PDF” is blank, it means a PDF URL wasn’t saved for that invoice.
               </p>
             </div>
           )}
