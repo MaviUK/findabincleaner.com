@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
-type CategoryRow = {
+type ServiceCategoryRow = {
   id: string;
   name: string;
   slug?: string | null;
@@ -12,15 +12,14 @@ type CategoryRow = {
 type JoinedAreaRow = {
   id: string;
   name: string;
-  category_id?: string | null;
-  category?: CategoryRow | null; // joined categories row
+  category_id?: string | null; // references service_categories.id
 };
 
 type SubscriptionJoin = {
   id: string;
   business_id: string | null;
   area_id: string | null;
-  service_area?: JoinedAreaRow | null; // deep-join area via subscription
+  service_area?: JoinedAreaRow | null;
 };
 
 type InvoiceRow = {
@@ -40,7 +39,6 @@ type InvoiceRow = {
   hosted_invoice_url: string | null;
   invoice_pdf: string | null;
 
-  // joins
   sponsored_subscription?: SubscriptionJoin | null;
 };
 
@@ -103,11 +101,11 @@ export default function Invoices() {
 
   const [cleanerId, setCleanerId] = useState<string | null>(null);
 
-  const [categories, setCategories] = useState<CategoryRow[]>([]);
+  const [categories, setCategories] = useState<ServiceCategoryRow[]>([]);
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
 
   // Filters
-  const [industryFilter, setIndustryFilter] = useState<string>("all"); // category_id OR "all"
+  const [industryFilter, setIndustryFilter] = useState<string>("all"); // service_categories.id OR "all"
   const [monthFilter, setMonthFilter] = useState<string>("all"); // YYYY-MM OR "all"
 
   useEffect(() => {
@@ -153,13 +151,7 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        /**
-         * ✅ IMPORTANT FIX:
-         * We cannot join sponsored_invoices -> service_areas directly.
-         * We must go: sponsored_invoices -> sponsored_subscriptions -> service_areas -> categories
-         *
-         * Step 1: get this business's subscriptions (ids)
-         */
+        // 1) get this business's subscription ids
         const { data: subs, error: subsErr } = await supabase
           .from("sponsored_subscriptions")
           .select("id")
@@ -181,7 +173,8 @@ export default function Invoices() {
         }
 
         /**
-         * Step 2: fetch invoices for those subscription ids with deep joins
+         * 2) fetch invoices + join to subscriptions + join to service_areas
+         * (no join to service_categories here — we’ll fetch those separately)
          */
         const { data: invData, error: invErr } = await supabase
           .from("sponsored_invoices")
@@ -206,12 +199,7 @@ export default function Invoices() {
               service_area:service_areas (
                 id,
                 name,
-                category_id,
-                category:categories (
-                  id,
-                  name,
-                  slug
-                )
+                category_id
               )
             )
           `
@@ -223,15 +211,10 @@ export default function Invoices() {
 
         const normalized: InvoiceRow[] = ((invData || []) as any[]).map((row) => {
           const ss = row.sponsored_subscription;
-
-          // defensive: sometimes embedded relations come back as arrays
           const ssObj = Array.isArray(ss) ? ss[0] || null : ss || null;
 
           if (ssObj?.service_area && Array.isArray(ssObj.service_area)) {
             ssObj.service_area = ssObj.service_area[0] || null;
-          }
-          if (ssObj?.service_area?.category && Array.isArray(ssObj.service_area.category)) {
-            ssObj.service_area.category = ssObj.service_area.category[0] || null;
           }
 
           return {
@@ -240,15 +223,35 @@ export default function Invoices() {
           };
         });
 
-        // Build categories list directly from the invoice joins
-        const catMap = new Map<string, CategoryRow>();
-        for (const inv of normalized) {
-          const cat = inv.sponsored_subscription?.service_area?.category || null;
-          if (cat?.id && cat?.name) catMap.set(String(cat.id), { id: String(cat.id), name: String(cat.name), slug: cat.slug ?? null });
-        }
-        const catRows = Array.from(catMap.values()).sort((a, b) =>
-          a.name.localeCompare(b.name)
+        /**
+         * 3) Fetch service categories for dropdown + display
+         */
+        const catIds = Array.from(
+          new Set(
+            normalized
+              .map((inv) => inv.sponsored_subscription?.service_area?.category_id || null)
+              .filter(Boolean) as string[]
+          )
         );
+
+        let catRows: ServiceCategoryRow[] = [];
+        if (catIds.length > 0) {
+          const { data: catsData, error: catsErr } = await supabase
+            .from("service_categories")
+            .select("id,name,slug")
+            .in("id", catIds);
+
+          if (catsErr) throw catsErr;
+
+          catRows = (catsData || [])
+            .map((c: any) => ({
+              id: String(c.id),
+              name: String(c.name),
+              slug: c.slug ? String(c.slug) : null,
+            }))
+            .filter((c) => c.id && c.name)
+            .sort((a, b) => a.name.localeCompare(b.name));
+        }
 
         if (alive) {
           setInvoices(normalized);
@@ -390,12 +393,7 @@ export default function Invoices() {
                   {filtered.map((inv) => {
                     const area = inv.sponsored_subscription?.service_area || null;
                     const catId = area?.category_id || null;
-
-                    // prefer joined category name; fallback to map
-                    const industry =
-                      area?.category?.name ||
-                      (catId ? categoryNameById.get(catId) : null) ||
-                      null;
+                    const industry = catId ? categoryNameById.get(catId) : null;
 
                     const periodStart = inv.period_start
                       ? fmtDateOnly(inv.period_start)
@@ -409,21 +407,14 @@ export default function Invoices() {
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
                         <td className="py-3 pr-3 font-medium">{inv.stripe_invoice_id || "—"}</td>
-
                         <td className="py-3 pr-3">{industry || "—"}</td>
-
                         <td className="py-3 pr-3">{area?.name || "—"}</td>
-
                         <td className="py-3 pr-3">{periodStart}</td>
-
                         <td className="py-3 pr-3">{statusLabel}</td>
-
                         <td className="py-3 pr-3">
                           {moneyFromPennies(inv.amount_due_pennies, inv.currency)}
                         </td>
-
                         <td className="py-3 pr-3">{inv.created_at ? fmtDateTime(inv.created_at) : "—"}</td>
-
                         <td className="py-3">
                           {pdfLink ? (
                             <a className="link" href={pdfLink} target="_blank" rel="noreferrer">
