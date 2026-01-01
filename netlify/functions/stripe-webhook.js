@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-01-PAYMENT-STATUS-FIX");
+console.log("LOADED stripe-webhook v2026-01-01-PAYFAIL-NOTIFY-PAID-ONLY");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -7,6 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (statusCode, body) => ({
@@ -15,6 +16,102 @@ const json = (statusCode, body) => ({
   body: JSON.stringify(body),
 });
 
+// ----------------------------
+// Email helpers (Resend)
+// ----------------------------
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+async function sendPaymentFailedEmail(inv) {
+  try {
+    const { RESEND_API_KEY, BILLING_FROM } = process.env;
+    if (!RESEND_API_KEY || !BILLING_FROM) {
+      console.warn("[webhook] missing RESEND_API_KEY or BILLING_FROM; skipping failed-payment email");
+      return;
+    }
+
+    const subId =
+      typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
+
+    // Try to resolve businessId from subscription metadata
+    let businessId = null;
+    if (subId) {
+      const sub = await stripe.subscriptions.retrieve(subId);
+      const meta = sub?.metadata || {};
+      businessId = meta.business_id || meta.cleaner_id || meta.businessId || null;
+    }
+
+    if (!businessId) {
+      console.warn("[webhook] payment_failed: could not resolve businessId from metadata", {
+        invoice: inv.id,
+        subId,
+      });
+      return;
+    }
+
+    const { data: cleaner, error: cErr } = await supabase
+      .from("cleaners")
+      .select("business_name, contact_email")
+      .eq("id", businessId)
+      .maybeSingle();
+
+    if (cErr || !cleaner?.contact_email) {
+      console.warn("[webhook] payment_failed: no contact_email found", { businessId, cErr });
+      return;
+    }
+
+    const pennies = inv.amount_due ?? inv.amount_remaining ?? 0;
+    const amount = Number(pennies || 0) / 100;
+    const currency = String(inv.currency || "gbp").toUpperCase();
+    const hosted = inv.hosted_invoice_url || "";
+
+    const subject = `Payment failed — action needed (${currency} ${amount.toFixed(2)})`;
+
+    const html =
+      `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;line-height:1.5">` +
+      `<h2>${escapeHtml(subject)}</h2>` +
+      `<p>Hi ${escapeHtml(cleaner.business_name || "there")},</p>` +
+      `<p>We couldn’t take payment for your <strong>Featured service area</strong> subscription.</p>` +
+      `<p><strong>Invoice:</strong> ${escapeHtml(inv.number || inv.id)}<br/>` +
+      `<strong>Amount due:</strong> ${currency} ${amount.toFixed(2)}</p>` +
+      (hosted
+        ? `<p><a href="${hosted}" target="_blank" rel="noreferrer">Pay now / update payment method</a></p>`
+        : `<p>Please update your payment method in Stripe.</p>`) +
+      `<p style="color:#6b7280;font-size:12px;margin-top:20px">Find a Bin Cleaner — Billing</p>` +
+      `</div>`;
+
+    const r = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${RESEND_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: BILLING_FROM,
+        to: cleaner.contact_email,
+        subject,
+        html,
+      }),
+    });
+
+    if (!r.ok) {
+      const txt = await r.text().catch(() => "");
+      console.error("[webhook] Resend failed-payment email error:", txt || r.statusText);
+    } else {
+      console.log("[webhook] sent payment_failed email to", cleaner.contact_email);
+    }
+  } catch (e) {
+    console.error("[webhook] sendPaymentFailedEmail failed:", e?.message || e);
+  }
+}
+
+// ----------------------------
+// Context + locking
+// ----------------------------
 async function resolveContext({ meta, customerId }) {
   const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
   const area_id = meta?.area_id || meta?.areaId || null;
@@ -57,30 +154,6 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
     await stripe.subscriptions.cancel(subId);
   } catch (e) {
     console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
-  }
-}
-
-/** Minimal Resend sender (optional). If no key, we just log. */
-async function sendEmailResend({ to, subject, html, text }) {
-  const key = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM || "Clean.ly <no-reply@clean.ly>";
-  if (!key) {
-    console.warn("[email] RESEND_API_KEY missing, skipping email:", { to, subject });
-    return;
-  }
-  try {
-    const resp = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from, to, subject, html, text }),
-    });
-    const out = await resp.json().catch(() => ({}));
-    if (!resp.ok) console.error("[email] Resend error:", resp.status, out);
-  } catch (e) {
-    console.error("[email] Resend fetch failed:", e?.message || e);
   }
 }
 
@@ -239,7 +312,7 @@ async function upsertInvoice(inv) {
     }
   }
 
-  // 3) Fallback: match by (business_id, area_id, slot)
+  // 3) ✅ Fallback: use metadata identity (business_id + area_id + slot)
   if (!subRow && subscriptionId) {
     if (!stripeSub) stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
     const meta = stripeSub.metadata || {};
@@ -299,37 +372,9 @@ async function upsertInvoice(inv) {
 }
 
 /**
- * ✅ Force DB subscription status from invoice event.
- * This removes race conditions where Stripe hasn't yet flipped sub.status when invoice.paid fires.
- */
-async function forceUpdateSubStatusFromInvoice(inv, statusOverride) {
-  const subId =
-    typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
-  if (!subId) return;
-
-  const updates = {
-    status: statusOverride,
-    updated_at: new Date().toISOString(),
-  };
-
-  // invoice.period_end is a good "paid-through" signal for your DB
-  if (inv.period_end) {
-    updates.current_period_end = new Date(inv.period_end * 1000).toISOString();
-  }
-
-  const { error } = await supabase
-    .from("sponsored_subscriptions")
-    .update(updates)
-    .eq("stripe_subscription_id", subId);
-
-  if (error) {
-    console.error("[webhook] forceUpdateSubStatusFromInvoice error:", error, { subId, statusOverride });
-  }
-}
-
-/**
- * Try to refresh from Stripe (best-effort).
- * Keep this, but don't rely on it as the only truth.
+ * ✅ KEY FIX:
+ * Pull the subscription from Stripe and upsert it on invoice events.
+ * This moves sponsored_subscriptions.status from incomplete -> active when the first invoice is paid.
  */
 async function refreshSubscriptionFromInvoice(inv) {
   try {
@@ -341,6 +386,7 @@ async function refreshSubscriptionFromInvoice(inv) {
     await upsertSubscription(sub, sub.metadata || {});
   } catch (e) {
     console.error("[webhook] refreshSubscriptionFromInvoice failed:", e?.message || e);
+    // don't throw; invoice record is more important than this refresh
   }
 }
 
@@ -357,48 +403,6 @@ async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
       err?.stack || ""
     );
     return "error";
-  }
-}
-
-async function emailPaymentFailed(inv) {
-  try {
-    // find business email from the cleaner table via customer id (best-effort)
-    const customerId = typeof inv.customer === "string" ? inv.customer : inv.customer?.id ?? null;
-
-    let email = inv.customer_email || null;
-
-    if (!email && customerId) {
-      const { data } = await supabase
-        .from("cleaners")
-        .select("contact_email")
-        .eq("stripe_customer_id", customerId)
-        .maybeSingle();
-      email = data?.contact_email || null;
-    }
-
-    if (!email) {
-      console.warn("[webhook] payment_failed: no email found for invoice", inv.id);
-      return;
-    }
-
-    const hosted = inv.hosted_invoice_url || "";
-    const subject = "Payment failed – action needed to keep your featured area live";
-
-    const text = [
-      "We tried to take payment for your Featured service area, but it failed.",
-      hosted ? `Pay/update details here: ${hosted}` : "",
-      "If you need help, reply to this email.",
-    ].filter(Boolean).join("\n\n");
-
-    const html = `
-      <p>We tried to take payment for your <b>Featured service area</b>, but it failed.</p>
-      ${hosted ? `<p><a href="${hosted}">Pay / update your payment details</a></p>` : ""}
-      <p>If you need help, just reply to this email.</p>
-    `;
-
-    await sendEmailResend({ to: email, subject, text, html });
-  } catch (e) {
-    console.error("[webhook] emailPaymentFailed error:", e?.message || e);
   }
 }
 
@@ -460,6 +464,9 @@ exports.handler = async (event) => {
         break;
       }
 
+      // ----------------------------
+      // Invoice lifecycle
+      // ----------------------------
       case "invoice.finalized":
       case "invoice.paid":
       case "invoice.payment_failed":
@@ -470,29 +477,22 @@ exports.handler = async (event) => {
         // Always record invoice row
         await upsertInvoice(inv);
 
-        // Best-effort refresh from Stripe
+        // Always refresh subscription state from Stripe
         await refreshSubscriptionFromInvoice(inv);
 
-        // ✅ SOURCE OF TRUTH: invoice status
+        // ✅ Only send your invoice email when PAID
+        // This prevents “invoice email even though payment failed”
         if (stripeEvent.type === "invoice.paid") {
-          // Force DB to active even if Stripe sub.status lags
-          await forceUpdateSubStatusFromInvoice(inv, "active");
-
-          // ✅ Only email your invoice when it is actually PAID
           console.log("[webhook] invoice.paid -> createInvoiceAndEmail", inv.id);
           await safeCreateAndEmailInvoice(inv.id, { force: true });
         }
 
+        // ✅ If payment failed: send a “payment failed” email instead (with pay link)
         if (stripeEvent.type === "invoice.payment_failed") {
-          // mark as past_due in your DB so UI can block/flag it
-          await forceUpdateSubStatusFromInvoice(inv, "past_due");
-
-          // notify customer
-          await emailPaymentFailed(inv);
+          console.log("[webhook] invoice.payment_failed -> notify customer", inv.id);
+          await sendPaymentFailedEmail(inv);
         }
 
-        // Optional: if you *really* need to send something on invoice.sent/finalized, do it here,
-        // but DO NOT send your normal "invoice paid" email.
         break;
       }
 
