@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2025-12-30-GUARD-DUPES");
+console.log("LOADED sponsored-checkout v2026-01-01-HARD-GUARD-FIX");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -55,14 +55,19 @@ export default async (req) => {
 
   // ✅ Accept both old + new naming
   const cleanerId = String(
-    body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
+    body.cleanerId ||
+      body.cleaner_id ||
+      body.businessId ||
+      body.business_id ||
+      ""
   ).trim();
 
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
   // optional but recommended if you have categories
-  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
+  const categoryId =
+    String(body.categoryId || body.category_id || "").trim() || null;
 
   // optional lock id if you are using sponsored_locks
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
@@ -73,6 +78,8 @@ export default async (req) => {
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+
+  // ✅ right now you only support slot 1
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
@@ -91,7 +98,10 @@ export default async (req) => {
     );
 
     const latestBlocking = blockingRows[0] || null;
-    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
+    const ownerBusinessId = latestBlocking?.business_id
+      ? String(latestBlocking.business_id)
+      : null;
+
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
@@ -108,8 +118,7 @@ export default async (req) => {
       );
     }
 
-    // ✅ If already sponsored by YOU, do NOT create another subscription (this causes DB unique errors)
-    // If later you want to support “top-ups”, set allowTopUp=true and handle separately.
+    // ✅ If already sponsored by YOU, do NOT create another subscription (avoids dupes/unique errors)
     if (ownedByMe && !allowTopUp) {
       return json(
         {
@@ -123,16 +132,23 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview
-    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
+    // 2) Remaining area preview (first check)
+    const { data: previewRow, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
 
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] || {} : previewRow || {};
-    const rawAvailable = row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
+    const row = Array.isArray(previewRow)
+      ? previewRow[0] || {}
+      : previewRow || {};
+
+    const rawAvailable =
+      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
 
     let available_km2 = Number(rawAvailable);
     if (!Number.isFinite(available_km2)) available_km2 = 0;
@@ -169,7 +185,10 @@ export default async (req) => {
       );
     }
 
-    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
+    const amount_cents = Math.max(
+      1,
+      Math.round(available_km2 * rate_per_km2 * 100)
+    );
 
     // 4) Get or create Stripe customer (CLEANERS schema)
     const { data: cleaner, error: cleanerErr } = await sb
@@ -210,22 +229,37 @@ export default async (req) => {
       lock_id: lockId || "",
     };
 
-// 🔒 HARD AVAILABILITY GUARD
-const { data: taken } = await supabase.rpc(
-  "check_area_remaining_km2",
-  {
-    p_area_id: areaId,
-    p_category_id: categoryId,
-    p_slot: slot
-  }
-);
+    // 🔒 HARD AVAILABILITY GUARD (fix: use sb, and use the same preview RPC)
+    // This prevents “sold out” races right before Stripe session creation.
+    const { data: preview2, error: prevErr2 } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
 
-if (!taken || taken.remaining_km2 <= 0) {
-  return json({
-    error: "This area is sold out and cannot be purchased"
-  }, 409);
-}
-    
+    if (prevErr2) throw prevErr2;
+
+    const row2 = Array.isArray(preview2) ? preview2[0] || {} : preview2 || {};
+    const rawAvailable2 =
+      row2.available_km2 ?? row2.area_km2 ?? row2.remaining_km2 ?? 0;
+
+    let available2 = Number(rawAvailable2);
+    if (!Number.isFinite(available2)) available2 = 0;
+    available2 = Math.max(0, available2);
+
+    if (available2 <= EPS) {
+      return json(
+        {
+          ok: false,
+          code: "sold_out",
+          message: "This area is sold out and cannot be purchased.",
+        },
+        409
+      );
+    }
+
     // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
