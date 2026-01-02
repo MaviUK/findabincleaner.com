@@ -155,7 +155,13 @@ export default function AreaSponsorModal({
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
-  const canBuy = open && hasArea && !checkingOut && !!categoryId && !pv.soldOut;
+  const canBuy =
+    open &&
+    hasArea &&
+    !checkingOut &&
+    !!categoryId &&
+    !pv.soldOut &&
+    (Number(pv.availableKm2 ?? 0) > 0);
 
   const startCheckout = async () => {
     if (!canBuy) return;
