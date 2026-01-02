@@ -2,12 +2,9 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-02-AVAIL-GUARD");
+console.log("LOADED sponsored-checkout v2026-01-02-FIX-REMAINING-PREVIEW");
 
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -21,12 +18,9 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: corsHeaders,
-  });
+  new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
-// statuses that block purchase (treat incomplete as blocking to prevent duplicates)
+// statuses that block purchase
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -57,17 +51,19 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
+  // IMPORTANT: your preview + remaining logic is category-specific
   const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
-  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
+  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken already? (latest blocking row)
+    // 1) Is slot taken? (use MOST RECENT blocking row)
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at")
@@ -83,7 +79,6 @@ export default async (req) => {
 
     const latestBlocking = blockingRows[0] || null;
     const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
-
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
@@ -112,30 +107,24 @@ export default async (req) => {
       );
     }
 
-    // 2) Hard availability guard (use your existing RPC)
-    // NOTE: categoryId is included only if your RPC supports it; if not, it will be ignored by Postgres.
-    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
+    // 2) Remaining area preview (THIS is the single source of truth)
+    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
-      p_slot: slot,
-      // if your SQL function has this param, great. If it doesn't, remove this line.
       p_category_id: categoryId,
+      p_slot: slot,
     });
-
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] || {} : previewRow || {};
-    const rawAvailable = row.available_km2 ?? row.remaining_km2 ?? row.area_km2 ?? 0;
+    const pr = Array.isArray(previewData) ? previewData[0] : previewData;
+    const available_km2 = Math.max(0, Number(pr?.available_km2 ?? 0) || 0);
 
-    let available_km2 = Number(rawAvailable);
-    if (!Number.isFinite(available_km2)) available_km2 = 0;
-    available_km2 = Math.max(0, available_km2);
-
-    if (available_km2 <= EPS) {
+    if (!Number.isFinite(available_km2) || available_km2 <= EPS || pr?.sold_out) {
       return json(
         {
           ok: false,
           code: "no_remaining",
-          message: "No purchasable area available.",
+          message: "No purchasable area left for this slot.",
+          reason: pr?.reason ?? "no_remaining",
         },
         409
       );
@@ -143,11 +132,8 @@ export default async (req) => {
 
     // 3) Price
     const rate_per_km2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
-          process.env.RATE_PER_KM2_PER_MONTH ??
-          0
-      ) || 0;
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) ||
+      0;
 
     if (!rate_per_km2 || rate_per_km2 <= 0) {
       return json(
@@ -192,7 +178,8 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // metadata used by webhook to resolve context
+    // ✅ metadata used by webhook to resolve context
+    // NOTE: webhook must use area_remaining_preview again and store gj as final_geojson
     const meta = {
       cleaner_id: cleaner.id,
       business_id: cleaner.id, // back-compat
@@ -200,15 +187,13 @@ export default async (req) => {
       slot: String(slot),
       category_id: categoryId || "",
       lock_id: lockId || "",
-      // optional: keep the computed price inputs for debugging
-      available_km2: String(available_km2),
-      amount_cents: String(amount_cents),
     };
 
-    // 5) Stripe checkout session
+    // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
+
       metadata: meta,
       subscription_data: { metadata: meta },
 
