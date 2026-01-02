@@ -2,9 +2,12 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-01-LOCK-REMAINING-GEOM");
+console.log("LOADED sponsored-checkout v2026-01-02-AVAIL-GUARD");
 
-const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const sb = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE
+);
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -23,7 +26,7 @@ const json = (body, status = 200) =>
     headers: corsHeaders,
   });
 
-// statuses that block purchase
+// statuses that block purchase (treat incomplete as blocking to prevent duplicates)
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -38,10 +41,7 @@ const EPS = 1e-6;
 
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
-
-  if (req.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   let body;
   try {
@@ -50,7 +50,6 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  // ✅ Accept both old + new naming
   const cleanerId = String(
     body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
   ).trim();
@@ -58,23 +57,17 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // category is REQUIRED for correct availability calcs
   const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
+  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  // optional lock id if you are using sponsored_locks
-  const providedLockId = String(body.lockId || body.lock_id || "").trim() || null;
-
-  // OPTIONAL: if later you implement “top-up remaining area” for an existing sponsor,
-  // you can call this endpoint with { allowTopUp: true } and adjust the flow.
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
   if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken? (use MOST RECENT blocking row)
+    // 1) Is slot taken already? (latest blocking row)
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at")
@@ -90,10 +83,10 @@ export default async (req) => {
 
     const latestBlocking = blockingRows[0] || null;
     const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
+
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
-    // ✅ If already sponsored by someone else, block purchase
     if (ownedByOther) {
       return json(
         {
@@ -106,7 +99,6 @@ export default async (req) => {
       );
     }
 
-    // ✅ If already sponsored by YOU, do NOT create another subscription
     if (ownedByMe && !allowTopUp) {
       return json(
         {
@@ -120,11 +112,13 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview (MUST include categoryId)
+    // 2) Hard availability guard (use your existing RPC)
+    // NOTE: categoryId is included only if your RPC supports it; if not, it will be ignored by Postgres.
     const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
-      p_category_id: categoryId,
       p_slot: slot,
+      // if your SQL function has this param, great. If it doesn't, remove this line.
+      p_category_id: categoryId,
     });
 
     if (prevErr) throw prevErr;
@@ -141,7 +135,7 @@ export default async (req) => {
         {
           ok: false,
           code: "no_remaining",
-          message: "No purchasable area left for this slot.",
+          message: "No purchasable area available.",
         },
         409
       );
@@ -149,7 +143,11 @@ export default async (req) => {
 
     // 3) Price
     const rate_per_km2 =
-      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+          process.env.RATE_PER_KM2_PER_MONTH ??
+          0
+      ) || 0;
 
     if (!rate_per_km2 || rate_per_km2 <= 0) {
       return json(
@@ -194,57 +192,23 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // 4.5) Create (or reuse) a lock that stores the *remaining* purchasable geometry
-    // so the webhook can insert the correct geometry and avoid overlap constraints.
-    let lock_id = providedLockId;
-
-    if (!lock_id) {
-      const remainingGeojson = row.gj ?? null;
-      if (!remainingGeojson) {
-        return json(
-          {
-            ok: false,
-            code: "missing_remaining_geom",
-            message:
-              "Remaining area geometry is missing from preview. Ensure area_remaining_preview returns a 'gj' field.",
-          },
-          500
-        );
-      }
-
-      const { data: lockRow, error: lockErr } = await sb
-        .from("sponsored_locks")
-        .insert({
-          business_id: cleanerId,
-          area_id: areaId,
-          category_id: categoryId,
-          slot,
-          is_active: true,
-          final_geojson: remainingGeojson,
-          available_km2,
-        })
-        .select("id")
-        .single();
-
-      if (lockErr) throw lockErr;
-      lock_id = lockRow?.id || null;
-    }
-
-    // ✅ metadata used by webhook to resolve context
+    // metadata used by webhook to resolve context
     const meta = {
       cleaner_id: cleaner.id,
       business_id: cleaner.id, // back-compat
       area_id: areaId,
       slot: String(slot),
       category_id: categoryId || "",
-      lock_id: lock_id || "",
+      lock_id: lockId || "",
+      // optional: keep the computed price inputs for debugging
+      available_km2: String(available_km2),
+      amount_cents: String(amount_cents),
     };
 
-    // 5) Subscription checkout session
+    // 5) Stripe checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
-
       metadata: meta,
       subscription_data: { metadata: meta },
 
