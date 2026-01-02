@@ -1,4 +1,5 @@
 // netlify/functions/stripe-webhook.js
+// Stripe → Supabase sync + invoice emails
 console.log("LOADED stripe-webhook v2026-01-02-LOCK-GEOM-PAID-ONLY");
 
 const Stripe = require("stripe");
@@ -109,7 +110,7 @@ async function sendPaymentFailedEmail(inv) {
 }
 
 // ----------------------------
-// Context + locking
+// Context + locking helpers
 // ----------------------------
 async function resolveContext({ meta, customerId }) {
   const business_id = meta?.business_id || meta?.cleaner_id || meta?.businessId || null;
@@ -149,7 +150,7 @@ async function releaseLockSafe(lockId) {
 async function getLockGeojsonSafe(lockId, businessId) {
   if (!lockId) return null;
   try {
-    // lock belongs to purchaser; ensure still active so old locks can't be reused
+    // lock belongs to the purchaser; also ensure still active so old locks can't be reused
     const { data, error } = await supabase
       .from("sponsored_locks")
       .select("id, business_id, final_geojson, is_active")
@@ -186,11 +187,15 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
   }
 }
 
+// ----------------------------
+// DB upserts
+// ----------------------------
 /**
- * ✅ UPDATE-then-INSERT upsert (no ON CONFLICT needed)
+ * Upsert sponsored_subscriptions.
+ *
  * IMPORTANT:
- * If checkout stored a remaining-geometry lock_id, we MUST write final_geojson from that lock.
- * Otherwise, DB overlap guard may reject and you end up paid in Stripe but not recorded in DB.
+ * - If checkout stored a lock_id, we must write final_geojson from that lock.
+ * - We update first by (business_id, area_id, slot) then insert.
  */
 async function upsertSubscription(sub, meta = {}) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
@@ -236,6 +241,7 @@ async function upsertSubscription(sub, meta = {}) {
     ...(lockedFinalGeojson ? { final_geojson: lockedFinalGeojson } : {}),
   };
 
+  // 1) UPDATE first
   const updateDoc = {
     stripe_customer_id: payload.stripe_customer_id,
     stripe_subscription_id: payload.stripe_subscription_id,
@@ -248,7 +254,6 @@ async function upsertSubscription(sub, meta = {}) {
     ...(lockedFinalGeojson ? { final_geojson: lockedFinalGeojson } : {}),
   };
 
-  // 1) UPDATE first
   const { data: updatedRows, error: updErr } = await supabase
     .from("sponsored_subscriptions")
     .update(updateDoc)
@@ -259,7 +264,6 @@ async function upsertSubscription(sub, meta = {}) {
 
   if (updErr) {
     console.error("[webhook] update sponsored_subscriptions error:", updErr, payload);
-    // continue to insert attempt
   } else if ((updatedRows || []).length > 0) {
     console.log("[webhook] updated existing sponsored_subscriptions row", {
       business_id,
@@ -418,16 +422,11 @@ async function upsertInvoice(inv) {
   }
 }
 
-/**
- * Pull the subscription from Stripe and upsert it on invoice events.
- * This moves sponsored_subscriptions.status from incomplete -> active when the first invoice is paid.
- */
 async function refreshSubscriptionFromInvoice(inv) {
   try {
     const subId =
       typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
     if (!subId) return;
-
     const sub = await stripe.subscriptions.retrieve(subId);
     await upsertSubscription(sub, sub.metadata || {});
   } catch (e) {
@@ -451,6 +450,9 @@ async function safeCreateAndEmailInvoice(stripeInvoiceId, opts = {}) {
   }
 }
 
+// ----------------------------
+// Handler
+// ----------------------------
 exports.handler = async (event) => {
   if (event.httpMethod === "GET") {
     return json(200, { ok: true, note: "Stripe webhook is deployed. Use POST from Stripe." });
@@ -505,7 +507,6 @@ exports.handler = async (event) => {
           .from("sponsored_subscriptions")
           .update({ status: "canceled", updated_at: new Date().toISOString() })
           .eq("stripe_subscription_id", sub.id);
-
         if (error) throw new Error("DB cancel(sub) failed");
         break;
       }
@@ -526,13 +527,13 @@ exports.handler = async (event) => {
         // Always refresh subscription state from Stripe
         await refreshSubscriptionFromInvoice(inv);
 
-        // Only send *your* invoice email when PAID
+        // Only send your invoice email when PAID
         if (stripeEvent.type === "invoice.paid") {
           console.log("[webhook] invoice.paid -> createInvoiceAndEmail", inv.id);
           await safeCreateAndEmailInvoice(inv.id, { force: true });
         }
 
-        // If payment failed: send a “payment failed” email (with pay link)
+        // If payment failed: send a “payment failed” email instead (with pay link)
         if (stripeEvent.type === "invoice.payment_failed") {
           console.log("[webhook] invoice.payment_failed -> notify customer", inv.id);
           await sendPaymentFailedEmail(inv);
