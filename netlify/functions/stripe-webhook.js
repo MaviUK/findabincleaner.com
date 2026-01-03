@@ -2,7 +2,7 @@
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED stripe-webhook v2026-01-03-GEOM-SAFE");
+console.log("LOADED stripe-webhook v2026-01-03-GEOM-SAFE+OVERLAP-GRACE");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
@@ -28,14 +28,24 @@ async function releaseLockSafe(lockId) {
 
 async function getLockGeoJSON(lockId) {
   if (!lockId) return null;
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("sponsored_locks")
     .select("final_geojson")
     .eq("id", lockId)
     .maybeSingle();
+
+  if (error) {
+    console.warn("[webhook] getLockGeoJSON error:", error);
+    return null;
+  }
+
   return data?.final_geojson ?? null;
 }
 
+/**
+ * ✅ Single DB entry-point that guarantees geometry.
+ * Uses lock.final_geojson when present; otherwise DB function will fallback to clipped preview geometry.
+ */
 async function upsertSubWithGeom({
   business_id,
   area_id,
@@ -58,9 +68,9 @@ async function upsertSubWithGeom({
     p_slot: slot,
     p_stripe_customer_id: stripe_customer_id,
     p_stripe_subscription_id: stripe_subscription_id,
-    p_price_monthly_pennies: price_monthly_pennies ?? 0,
+    p_price_monthly_pennies: Number(price_monthly_pennies ?? 0) || 0,
     p_currency: (currency || "gbp")?.toLowerCase(),
-    p_status: status,
+    p_status: status || "active",
     p_current_period_end: current_period_end ?? null,
     p_final_geojson: final_geojson,
   });
@@ -69,11 +79,21 @@ async function upsertSubWithGeom({
   return data;
 }
 
+function safeStr(x) {
+  return (x ?? "").toString();
+}
+
+function safeInt(x, fallback = 0) {
+  const n = Number(x);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 export default async (req) => {
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   const sig = req.headers.get("stripe-signature");
   const secret = process.env.STRIPE_WEBHOOK_SECRET;
+
   if (!secret) return json({ ok: false, error: "Missing STRIPE_WEBHOOK_SECRET" }, 500);
   if (!sig) return json({ ok: false, error: "Missing stripe-signature" }, 400);
 
@@ -88,32 +108,61 @@ export default async (req) => {
 
   try {
     switch (event.type) {
+      /**
+       * ✅ Primary source of truth:
+       * - session.metadata contains business_id/area_id/category_id/slot/lock_id
+       * - session.subscription + session.customer are present
+       */
       case "checkout.session.completed": {
         const session = event.data.object;
-
-        // Pull metadata from the checkout session (your sponsored-checkout sets these)
         const meta = session.metadata || {};
+
         const lock_id = meta.lock_id || null;
 
         const business_id =
           meta.business_id || meta.cleaner_id || meta.cleanerId || meta.businessId || null;
         const area_id = meta.area_id || meta.areaId || null;
         const category_id = meta.category_id || meta.categoryId || null;
-        const slot = Number(meta.slot || 1);
+        const slot = safeInt(meta.slot, 1);
 
-        if (business_id && area_id && category_id && session.subscription && session.customer) {
-          const stripe_subscription_id = String(session.subscription);
-          const stripe_customer_id = String(session.customer);
+        // If any of these are missing, we still want to release lock (if any),
+        // but we cannot persist a subscription row.
+        if (!business_id || !area_id || !category_id) {
+          console.warn("[webhook] checkout.session.completed missing metadata", {
+            business_id,
+            area_id,
+            category_id,
+            slot,
+            lock_id,
+          });
+          await releaseLockSafe(lock_id);
+          break;
+        }
 
-          // safest: pull subscription for current_period_end + status
-          const sub = await stripe.subscriptions.retrieve(stripe_subscription_id);
-          const current_period_end = sub.current_period_end
-            ? new Date(sub.current_period_end * 1000).toISOString()
-            : null;
+        const stripe_subscription_id = session.subscription ? safeStr(session.subscription) : null;
+        const stripe_customer_id = session.customer ? safeStr(session.customer) : null;
 
-          // best-effort price (if you store it elsewhere, update this)
-          const price_monthly_pennies = Number(meta.price_pennies || 0) || 0;
+        if (!stripe_subscription_id || !stripe_customer_id) {
+          console.warn("[webhook] checkout.session.completed missing subscription/customer", {
+            stripe_subscription_id,
+            stripe_customer_id,
+            lock_id,
+          });
+          await releaseLockSafe(lock_id);
+          break;
+        }
 
+        // Pull subscription for status + current_period_end
+        const sub = await stripe.subscriptions.retrieve(stripe_subscription_id);
+
+        const current_period_end = sub.current_period_end
+          ? new Date(sub.current_period_end * 1000).toISOString()
+          : null;
+
+        // Prefer actual price from metadata if you set it, otherwise fallback 0 (postverify will set correct)
+        const price_monthly_pennies = safeInt(meta.price_pennies, 0);
+
+        try {
           await upsertSubWithGeom({
             business_id,
             area_id,
@@ -127,12 +176,38 @@ export default async (req) => {
             current_period_end,
             lock_id,
           });
+        } catch (e) {
+          const msg = e?.message || "";
+
+          // ✅ Do NOT fail the webhook for overlap conflicts — payment already happened.
+          if (msg.includes("overlaps an existing sponsored area") || msg.includes("Area overlaps")) {
+            console.warn("[webhook] overlap prevented DB write; lock will be released.", {
+              business_id,
+              area_id,
+              category_id,
+              slot,
+              stripe_subscription_id,
+            });
+          } else if (msg.includes("sold out")) {
+            console.warn("[webhook] sold out prevented DB write; lock will be released.", {
+              business_id,
+              area_id,
+              category_id,
+              slot,
+              stripe_subscription_id,
+            });
+          } else {
+            throw e;
+          }
         }
 
         await releaseLockSafe(lock_id);
         break;
       }
 
+      /**
+       * ✅ If checkout session expires, release lock.
+       */
       case "checkout.session.expired": {
         const session = event.data.object;
         const lock_id = session?.metadata?.lock_id || null;
@@ -140,12 +215,14 @@ export default async (req) => {
         break;
       }
 
+      /**
+       * ✅ Keep status/period_end in sync WITHOUT creating new rows.
+       * We only update existing rows by stripe_subscription_id.
+       */
       case "customer.subscription.updated": {
         const sub = event.data.object;
         const stripe_subscription_id = sub.id;
 
-        // If you want: update status/period end even if metadata not available.
-        // But DO NOT create new rows here unless you also know business/area/category.
         await supabase
           .from("sponsored_subscriptions")
           .update({
@@ -157,6 +234,12 @@ export default async (req) => {
           })
           .eq("stripe_subscription_id", stripe_subscription_id);
 
+        break;
+      }
+
+      case "customer.subscription.created": {
+        // Optional: you may log, but do not create rows here unless you have metadata.
+        // This event often fires without area/category/business metadata.
         break;
       }
 
