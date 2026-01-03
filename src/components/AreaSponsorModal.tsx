@@ -278,13 +278,14 @@ export default function AreaSponsorModal({
               Cancel
             </button>
             <button
-              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-not-allowed"}`}
-              onClick={startCheckout}
-              disabled={!canBuy}
-              title={!canBuy ? "No purchasable area available" : "Buy now"}
-            >
-              {checkingOut ? "Redirecting..." : "Buy now"}
-            </button>
+  className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
+  onClick={startCheckout}
+  disabled={!canBuy}
+  title={canBuy ? "Buy now" : ""} // <-- prevents the tooltip when disabled
+>
+  {checkingOut ? "Redirecting..." : "Buy now"}
+</button>
+
           </div>
         </div>
       </div>
