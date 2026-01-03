@@ -58,21 +58,70 @@ export default async (req) => {
     const finalGeojson = previewRow?.gj;
     if (!finalGeojson) return json({ error: "No remaining geometry returned" }, 500);
 
-    // 2) Create a lock row to freeze purchasable shape during checkout
-    const { data: lockRow, error: lockErr } = await sb
-      .from("sponsored_locks")
-      .insert({
-        business_id: businessId,
-        area_id: areaId,
-        category_id: categoryId,
-        slot,
-        final_geojson: finalGeojson,
-        is_active: true,
-      })
-      .select("id")
-      .single();
+    // 2) Create/refresh a lock row to freeze purchasable shape during checkout
+    //    IMPORTANT: DB has a unique constraint on (area_id, slot). We must upsert safely.
+    //    If another business currently holds an active (non-expired) lock, block checkout.
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 15 * 60 * 1000).toISOString(); // 15 mins
 
-    if (lockErr) return json({ error: lockErr.message }, 500);
+    const { data: existingLock, error: lockFindErr } = await sb
+      .from("sponsored_locks")
+      .select("id, business_id, is_active, expires_at")
+      .eq("area_id", areaId)
+      .eq("slot", slot)
+      .maybeSingle();
+
+    if (lockFindErr) return json({ error: lockFindErr.message }, 500);
+
+    const isExpired = (iso) => {
+      if (!iso) return true;
+      const t = Date.parse(iso);
+      return Number.isNaN(t) ? true : t <= now.getTime();
+    };
+
+    if (
+      existingLock?.id &&
+      existingLock.is_active === true &&
+      !isExpired(existingLock.expires_at) &&
+      String(existingLock.business_id) !== String(businessId)
+    ) {
+      return json({ error: "Area is temporarily locked by another checkout", reason: "locked" }, 409);
+    }
+
+    let lockRow = null;
+    if (existingLock?.id) {
+      // Refresh/update the existing lock row (same business OR expired/inactive)
+      const { data: updated, error: updErr } = await sb
+        .from("sponsored_locks")
+        .update({
+          business_id: businessId,
+          category_id: categoryId,
+          final_geojson: finalGeojson,
+          is_active: true,
+          expires_at: expiresAt,
+        })
+        .eq("id", existingLock.id)
+        .select("id")
+        .single();
+      if (updErr) return json({ error: updErr.message }, 500);
+      lockRow = updated;
+    } else {
+      const { data: inserted, error: insErr } = await sb
+        .from("sponsored_locks")
+        .insert({
+          business_id: businessId,
+          area_id: areaId,
+          category_id: categoryId,
+          slot,
+          final_geojson: finalGeojson,
+          is_active: true,
+          expires_at: expiresAt,
+        })
+        .select("id")
+        .single();
+      if (insErr) return json({ error: insErr.message }, 500);
+      lockRow = inserted;
+    }
 
     // 3) Create Stripe checkout session
     const PRICE_ID = process.env.SPONSORED_PRICE_ID;
