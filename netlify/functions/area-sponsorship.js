@@ -1,7 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-03-SINGLE-SLOT+LOCKS+CATEGORY");
+console.log("LOADED area-sponsorship v2026-01-03-CATEGORY-AWARE");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -16,12 +16,9 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: corsHeaders,
-  });
+  new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
-// statuses that should block purchase (treated as "taken") – keep consistent with your current logic
+// statuses that should block purchase (MATCH DB trigger rules)
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -32,7 +29,6 @@ const BLOCKING = new Set([
   "paused",
 ]);
 
-// ✅ default to SINGLE SLOT (Featured)
 const DEFAULT_SLOTS = [1];
 
 export default async (req) => {
@@ -47,82 +43,46 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
 
-  const cleaner_id =
-    body?.cleaner_id ||
-    body?.business_id ||
-    body?.cleanerId ||
-    body?.businessId ||
-    null;
+  // ✅ category aware
+  const categoryId =
+    body?.categoryId || body?.category_id || null;
 
-  const category_id = body?.categoryId || body?.category_id || null;
-
-  // Allow caller to request specific slots, but default to [1]
   const slots = Array.isArray(body?.slots) && body.slots.length
     ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
     : DEFAULT_SLOTS;
 
   if (!areaIds.length) return json({ areas: [] });
 
-  // Your dashboard is per-industry; categoryId must match the checkout logic
-  if (!category_id) {
-    return json({ error: "categoryId is required" }, 400);
-  }
-
   try {
-    // 1) Pull all subscription rows for these areas/slots/category
-    const { data: subRows, error: subErr } = await supabase
+    let q = supabase
       .from("sponsored_subscriptions")
       .select("area_id, slot, status, business_id, created_at, category_id")
       .in("area_id", areaIds)
-      .in("slot", slots)
-      .eq("category_id", category_id);
+      .in("slot", slots);
 
-    if (subErr) throw subErr;
+    // ✅ critical: industry isolation
+    if (categoryId) q = q.eq("category_id", categoryId);
 
-    // 2) Pull all ACTIVE locks (unexpired) for these areas/slots/category
-    const nowIso = new Date().toISOString();
-    const { data: lockRows, error: lockErr } = await supabase
-      .from("sponsored_locks")
-      .select("area_id, slot, business_id, expires_at, is_active, category_id")
-      .in("area_id", areaIds)
-      .in("slot", slots)
-      .eq("category_id", category_id)
-      .eq("is_active", true)
-      .gt("expires_at", nowIso);
+    const { data: rows, error } = await q;
+    if (error) throw error;
 
-    if (lockErr) throw lockErr;
-
-    // Group subs by area:slot
-    const subsByAreaSlot = new Map(); // key `${area}:${slot}` -> array
-    for (const r of subRows || []) {
+    // Group by area:slot
+    const byAreaSlot = new Map();
+    for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
-      if (!subsByAreaSlot.has(k)) subsByAreaSlot.set(k, []);
-      subsByAreaSlot.get(k).push(r);
+      if (!byAreaSlot.has(k)) byAreaSlot.set(k, []);
+      byAreaSlot.get(k).push(r);
     }
 
-    // Group locks by area:slot (choose furthest expiry if multiple)
-    const locksByAreaSlot = new Map(); // key `${area}:${slot}` -> lock row
-    for (const l of lockRows || []) {
-      const k = `${l.area_id}:${l.slot}`;
-      const existing = locksByAreaSlot.get(k);
-      if (!existing) {
-        locksByAreaSlot.set(k, l);
-      } else {
-        const a = new Date(existing.expires_at).getTime();
-        const b = new Date(l.expires_at).getTime();
-        if (b > a) locksByAreaSlot.set(k, l);
-      }
-    }
-
-    // Build response
     const areasOut = [];
     for (const area_id of areaIds) {
       const areaObj = { area_id, slots: [] };
 
       for (const slot of slots) {
         const k = `${area_id}:${slot}`;
-        const arr = subsByAreaSlot.get(k) || [];
+        const arr = byAreaSlot.get(k) || [];
 
         // newest first
         arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -137,43 +97,18 @@ export default async (req) => {
         const owner_business_id = chosen?.business_id ?? null;
 
         const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
-
         const taken_by_me =
           Boolean(cleaner_id) &&
           Boolean(owner_business_id) &&
           String(owner_business_id) === String(cleaner_id);
 
-        const lock = locksByAreaSlot.get(k) || null;
-        const locked = !!lock;
-
-        const locked_by_business_id = lock?.business_id ?? null;
-
-        const locked_by_me =
-          locked &&
-          Boolean(cleaner_id) &&
-          Boolean(locked_by_business_id) &&
-          String(locked_by_business_id) === String(cleaner_id);
-
-        const locked_by_other =
-          locked &&
-          Boolean(locked_by_business_id) &&
-          (!cleaner_id || String(locked_by_business_id) !== String(cleaner_id));
-
         areaObj.slots.push({
           slot,
-
-          // subscription truth
           taken,
           taken_by_me,
           status,
           owner_business_id,
-
-          // lock truth
-          locked,
-          locked_by_me,
-          locked_by_other,
-          lock_expires_at: lock?.expires_at ?? null,
-          locked_by_business_id,
+          category_id: chosen?.category_id ?? null,
         });
       }
 
