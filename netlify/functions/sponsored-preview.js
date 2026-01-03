@@ -1,134 +1,76 @@
-// netlify/functions/sponsored-preview.js
-// Server-side preview used by the Sponsor modal.
-// IMPORTANT: this MUST reflect the DB's availability logic so the UI can't offer checkout when DB would reject.
+import { createClient } from "@supabase/supabase-js";
 
-const { createClient } = require("@supabase/supabase-js");
-
-const supabaseAdmin = createClient(
+const sb = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE,
-  { auth: { persistSession: false } }
+  process.env.SUPABASE_SERVICE_ROLE
 );
 
-const json = (statusCode, body) => ({
-  statusCode,
-  headers: { "content-type": "application/json" },
-  body: JSON.stringify(body),
-});
+const json = (status, body) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
-function getRateForCategory(categoryId) {
-  // You can swap this to a DB table later; keeping your existing env-driven pricing.
-  const { RATE_GOLD_GBP_PENNIES_PER_KM2_MONTH, RATE_SILVER_GBP_PENNIES_PER_KM2_MONTH } =
-    process.env;
+const EPS = 1e-6;
 
-  // If you have multiple categories, map them however you like.
-  // Default: use GOLD if set, otherwise 100 pennies (=£1) per km² / month
-  const gold = Number(RATE_GOLD_GBP_PENNIES_PER_KM2_MONTH || 100);
-  const silver = Number(RATE_SILVER_GBP_PENNIES_PER_KM2_MONTH || 100);
+export default async (req) => {
+  if (req.method !== "POST") {
+    return json(405, { ok: false, error: "Method not allowed" });
+  }
 
-  // Simple heuristic: if you later want per-category pricing, do it here.
-  // For now: use gold as default.
-  return Number.isFinite(gold) ? gold : silver;
-}
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return json(400, { ok: false, error: "Invalid JSON" });
+  }
 
-async function resolveCategoryId(areaId, categoryIdMaybe) {
-  if (categoryIdMaybe) return categoryIdMaybe;
+  const areaId = String(body.areaId || body.area_id || "").trim();
+  const categoryId = String(body.categoryId || body.category_id || "").trim();
+  const slot = Number(body.slot ?? 1);
 
-  const { data, error } = await supabaseAdmin
-    .from("service_areas")
-    .select("category_id")
-    .eq("id", areaId)
-    .maybeSingle();
+  if (!areaId || !categoryId) {
+    return json(400, { ok: false, error: "Missing areaId or categoryId" });
+  }
+  if (!Number.isFinite(slot) || slot < 1) {
+    return json(400, { ok: false, error: "Invalid slot" });
+  }
 
-  if (error) throw new Error(error.message);
-  return data?.category_id || null;
-}
-
-async function callAreaRemainingPreview(areaId, slot, categoryId) {
-  // IMPORTANT:
-  // Your checkout logic uses category_id + slot.
-  // If we call the (area_id, slot) overload first, it can return a different result
-  // (e.g. global availability) and the UI will drift from DB/checkout behavior.
-  // So: prefer (p_area_id, p_category_id, p_slot) when categoryId is available.
-
-  if (categoryId) {
-    const first = await supabaseAdmin.rpc("area_remaining_preview", {
+  try {
+    const { data, error } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_category_id: categoryId,
       p_slot: slot,
     });
-
-    if (!first.error) return first;
-
-    // If the 3-arg signature doesn't exist, fall back to (p_area_id, p_slot)
-    const msg = String(first.error?.message || "");
-    const looksLikeSignatureIssue =
-      msg.includes("Could not find the function") ||
-      (msg.includes("function") && msg.includes("does not exist")) ||
-      msg.includes("structure of query does not match") ||
-      msg.includes("result type");
-
-    if (!looksLikeSignatureIssue) return first;
-  }
-
-  return await supabaseAdmin.rpc("area_remaining_preview", {
-    p_area_id: areaId,
-    p_slot: slot,
-  });
-}
-
-exports.handler = async (event) => {
-  try {
-    const qs = event.queryStringParameters || {};
-    const areaId = qs.areaId || qs.area_id;
-    const slot = Number(qs.slot || 1);
-    const categoryIdIncoming = qs.categoryId || qs.category_id || null;
-
-    if (!areaId) return json(400, { error: "Missing areaId" });
-    if (!Number.isFinite(slot) || slot < 1) return json(400, { error: "Invalid slot" });
-
-    // Resolve category_id (used only for pricing + backwards-compat fallback)
-    const categoryId = await resolveCategoryId(areaId, categoryIdIncoming);
-
-    // Call DB source-of-truth availability
-    const { data, error } = await callAreaRemainingPreview(areaId, slot, categoryId);
-    if (error) return json(500, { error: error.message });
+    if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;
-    const total_km2 = Number(row?.total_km2 ?? 0);
-    const available_km2 = Number(row?.available_km2 ?? 0);
-    const reason = row?.reason ?? null;
-    const gj = row?.gj ?? null;
+    if (!row) return json(404, { ok: false, error: "Area not found" });
 
-    // Determine sold out safely (DB may also return sold_out; treat either as truth)
-    const sold_out =
-      Boolean(row?.sold_out) || !Number.isFinite(available_km2) || available_km2 <= 1e-9;
+    const totalKm2 = Number(row.total_km2 ?? 0) || 0;
+    const availableKm2 = Number(row.available_km2 ?? 0) || 0;
+    const soldOut =
+      Boolean(row.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
 
-    // Pricing from env (pennies per km² / month)
-    const ratePerKm2Pennies = getRateForCategory(categoryId);
-    const ratePerKm2 = ratePerKm2Pennies / 100;
+    const ratePerKm2 =
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
-    // Floor price: £1 minimum (matches what you show in UI)
-    const minimumMonthly = 1.0;
-    const rawMonthly = ratePerKm2 * Math.max(0, available_km2);
-    const monthlyPrice = Math.max(minimumMonthly, rawMonthly);
+    const priceCents = soldOut
+      ? 0
+      : Math.max(100, Math.round(Math.max(availableKm2, 0) * ratePerKm2 * 100));
 
     return json(200, {
-      areaId,
-      slot,
-      categoryId,
-      total_km2,
-      available_km2,
-      sold_out,
-      reason: sold_out ? reason || "no_remaining" : reason || "ok",
-      gj,
-      // UI fields
-      ratePerKm2,
-      minimumMonthly,
-      monthlyPrice,
-      currency: "gbp",
+      ok: true,
+      total_km2: totalKm2,
+      available_km2: availableKm2,
+      sold_out: soldOut,
+      reason: row.reason ?? (soldOut ? "no_remaining" : "ok"),
+      geojson: row.gj ?? null,
+      rate_per_km2: ratePerKm2,
+      price_cents: priceCents,
     });
   } catch (e) {
-    return json(500, { error: e?.message || "Server error" });
+    console.error("[sponsored-preview] error:", e);
+    return json(500, { ok: false, error: e?.message || "Preview failed" });
   }
 };

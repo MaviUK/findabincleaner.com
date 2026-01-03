@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-02-LOCK-GEOM-PAID-ONLY");
+console.log("LOADED stripe-webhook v2026-01-01-PAYFAIL-NOTIFY-PAID-ONLY");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -7,6 +7,7 @@ const { createClient } = require("@supabase/supabase-js");
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
 
 const json = (statusCode, body) => ({
@@ -146,51 +147,22 @@ async function releaseLockSafe(lockId) {
   }
 }
 
-async function getLockGeojsonSafe(lockId, businessId) {
-  if (!lockId) return null;
-  try {
-    // lock belongs to purchaser; ensure still active so old locks can't be reused
-    const { data, error } = await supabase
-      .from("sponsored_locks")
-      .select("id, business_id, final_geojson, is_active")
-      .eq("id", lockId)
-      .maybeSingle();
-
-    if (error) {
-      console.error("[webhook] get lock error:", error);
-      return null;
-    }
-    if (!data) return null;
-    if (data.is_active === false) return null;
-    if (businessId && data.business_id && String(data.business_id) !== String(businessId)) return null;
-
-    return data.final_geojson || null;
-  } catch (e) {
-    console.error("[webhook] getLockGeojsonSafe failed:", e?.message || e);
-    return null;
-  }
-}
-
 async function cancelStripeSubscriptionSafe(subId, reason) {
   if (!subId) return;
   try {
     console.warn("[webhook] canceling subscription:", subId, reason || "");
     await stripe.subscriptions.cancel(subId);
   } catch (e) {
-    const msg = String(e?.message || "");
-    if (msg.toLowerCase().includes("no such subscription")) {
-      console.warn("[webhook] subscription already gone:", subId);
-      return;
-    }
     console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
   }
 }
 
 /**
- * ✅ UPDATE-then-INSERT upsert (no ON CONFLICT needed)
- * IMPORTANT:
- * If checkout stored a remaining-geometry lock_id, we MUST write final_geojson from that lock.
- * Otherwise, DB overlap guard may reject and you end up paid in Stripe but not recorded in DB.
+ * ✅ Works even if there is NO usable unique constraint for ON CONFLICT.
+ * Strategy:
+ * 1) Try UPDATE the row for (business_id, area_id, slot)
+ * 2) If nothing updated, INSERT a new row
+ * 3) If INSERT fails due to uniqueness, treat as owned-by-other and cancel
  */
 async function upsertSubscription(sub, meta = {}) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
@@ -217,9 +189,6 @@ async function upsertSubscription(sub, meta = {}) {
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
 
-  // Pull remaining purchasable geometry from lock (if present)
-  const lockedFinalGeojson = await getLockGeojsonSafe(lock_id, business_id);
-
   const payload = {
     business_id,
     area_id,
@@ -233,25 +202,21 @@ async function upsertSubscription(sub, meta = {}) {
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
-    ...(lockedFinalGeojson ? { final_geojson: lockedFinalGeojson } : {}),
-  };
-
-  const updateDoc = {
-    stripe_customer_id: payload.stripe_customer_id,
-    stripe_subscription_id: payload.stripe_subscription_id,
-    price_monthly_pennies: payload.price_monthly_pennies,
-    currency: payload.currency,
-    status: payload.status,
-    current_period_end: payload.current_period_end,
-    category_id: payload.category_id,
-    updated_at: new Date().toISOString(),
-    ...(lockedFinalGeojson ? { final_geojson: lockedFinalGeojson } : {}),
   };
 
   // 1) UPDATE first
   const { data: updatedRows, error: updErr } = await supabase
     .from("sponsored_subscriptions")
-    .update(updateDoc)
+    .update({
+      stripe_customer_id: payload.stripe_customer_id,
+      stripe_subscription_id: payload.stripe_subscription_id,
+      price_monthly_pennies: payload.price_monthly_pennies,
+      currency: payload.currency,
+      status: payload.status,
+      current_period_end: payload.current_period_end,
+      category_id: payload.category_id,
+      updated_at: new Date().toISOString(),
+    })
     .eq("business_id", business_id)
     .eq("area_id", area_id)
     .eq("slot", slot)
@@ -267,21 +232,17 @@ async function upsertSubscription(sub, meta = {}) {
       slot,
       sub_id: sub.id,
       status: sub.status,
-      lock_id: lock_id || null,
-      wrote_final_geojson: Boolean(lockedFinalGeojson),
     });
     await releaseLockSafe(lock_id);
     return;
   }
 
   // 2) INSERT if no row was updated
-  const insertDoc = {
+  const { error: insErr } = await supabase.from("sponsored_subscriptions").insert({
     ...payload,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
-  };
-
-  const { error: insErr } = await supabase.from("sponsored_subscriptions").insert(insertDoc);
+  });
 
   if (!insErr) {
     console.log("[webhook] inserted sponsored_subscriptions row", {
@@ -290,8 +251,6 @@ async function upsertSubscription(sub, meta = {}) {
       slot,
       sub_id: sub.id,
       status: sub.status,
-      lock_id: lock_id || null,
-      wrote_final_geojson: Boolean(lockedFinalGeojson),
     });
     await releaseLockSafe(lock_id);
     return;
@@ -303,13 +262,7 @@ async function upsertSubscription(sub, meta = {}) {
   const msg = String(insErr?.message || "").toLowerCase();
   const code = String(insErr?.code || "").toLowerCase();
 
-  if (
-    code === "23505" ||
-    msg.includes("duplicate") ||
-    msg.includes("unique") ||
-    msg.includes("overlaps") ||
-    msg.includes("overlap")
-  ) {
+  if (code === "23505" || msg.includes("duplicate") || msg.includes("unique") || msg.includes("overlaps")) {
     await cancelStripeSubscriptionSafe(sub.id, "Overlap/uniqueness violation");
     await releaseLockSafe(lock_id);
     return;
@@ -359,7 +312,7 @@ async function upsertInvoice(inv) {
     }
   }
 
-  // 3) Fallback: use metadata identity (business_id + area_id + slot)
+  // 3) ✅ Fallback: use metadata identity (business_id + area_id + slot)
   if (!subRow && subscriptionId) {
     if (!stripeSub) stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
     const meta = stripeSub.metadata || {};
@@ -419,6 +372,7 @@ async function upsertInvoice(inv) {
 }
 
 /**
+ * ✅ KEY FIX:
  * Pull the subscription from Stripe and upsert it on invoice events.
  * This moves sponsored_subscriptions.status from incomplete -> active when the first invoice is paid.
  */
@@ -432,6 +386,7 @@ async function refreshSubscriptionFromInvoice(inv) {
     await upsertSubscription(sub, sub.metadata || {});
   } catch (e) {
     console.error("[webhook] refreshSubscriptionFromInvoice failed:", e?.message || e);
+    // don't throw; invoice record is more important than this refresh
   }
 }
 
@@ -486,7 +441,6 @@ exports.handler = async (event) => {
         const session = stripeEvent.data.object;
         if (session.mode === "subscription" && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
-          // IMPORTANT: session.metadata contains lock_id from checkout
           await upsertSubscription(sub, session.metadata || {});
         }
         break;
@@ -526,13 +480,14 @@ exports.handler = async (event) => {
         // Always refresh subscription state from Stripe
         await refreshSubscriptionFromInvoice(inv);
 
-        // Only send *your* invoice email when PAID
+        // ✅ Only send your invoice email when PAID
+        // This prevents “invoice email even though payment failed”
         if (stripeEvent.type === "invoice.paid") {
           console.log("[webhook] invoice.paid -> createInvoiceAndEmail", inv.id);
           await safeCreateAndEmailInvoice(inv.id, { force: true });
         }
 
-        // If payment failed: send a “payment failed” email (with pay link)
+        // ✅ If payment failed: send a “payment failed” email instead (with pay link)
         if (stripeEvent.type === "invoice.payment_failed") {
           console.log("[webhook] invoice.payment_failed -> notify customer", inv.id);
           await sendPaymentFailedEmail(inv);
