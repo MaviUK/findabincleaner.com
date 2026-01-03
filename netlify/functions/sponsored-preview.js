@@ -1,3 +1,4 @@
+// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
 const sb = createClient(
@@ -5,15 +6,23 @@ const sb = createClient(
   process.env.SUPABASE_SERVICE_ROLE
 );
 
+const corsHeaders = {
+  "content-type": "application/json",
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+
 const json = (status, body) =>
   new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: corsHeaders,
   });
 
 const EPS = 1e-6;
 
 export default async (req) => {
+  if (req.method === "OPTIONS") return json(200, { ok: true });
   if (req.method !== "POST") {
     return json(405, { ok: false, error: "Method not allowed" });
   }
@@ -49,11 +58,16 @@ export default async (req) => {
 
     const totalKm2 = Number(row.total_km2 ?? 0) || 0;
     const availableKm2 = Number(row.available_km2 ?? 0) || 0;
+
     const soldOut =
       Boolean(row.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
 
     const ratePerKm2 =
-      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+          process.env.RATE_PER_KM2_PER_MONTH ??
+          0
+      ) || 0;
 
     const priceCents = soldOut
       ? 0
