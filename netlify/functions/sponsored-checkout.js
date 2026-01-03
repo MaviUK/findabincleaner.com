@@ -1,17 +1,15 @@
 // netlify/functions/sponsored-checkout.js
-import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
+import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED sponsored-checkout v2026-01-03-SILENT-NO-REMAINING");
+console.log("LOADED sponsored-checkout v2026-01-03 LOCK+CATEGORY+CONSISTENT");
 
-const sb = createClient(
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
+const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
-
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
 
 const corsHeaders = {
   "content-type": "application/json",
@@ -26,25 +24,12 @@ const json = (body, status = 200) =>
     headers: corsHeaders,
   });
 
-// statuses that block purchase
-const BLOCKING = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "paused",
-]);
-
-const EPS = 1e-6;
+// must match dashboard + area-sponsorship
+const BLOCKING = new Set(["active", "trialing", "past_due"]);
 
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
-
-  if (req.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   let body;
   try {
@@ -53,210 +38,227 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  // ✅ Accept both old + new naming
-  const cleanerId = String(
-    body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
+  const business_id = String(
+    body.businessId || body.business_id || body.cleanerId || body.cleaner_id || ""
   ).trim();
 
-  const areaId = String(body.areaId || body.area_id || "").trim();
+  const area_id = String(body.areaId || body.area_id || "").trim();
+  const category_id = String(body.categoryId || body.category_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // optional but recommended if you have categories
-  const categoryId =
-    String(body.categoryId || body.category_id || "").trim() || null;
-
-  // optional lock id if you are using sponsored_locks
-  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
-
-  // OPTIONAL: for future “top-up remaining area” flows
-  const allowTopUp = Boolean(body.allowTopUp);
-
-  if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
-  if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot))
+  if (!business_id || !area_id || !category_id) {
+    return json(
+      { ok: false, error: "Missing businessId/areaId/categoryId" },
+      400
+    );
+  }
+  if (!Number.isFinite(slot) || slot < 1) {
     return json({ ok: false, error: "Invalid slot" }, 400);
+  }
+
+  // Your dashboard expects "Featured slot" = 1
+  if (slot !== 1) {
+    return json({ ok: false, error: "Only slot 1 is supported" }, 400);
+  }
+
+  const success_url =
+    body.success_url ||
+    `${process.env.APP_URL || "https://findabincleaner.com"}/#/dashboard?checkout=success&checkout_session={CHECKOUT_SESSION_ID}`;
+
+  const cancel_url =
+    body.cancel_url ||
+    `${process.env.APP_URL || "https://findabincleaner.com"}/#/dashboard?checkout=cancel`;
 
   try {
-    // 1) Is slot taken? (use MOST RECENT blocking row)
-    const { data: rows, error: takenErr } = await sb
+    // 1) Block if ACTIVE subscription already exists for this area+slot+category
+    const { data: subs, error: subErr } = await supabase
       .from("sponsored_subscriptions")
-      .select("business_id, status, stripe_subscription_id, created_at")
-      .eq("area_id", areaId)
+      .select("id, business_id, status, current_period_end, stripe_subscription_id, updated_at")
+      .eq("area_id", area_id)
       .eq("slot", slot)
-      .order("created_at", { ascending: false });
+      .eq("category_id", category_id);
 
-    if (takenErr) throw takenErr;
+    if (subErr) throw subErr;
 
-    const blockingRows = (rows || []).filter((r) =>
-      BLOCKING.has(String(r.status || "").toLowerCase())
-    );
+    const activeSub = (subs || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase()));
 
-    const latestBlocking = blockingRows[0] || null;
-    const ownerBusinessId = latestBlocking?.business_id
-      ? String(latestBlocking.business_id)
-      : null;
-
-    const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
-    const ownedByOther =
-      ownerBusinessId && ownerBusinessId !== String(cleanerId);
-
-    // ✅ If already sponsored by someone else, block purchase
-    if (ownedByOther) {
+    if (activeSub) {
+      const mine = String(activeSub.business_id) === String(business_id);
       return json(
         {
           ok: false,
-          code: "slot_taken",
-          message: "This area is already sponsored for this slot.",
-          owner_business_id: ownerBusinessId,
+          code: mine ? "already_owned" : "already_taken",
+          error: mine
+            ? "You already sponsor this area."
+            : "This area is already sponsored by another business.",
         },
         409
       );
     }
 
-    // ✅ If already sponsored by YOU, do NOT create another subscription
-    if (ownedByMe && !allowTopUp) {
+    // 2) Block if another business currently holds an active lock (unexpired)
+    const nowIso = new Date().toISOString();
+
+    const { data: locks, error: lockErr } = await supabase
+      .from("sponsored_locks")
+      .select("id, business_id, expires_at, is_active")
+      .eq("area_id", area_id)
+      .eq("slot", slot)
+      .eq("category_id", category_id)
+      .eq("is_active", true)
+      .gt("expires_at", nowIso);
+
+    if (lockErr) throw lockErr;
+
+    const activeLock = (locks || [])[0] || null;
+    if (activeLock && String(activeLock.business_id) !== String(business_id)) {
       return json(
         {
           ok: false,
-          code: "already_sponsored",
-          message:
-            "You already sponsor this area. Use Manage Billing to view your subscription, or edit your area if you meant to expand it.",
-          stripe_subscription_id: latestBlocking?.stripe_subscription_id || null,
+          code: "locked",
+          error: "This area is currently being purchased by another business. Please try again shortly.",
+          lock_expires_at: activeLock.expires_at,
         },
         409
       );
     }
 
-    // 2) Remaining area preview
-    const { data: previewRow, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_slot: slot,
+    // 3) Compute purchasable remaining geo/price using your RPC (same as sponsored-preview)
+    const { data: previewData, error: previewErr } = await supabase.rpc("area_remaining_preview", {
+      p_area_id: area_id,
+      p_category_id: category_id,
+      p_slot: slot,
+    });
+
+    if (previewErr) throw previewErr;
+
+    const previewRow = Array.isArray(previewData) ? previewData[0] : previewData;
+
+    if (!previewRow) {
+      return json({ ok: false, error: "Area not found" }, 404);
+    }
+
+    const EPS = 1e-6;
+    const availableKm2 = Number(previewRow.available_km2 ?? 0) || 0;
+    const soldOut =
+      Boolean(previewRow.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
+
+    if (soldOut) {
+      return json(
+        { ok: false, code: "sold_out", error: "No purchasable region is available for this area." },
+        409
+      );
+    }
+
+    const ratePerKm2 =
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
+
+    // price in pennies/cents (your postverify stores pennies in price_monthly_pennies)
+    const price_pennies = Math.max(100, Math.round(Math.max(availableKm2, 0) * ratePerKm2 * 100));
+
+    // 4) Create (or reuse) a lock for THIS business so UI + checkout stay consistent
+    let lock_id = null;
+
+    if (activeLock && String(activeLock.business_id) === String(business_id)) {
+      // reuse lock if same biz already started checkout recently
+      lock_id = activeLock.id;
+    } else {
+      const { data: lockInsert, error: lockInsertErr } = await supabase
+        .from("sponsored_locks")
+        .insert({
+          area_id,
+          slot,
+          business_id,
+          category_id,
+          is_active: true,
+          // expires_at default in table
+          final_geojson: previewRow.gj ?? null,
+        })
+        .select("id, expires_at")
+        .single();
+
+      if (lockInsertErr) {
+        // If you add a unique partial index on active locks, handle conflict here
+        return json(
+          { ok: false, code: "locked", error: "This area is currently being purchased. Please try again shortly." },
+          409
+        );
       }
-    );
 
-    if (prevErr) throw prevErr;
-
-    const row = Array.isArray(previewRow)
-      ? previewRow[0] || {}
-      : previewRow || {};
-
-    const rawAvailable =
-      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
-
-    let available_km2 = Number(rawAvailable);
-    if (!Number.isFinite(available_km2)) available_km2 = 0;
-    available_km2 = Math.max(0, available_km2);
-
-    // ✅ IMPORTANT CHANGE:
-    // Don't return a user-facing message here (prevents UI tooltip/toast text)
-    if (available_km2 <= EPS) {
-      return json(
-        {
-          ok: false,
-          code: "no_remaining",
-          silent: true,
-          available_km2: 0,
-        },
-        409
-      );
+      lock_id = lockInsert?.id || null;
     }
 
-    // 3) Price
-    const rate_per_km2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
-          process.env.RATE_PER_KM2_PER_MONTH ??
-          0
-      ) || 0;
+    // 5) Ensure a Stripe customer exists for this business
+    // (If you already store stripe_customer_id elsewhere, update this to fetch it)
+    const { data: cleanerRow, error: cleanerErr } = await supabase
+      .from("cleaners")
+      .select("email, business_name, stripe_customer_id")
+      .eq("id", business_id)
+      .maybeSingle();
 
-    if (!rate_per_km2 || rate_per_km2 <= 0) {
+    if (cleanerErr) throw cleanerErr;
+
+    let stripeCustomerId = cleanerRow?.stripe_customer_id || null;
+
+    if (!stripeCustomerId) {
+      const customer = await stripe.customers.create({
+        email: cleanerRow?.email || undefined,
+        name: cleanerRow?.business_name || undefined,
+        metadata: { business_id },
+      });
+
+      stripeCustomerId = customer.id;
+
+      // store for future
+      await supabase.from("cleaners").update({ stripe_customer_id: stripeCustomerId }).eq("id", business_id);
+    }
+
+    // 6) Create Stripe Checkout Session
+    // IMPORTANT: This assumes you have a Stripe Price ID for the subscription product.
+    // If you instead create dynamic prices, replace this section accordingly.
+    const priceId = process.env.STRIPE_SPONSOR_PRICE_ID;
+    if (!priceId) {
       return json(
-        {
-          ok: false,
-          code: "missing_rate",
-          message:
-            "Pricing rate is not configured. Set RATE_GOLD_PER_KM2_PER_MONTH or RATE_PER_KM2_PER_MONTH.",
-        },
+        { ok: false, error: "Missing STRIPE_SPONSOR_PRICE_ID env var" },
         500
       );
     }
 
-    const amount_cents = Math.max(
-      1,
-      Math.round(available_km2 * rate_per_km2 * 100)
-    );
-
-    // 4) Get or create Stripe customer (CLEANERS schema)
-    const { data: cleaner, error: cleanerErr } = await sb
-      .from("cleaners")
-      .select("id, stripe_customer_id, business_name, contact_email")
-      .eq("id", cleanerId)
-      .maybeSingle();
-
-    if (cleanerErr) throw cleanerErr;
-    if (!cleaner) return json({ ok: false, error: "Cleaner not found" }, 404);
-
-    let stripeCustomerId = cleaner.stripe_customer_id || null;
-
-    if (!stripeCustomerId) {
-      const created = await stripe.customers.create({
-        name: cleaner.business_name || "Cleaner",
-        email: cleaner.contact_email || undefined,
-        metadata: { cleaner_id: cleaner.id },
-      });
-
-      stripeCustomerId = created.id;
-
-      const { error: upErr } = await sb
-        .from("cleaners")
-        .update({ stripe_customer_id: stripeCustomerId })
-        .eq("id", cleaner.id);
-
-      if (upErr) throw upErr;
-    }
-
-    // ✅ metadata used by webhook to resolve context
-    const meta = {
-      cleaner_id: cleaner.id,
-      business_id: cleaner.id, // back-compat
-      area_id: areaId,
-      slot: String(slot),
-      category_id: categoryId || "",
-      lock_id: lockId || "",
-    };
-
-    // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
-
-      metadata: meta,
-      subscription_data: { metadata: meta },
-
-      line_items: [
-        {
-          price_data: {
-            currency: "gbp",
-            product_data: {
-              name: "Featured service area",
-              description: "Be shown first in local search for this area.",
-            },
-            unit_amount: amount_cents,
-            recurring: { interval: "month" },
-          },
-          quantity: 1,
-        },
-      ],
-
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
+      success_url,
+      cancel_url,
+      line_items: [{ price: priceId, quantity: 1 }],
+      // You can optionally use discounts/coupons or subscription_data here
+      metadata: {
+        business_id,
+        area_id,
+        category_id,
+        slot: String(slot),
+        lock_id: lock_id || "",
+        // helpful debug:
+        available_km2: String(availableKm2),
+        price_pennies: String(price_pennies),
+      },
     });
 
-    return json({ ok: true, url: session.url }, 200);
+    // store stripe session id on lock (helps webhook release / tracing)
+    if (lock_id && session?.id) {
+      await supabase
+        .from("sponsored_locks")
+        .update({ stripe_session_id: session.id })
+        .eq("id", lock_id);
+    }
+
+    return json({
+      ok: true,
+      url: session.url,
+      checkout_session_id: session.id,
+      lock_id,
+    });
   } catch (e) {
     console.error("[sponsored-checkout] error:", e);
-    return json({ ok: false, error: e?.message || "Server error" }, 500);
+    return json({ ok: false, error: e?.message || "Checkout failed" }, 500);
   }
 };
