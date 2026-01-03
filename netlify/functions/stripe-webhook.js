@@ -42,10 +42,6 @@ async function getLockGeoJSON(lockId) {
   return data?.final_geojson ?? null;
 }
 
-/**
- * ✅ Single DB entry-point that guarantees geometry.
- * Uses lock.final_geojson when present; otherwise DB function will fallback to clipped preview geometry.
- */
 async function upsertSubWithGeom({
   business_id,
   area_id,
@@ -108,11 +104,6 @@ export default async (req) => {
 
   try {
     switch (event.type) {
-      /**
-       * ✅ Primary source of truth:
-       * - session.metadata contains business_id/area_id/category_id/slot/lock_id
-       * - session.subscription + session.customer are present
-       */
       case "checkout.session.completed": {
         const session = event.data.object;
         const meta = session.metadata || {};
@@ -125,8 +116,6 @@ export default async (req) => {
         const category_id = meta.category_id || meta.categoryId || null;
         const slot = safeInt(meta.slot, 1);
 
-        // If any of these are missing, we still want to release lock (if any),
-        // but we cannot persist a subscription row.
         if (!business_id || !area_id || !category_id) {
           console.warn("[webhook] checkout.session.completed missing metadata", {
             business_id,
@@ -152,14 +141,12 @@ export default async (req) => {
           break;
         }
 
-        // Pull subscription for status + current_period_end
         const sub = await stripe.subscriptions.retrieve(stripe_subscription_id);
 
         const current_period_end = sub.current_period_end
           ? new Date(sub.current_period_end * 1000).toISOString()
           : null;
 
-        // Prefer actual price from metadata if you set it, otherwise fallback 0 (postverify will set correct)
         const price_monthly_pennies = safeInt(meta.price_pennies, 0);
 
         try {
@@ -178,8 +165,6 @@ export default async (req) => {
           });
         } catch (e) {
           const msg = e?.message || "";
-
-          // ✅ Do NOT fail the webhook for overlap conflicts — payment already happened.
           if (msg.includes("overlaps an existing sponsored area") || msg.includes("Area overlaps")) {
             console.warn("[webhook] overlap prevented DB write; lock will be released.", {
               business_id,
@@ -188,7 +173,7 @@ export default async (req) => {
               slot,
               stripe_subscription_id,
             });
-          } else if (msg.includes("sold out")) {
+          } else if (msg.toLowerCase().includes("sold out")) {
             console.warn("[webhook] sold out prevented DB write; lock will be released.", {
               business_id,
               area_id,
@@ -205,9 +190,6 @@ export default async (req) => {
         break;
       }
 
-      /**
-       * ✅ If checkout session expires, release lock.
-       */
       case "checkout.session.expired": {
         const session = event.data.object;
         const lock_id = session?.metadata?.lock_id || null;
@@ -215,10 +197,6 @@ export default async (req) => {
         break;
       }
 
-      /**
-       * ✅ Keep status/period_end in sync WITHOUT creating new rows.
-       * We only update existing rows by stripe_subscription_id.
-       */
       case "customer.subscription.updated": {
         const sub = event.data.object;
         const stripe_subscription_id = sub.id;
@@ -238,8 +216,6 @@ export default async (req) => {
       }
 
       case "customer.subscription.created": {
-        // Optional: you may log, but do not create rows here unless you have metadata.
-        // This event often fires without area/category/business metadata.
         break;
       }
 
