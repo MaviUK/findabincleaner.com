@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2025-12-30-GUARD-DUPES");
+console.log("LOADED sponsored-checkout v2026-01-03-SILENT-NO-REMAINING");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -62,18 +62,19 @@ export default async (req) => {
   const slot = Number(body.slot ?? 1);
 
   // optional but recommended if you have categories
-  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
+  const categoryId =
+    String(body.categoryId || body.category_id || "").trim() || null;
 
   // optional lock id if you are using sponsored_locks
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  // OPTIONAL: if later you implement “top-up remaining area” for an existing sponsor,
-  // you can call this endpoint with { allowTopUp: true } and adjust the flow.
+  // OPTIONAL: for future “top-up remaining area” flows
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
+  if (![1].includes(slot))
+    return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
     // 1) Is slot taken? (use MOST RECENT blocking row)
@@ -91,9 +92,13 @@ export default async (req) => {
     );
 
     const latestBlocking = blockingRows[0] || null;
-    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
+    const ownerBusinessId = latestBlocking?.business_id
+      ? String(latestBlocking.business_id)
+      : null;
+
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
-    const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
+    const ownedByOther =
+      ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
     // ✅ If already sponsored by someone else, block purchase
     if (ownedByOther) {
@@ -108,8 +113,7 @@ export default async (req) => {
       );
     }
 
-    // ✅ If already sponsored by YOU, do NOT create another subscription (this causes DB unique errors)
-    // If later you want to support “top-ups”, set allowTopUp=true and handle separately.
+    // ✅ If already sponsored by YOU, do NOT create another subscription
     if (ownedByMe && !allowTopUp) {
       return json(
         {
@@ -124,26 +128,36 @@ export default async (req) => {
     }
 
     // 2) Remaining area preview
-    const { data: previewRow, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_slot: slot,
-    });
+    const { data: previewRow, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_slot: slot,
+      }
+    );
 
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow) ? previewRow[0] || {} : previewRow || {};
-    const rawAvailable = row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
+    const row = Array.isArray(previewRow)
+      ? previewRow[0] || {}
+      : previewRow || {};
+
+    const rawAvailable =
+      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
 
     let available_km2 = Number(rawAvailable);
     if (!Number.isFinite(available_km2)) available_km2 = 0;
     available_km2 = Math.max(0, available_km2);
 
+    // ✅ IMPORTANT CHANGE:
+    // Don't return a user-facing message here (prevents UI tooltip/toast text)
     if (available_km2 <= EPS) {
       return json(
         {
           ok: false,
           code: "no_remaining",
-          message: "No purchasable area left for this slot.",
+          silent: true,
+          available_km2: 0,
         },
         409
       );
@@ -169,7 +183,10 @@ export default async (req) => {
       );
     }
 
-    const amount_cents = Math.max(1, Math.round(available_km2 * rate_per_km2 * 100));
+    const amount_cents = Math.max(
+      1,
+      Math.round(available_km2 * rate_per_km2 * 100)
+    );
 
     // 4) Get or create Stripe customer (CLEANERS schema)
     const { data: cleaner, error: cleanerErr } = await sb
