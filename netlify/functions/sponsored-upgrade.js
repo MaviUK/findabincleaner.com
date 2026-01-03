@@ -128,12 +128,14 @@ export default async (req) => {
     const extra_area_km2 = Math.max(0, available_km2);
     const new_total_area_km2 = current_area_km2 + extra_area_km2;
 
+    // ✅ IMPORTANT CHANGE:
+    // Don't return a user-facing message here (prevents UI tooltip/toast text)
     if (extra_area_km2 <= EPS) {
       return json(
         {
           ok: false,
           code: "no_extra",
-          message: "No additional purchasable area available to upgrade.",
+          silent: true, // optional hint if you want to handle quietly client-side later
         },
         409
       );
