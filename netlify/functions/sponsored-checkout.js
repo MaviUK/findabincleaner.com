@@ -2,16 +2,14 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-04-INDUSTRY+REMAINING");
+console.log("LOADED sponsored-checkout v2026-01-04-PARTIAL-OWNERSHIP");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
-  apiVersion: "2024-06-20",
-});
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
 const corsHeaders = {
   "content-type": "application/json",
@@ -21,10 +19,7 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: corsHeaders,
-  });
+  new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
 const EPS = 1e-6;
 
@@ -39,56 +34,23 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  const cleanerId = String(
-    body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
+  const businessId = String(
+    body.businessId || body.business_id || body.cleanerId || body.cleaner_id || ""
   ).trim();
 
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
+  const categoryId = String(body.categoryId || body.category_id || "").trim();
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  const allowTopUp = Boolean(body.allowTopUp);
-
-  if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
+  if (!businessId) return json({ ok: false, error: "Missing businessId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
   if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
-  if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
+  if (![1].includes(slot)) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Prevent duplicate subscription for SAME area by SAME business (manage instead)
-    const { data: mineRows, error: mineErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("id, status, stripe_subscription_id, created_at")
-      .eq("area_id", areaId)
-      .eq("category_id", categoryId)
-      .eq("slot", slot)
-      .eq("business_id", cleanerId)
-      .order("created_at", { ascending: false });
-
-    if (mineErr) throw mineErr;
-
-    const latestMine = (mineRows || []).find((r) =>
-      ["active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired", "paused"].includes(
-        String(r.status || "").toLowerCase()
-      )
-    );
-
-    if (latestMine && !allowTopUp) {
-      return json(
-        {
-          ok: false,
-          code: "already_sponsored",
-          message:
-            "You already sponsor this service area in this industry. Use Manage to view billing.",
-          stripe_subscription_id: latestMine.stripe_subscription_id || null,
-        },
-        409
-      );
-    }
-
-    // 2) Remaining area preview (THIS is the real “sold out” check)
+    // 1) Preview remaining area (THIS is the truth for partial ownership)
     const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
       p_area_id: areaId,
       p_category_id: categoryId,
@@ -97,48 +59,47 @@ export default async (req) => {
 
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewData) ? previewData[0] || {} : previewData || {};
-    const available_km2 = Math.max(0, Number(row.available_km2 ?? 0) || 0);
+    const row = Array.isArray(previewData) ? previewData[0] : previewData;
+    const availableKm2 = Number(row?.available_km2 ?? 0) || 0;
 
-    if (!Number.isFinite(available_km2) || available_km2 <= EPS) {
+    if (availableKm2 <= EPS) {
       return json({ ok: false, code: "no_remaining", silent: true, available_km2: 0 }, 409);
     }
 
-    // 3) Price
-    const rate_per_km2 =
+    // 2) Price
+    const ratePerKm2 =
       Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
-    if (!rate_per_km2 || rate_per_km2 <= 0) {
+    if (!ratePerKm2 || ratePerKm2 <= 0) {
       return json(
         {
           ok: false,
           code: "missing_rate",
-          message:
-            "Pricing rate is not configured. Set RATE_GOLD_PER_KM2_PER_MONTH or RATE_PER_KM2_PER_MONTH.",
+          message: "Pricing rate not configured.",
         },
         500
       );
     }
 
-    const amount_cents = Math.max(100, Math.round(available_km2 * rate_per_km2 * 100));
+    const amountCents = Math.max(100, Math.round(availableKm2 * ratePerKm2 * 100));
 
-    // 4) Stripe customer (cleaners table)
+    // 3) Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
       .select("id, stripe_customer_id, business_name, contact_email")
-      .eq("id", cleanerId)
+      .eq("id", businessId)
       .maybeSingle();
 
     if (cleanerErr) throw cleanerErr;
-    if (!cleaner) return json({ ok: false, error: "Cleaner not found" }, 404);
+    if (!cleaner) return json({ ok: false, error: "Business not found" }, 404);
 
     let stripeCustomerId = cleaner.stripe_customer_id || null;
 
     if (!stripeCustomerId) {
       const created = await stripe.customers.create({
-        name: cleaner.business_name || "Cleaner",
+        name: cleaner.business_name || "Business",
         email: cleaner.contact_email || undefined,
-        metadata: { cleaner_id: cleaner.id },
+        metadata: { business_id: cleaner.id },
       });
 
       stripeCustomerId = created.id;
@@ -151,19 +112,21 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // ✅ metadata used by webhook to compute remaining geometry and store it
+    // 4) metadata used by webhook
     const meta = {
-      cleaner_id: cleaner.id,
       business_id: cleaner.id,
+      cleaner_id: cleaner.id, // back-compat
       area_id: areaId,
       slot: String(slot),
       category_id: categoryId,
       lock_id: lockId || "",
     };
 
+    // 5) Create checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
+
       metadata: meta,
       subscription_data: { metadata: meta },
 
@@ -173,9 +136,9 @@ export default async (req) => {
             currency: "gbp",
             product_data: {
               name: "Featured service area",
-              description: "Be shown first in local search for this area.",
+              description: "Be shown first in local search for the remaining part of this area.",
             },
-            unit_amount: amount_cents,
+            unit_amount: amountCents,
             recurring: { interval: "month" },
           },
           quantity: 1,
