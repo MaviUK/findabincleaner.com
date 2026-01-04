@@ -1,22 +1,28 @@
+// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
+
+console.log("LOADED sponsored-preview v2026-01-04-INDUSTRY");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
+const corsHeaders = {
+  "content-type": "application/json",
+  "access-control-allow-origin": "*",
+  "access-control-allow-methods": "POST,OPTIONS",
+  "access-control-allow-headers": "content-type",
+};
+
 const json = (status, body) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+  new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
 const EPS = 1e-6;
 
 export default async (req) => {
-  if (req.method !== "POST") {
-    return json(405, { ok: false, error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return json(200, { ok: true });
+  if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
   let body;
   try {
@@ -49,6 +55,7 @@ export default async (req) => {
 
     const totalKm2 = Number(row.total_km2 ?? 0) || 0;
     const availableKm2 = Number(row.available_km2 ?? 0) || 0;
+
     const soldOut =
       Boolean(row.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
 
