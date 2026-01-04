@@ -20,12 +20,11 @@ export interface ServiceAreaRow {
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 
-  // ✅ NEW: lock info (from RPC)
+  // lock info (from RPC)
   is_sponsored_locked?: boolean;
   sponsored_until?: string | null;
 }
 
-// Keep Slot type for back-compat where needed
 type Slot = 1;
 
 type SingleSlotState = {
@@ -36,7 +35,7 @@ type SingleSlotState = {
 
 type SponsorshipState = {
   area_id: string;
-  slot: SingleSlotState; // single Featured slot
+  slot: SingleSlotState;
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 
@@ -138,7 +137,6 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
-/** Accept Polygon/MultiPolygon/Feature/FeatureCollection and return array of rings-paths for <Polygon /> */
 function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (!geo) return [];
 
@@ -197,7 +195,6 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   return [];
 }
 
-/** area size helper for sorting (km²) */
 function geoMultiPolygonAreaKm2(gj: any): number {
   if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates))
     return 0;
@@ -219,16 +216,12 @@ type Props = {
   cleanerId?: string;
   categoryId?: string | null;
   sponsorshipVersion?: number;
-  onSlotAction?: (
-    area: { id: string; name?: string },
-    slot: Slot
-  ) => void | Promise<void>;
+  onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
-// ✅ categories for "Copy to Industry"
 type CategoryRow = { id: string; name: string; slug: string | null };
 
 export default function ServiceAreaEditor({
@@ -254,7 +247,6 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // availability from server
   const [avail, setAvail] = useState<AvailMap>({});
   const [availLoading, setAvailLoading] = useState<AvailLoadingMap>({});
 
@@ -269,7 +261,6 @@ export default function ServiceAreaEditor({
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
 
-  // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
   const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
@@ -277,7 +268,6 @@ export default function ServiceAreaEditor({
   const previewActiveForArea =
     sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
-  // ✅ Copy-to-industry state
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyArea, setCopyArea] = useState<ServiceAreaRow | null>(null);
@@ -286,7 +276,6 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-  // ✅ Fetch ONLY active industries for this cleaner
   useEffect(() => {
     if (!myBusinessId) return;
 
@@ -306,7 +295,6 @@ export default function ServiceAreaEditor({
     })();
   }, [myBusinessId]);
 
-  // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
     setSponsorship({});
     setAvail({});
@@ -317,7 +305,6 @@ export default function ServiceAreaEditor({
     setManageOpen(false);
     setManageAreaId(null);
 
-    // also close copy modal
     setCopyOpen(false);
     setCopyArea(null);
     setCopyTargetCategoryId("");
@@ -333,7 +320,6 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (per industry)
   const fetchAreas = useCallback(async () => {
     if (!myBusinessId) return;
     setLoading(true);
@@ -341,7 +327,7 @@ export default function ServiceAreaEditor({
     try {
       const { data, error } = await supabase.rpc("list_service_areas", {
         p_cleaner_id: myBusinessId,
-        p_category_id: categoryId, // ✅ per-industry areas
+        p_category_id: categoryId,
       });
       if (error) throw error;
       setServiceAreas(data || []);
@@ -356,8 +342,6 @@ export default function ServiceAreaEditor({
     if (!myBusinessId) return;
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
-
-  // ------- Sponsorship occupancy (single-slot) -------
 
   const OWNED_BY_ME_PAINT = {
     tier: 3,
@@ -391,7 +375,7 @@ export default function ServiceAreaEditor({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             areaIds,
-            categoryId, // ✅ isolate by industry
+            categoryId, // industry isolate
           }),
         });
         if (!res.ok) throw new Error(`sponsorship ${res.status}`);
@@ -443,7 +427,6 @@ export default function ServiceAreaEditor({
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
-  // ------- Availability by geometry -------
   const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
@@ -458,7 +441,7 @@ export default function ServiceAreaEditor({
             cleanerId: myBusinessId,
             areaId,
             slot: 1,
-            categoryId, // ✅ per-industry
+            categoryId,
           }),
         });
 
@@ -734,15 +717,12 @@ export default function ServiceAreaEditor({
     });
   }, [isLoaded, serviceAreas, sponsorship]);
 
-  // ✅ COPY ACTION
   const openCopyModal = useCallback(
     (area: ServiceAreaRow) => {
       setCopyErr(null);
 
       if (!categories.length) {
-        setCopyErr(
-          "Industries couldn't load. Fix Supabase RLS on the categories table."
-        );
+        setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
         setCopyOpen(true);
         setCopyArea(area);
         setCopyTargetCategoryId("");
@@ -806,7 +786,6 @@ export default function ServiceAreaEditor({
   return (
     <>
       <div className="grid md:grid-cols-12 gap-6">
-        {/* Left panel */}
         <div className="md:col-span-4 space-y-4">
           <div className="card card-pad">
             <div className="flex items-center justify-between mb-2">
@@ -849,19 +828,14 @@ export default function ServiceAreaEditor({
                 )}
 
                 <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} • Coverage:{" "}
-                  {fmtArea(totalDraftArea)}
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button className="btn" onClick={saveDraft} disabled={loading}>
                     {activeAreaId ? "Save Changes" : "Save Area"}
                   </button>
-                  <button
-                    className="btn"
-                    onClick={cancelDraft}
-                    disabled={loading}
-                  >
+                  <button className="btn" onClick={cancelDraft} disabled={loading}>
                     Cancel
                   </button>
                   <button
@@ -878,7 +852,6 @@ export default function ServiceAreaEditor({
               </div>
             )}
 
-            {/* List */}
             <ul className="space-y-2">
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
@@ -891,16 +864,22 @@ export default function ServiceAreaEditor({
                 const locked = isAreaLocked(a);
                 const until = lockedUntilLabel(a);
 
-                const hasGeo = avail[a.id] ?? true; // optimistic until computed
+                const takenByOther =
+                  !!s &&
+                  isBlockingStatus(s.status) &&
+                  s.owner_business_id !== myBusinessId;
+
+                const hasGeo = avail[a.id] ?? true;
                 const busy = availLoading[a.id];
 
-                // ✅ UPDATED:
-                // We do NOT disable just because "others sponsor something in here",
-                // because partial purchases are allowed.
-                const disabled = !mine && hasGeo === false;
+                // if someone else owns THIS area in THIS industry, treat as sold out
+                const disabled =
+                  takenByOther || (!mine && !takenByOther && hasGeo === false);
 
                 const title = mine
                   ? "You sponsor this area"
+                  : takenByOther
+                  ? `Sold out${s?.status ? ` (${s.status})` : ""}`
                   : hasGeo === false
                   ? "No purchasable region available"
                   : busy
@@ -909,6 +888,8 @@ export default function ServiceAreaEditor({
 
                 const label = mine
                   ? "Manage"
+                  : takenByOther
+                  ? "Sold out"
                   : hasGeo === false
                   ? "Sold out"
                   : "Sponsor (Featured)";
@@ -934,13 +915,8 @@ export default function ServiceAreaEditor({
                   <li
                     key={a.id}
                     className={`border rounded-lg p-3 transition-colors
-                      ${
-                        mine
-                          ? "border-amber-300 bg-amber-50"
-                          : "border-gray-200 bg-white"
-                      }`}
+                      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
                   >
-                    {/* Row 1: Title + Meta (click to zoom) */}
                     <button
                       type="button"
                       onClick={() => zoomToArea(a)}
@@ -953,10 +929,7 @@ export default function ServiceAreaEditor({
 
                       <div className="text-xs text-gray-500 mt-1">
                         {new Date(a.created_at).toLocaleString()} •{" "}
-                        {isLoaded
-                          ? geoMultiPolygonAreaKm2(a.gj).toFixed(2)
-                          : "—"}{" "}
-                        km²
+                        {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
                         {locked && until ? (
                           <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
                             Locked until {until}
@@ -965,7 +938,6 @@ export default function ServiceAreaEditor({
                       </div>
                     </button>
 
-                    {/* Row 2: Edit / Delete / Copy */}
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
@@ -1010,7 +982,6 @@ export default function ServiceAreaEditor({
                       </button>
                     </div>
 
-                    {/* Row 3: Sponsor/Manage */}
                     <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
                         className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
@@ -1082,7 +1053,6 @@ export default function ServiceAreaEditor({
           </div>
         </div>
 
-        {/* Map */}
         <div className="md:col-span-8">
           {isLoaded ? (
             <GoogleMap
@@ -1105,7 +1075,6 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* non-editable painted overlays */}
               {activeAreaId === null &&
                 sortedServiceAreas.map((a) => {
                   const gj = a.gj;
@@ -1136,7 +1105,6 @@ export default function ServiceAreaEditor({
                   });
                 })}
 
-              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -1161,7 +1129,6 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
-      {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
@@ -1178,7 +1145,6 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* Manage modal */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
@@ -1189,7 +1155,6 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* Copy modal unchanged (kept as in your original) */}
       {copyOpen && copyArea && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
