@@ -2,7 +2,7 @@
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED stripe-webhook v2026-01-04-REMAINING-GEOM-RPC-TRUTH");
+console.log("LOADED stripe-webhook v2026-01-04-REMAINING-GEOM-INTERNAL-FIRST");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 const sb = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
@@ -17,14 +17,12 @@ const json = (body, status = 200) =>
 
 const EPS = 1e-6;
 
-// -------- GeoJSON -> WKT (Polygon + MultiPolygon) --------
+// ---------------- GeoJSON -> EWKT (MultiPolygon SRID=4326) ----------------
 function ringToWkt(ring) {
-  // ring = [[lng,lat],...]
   return ring.map((p) => `${p[0]} ${p[1]}`).join(", ");
 }
 
 function polygonToWkt(polyCoords) {
-  // polyCoords = [ ring1, ring2, ... ]
   const rings = polyCoords.map((ring) => `(${ringToWkt(ring)})`).join(", ");
   return `(${rings})`;
 }
@@ -33,7 +31,6 @@ function geojsonToMultiPolygonWkt(gj) {
   if (!gj || !gj.type) return null;
 
   if (gj.type === "Polygon") {
-    // Polygon -> MultiPolygon with 1 polygon
     const poly = polygonToWkt(gj.coordinates);
     return `MULTIPOLYGON(${poly})`;
   }
@@ -43,7 +40,6 @@ function geojsonToMultiPolygonWkt(gj) {
     return `MULTIPOLYGON(${polys})`;
   }
 
-  // sometimes ST_AsGeoJSON returns GeometryCollection; we don't support that here
   return null;
 }
 
@@ -53,7 +49,7 @@ function ewkt4326FromGeojson(gj) {
   return `SRID=4326;${wkt}`;
 }
 
-// -------- helpers --------
+// ---------------- helpers ----------------
 async function releaseLockIfPresent(lockId) {
   if (!lockId) return;
   try {
@@ -83,13 +79,33 @@ function pickMeta(obj) {
   return { business_id, area_id, category_id, slot, lock_id };
 }
 
+/**
+ * ✅ Single source of truth for remaining region:
+ * Try internal RPC first (service-role safe), fall back to public.
+ *
+ * IMPORTANT: Your DB functions MUST union "sponsored_subscriptions.sponsored_geom"
+ * (NOT service_areas.geom), otherwise overlap trigger + preview will disagree.
+ */
 async function computeRemainingGeom(area_id, category_id, slot) {
-  // ✅ single source of truth for “buyable” region
-  const { data, error } = await sb.rpc("area_remaining_preview", {
+  // Try internal first (better for service role + avoids ambiguity if you keep multiple signatures)
+  let data, error;
+
+  ({ data, error } = await sb.rpc("area_remaining_preview_internal", {
     p_area_id: area_id,
     p_category_id: category_id,
     p_slot: slot,
-  });
+  }));
+
+  if (error) {
+    // fallback to public function if internal not present / not permitted
+    const fallback = await sb.rpc("area_remaining_preview", {
+      p_area_id: area_id,
+      p_category_id: category_id,
+      p_slot: slot,
+    });
+    data = fallback.data;
+    error = fallback.error;
+  }
 
   if (error) throw error;
 
@@ -97,12 +113,21 @@ async function computeRemainingGeom(area_id, category_id, slot) {
   if (!row) return { soldOut: true, available_km2: 0, ewkt: null, geojson: null };
 
   const available_km2 = Number(row.available_km2 ?? 0);
-  const soldOut = Boolean(row.sold_out) || !Number.isFinite(available_km2) || available_km2 <= EPS;
+  const soldOut =
+    Boolean(row.sold_out) || !Number.isFinite(available_km2) || available_km2 <= EPS;
 
+  // Your SQL returns: gj jsonb
   const gj = row.gj ?? null;
+
+  // Convert remaining GeoJSON to EWKT multipolygon (SRID=4326)
   const ewkt = soldOut ? null : ewkt4326FromGeojson(gj);
 
-  return { soldOut, available_km2: Math.max(0, available_km2 || 0), ewkt, geojson: gj };
+  return {
+    soldOut,
+    available_km2: Math.max(0, Number.isFinite(available_km2) ? available_km2 : 0),
+    ewkt,
+    geojson: gj,
+  };
 }
 
 async function upsertSponsoredRow({
@@ -129,7 +154,7 @@ async function upsertSponsoredRow({
     currency: (currency || "gbp")?.toLowerCase(),
     status,
     current_period_end: current_period_end_iso,
-    sponsored_geom: sponsored_geom_ewkt, // ✅ remaining multipolygon
+    sponsored_geom: sponsored_geom_ewkt, // ✅ remaining multipolygon ONLY
   };
 
   const { error } = await sb
@@ -139,7 +164,7 @@ async function upsertSponsoredRow({
   if (error) throw error;
 }
 
-// -------- main --------
+// ---------------- main ----------------
 export default async (req) => {
   if (req.method === "GET") return json({ ok: true, note: "stripe-webhook deployed" });
   if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
@@ -163,27 +188,16 @@ export default async (req) => {
 
     console.log(`[webhook] ${type} id=${event.id}`);
 
-    // We only write sponsored_subscriptions on these
     const interesting =
       type === "checkout.session.completed" ||
       type === "customer.subscription.created" ||
       type === "customer.subscription.updated";
 
-    if (!interesting) {
-      return json({ ok: true, ignored: true });
-    }
+    if (!interesting) return json({ ok: true, ignored: true }, 200);
 
-    // ---- Resolve subscription + customer ----
-    let sub = null;
-    let subId = null;
-    let custId = null;
-    let currency = "gbp";
-    let unit_amount = null;
-
+    // ---------------- checkout.session.completed ----------------
     if (type === "checkout.session.completed") {
-      // session has subscription + customer
       const session = obj;
-      currency = session.currency || "gbp";
 
       const meta = pickMeta(session);
       const business_id = meta.business_id;
@@ -192,30 +206,34 @@ export default async (req) => {
       const slot = meta.slot || 1;
       const lock_id = meta.lock_id;
 
-      subId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id || null;
-      custId = typeof session.customer === "string" ? session.customer : session.customer?.id || null;
+      const subId =
+        typeof session.subscription === "string"
+          ? session.subscription
+          : session.subscription?.id || null;
 
-      // expand to get price + period end
+      const custId =
+        typeof session.customer === "string" ? session.customer : session.customer?.id || null;
+
+      if (!business_id || !area_id || !category_id || !subId || !custId) {
+        await releaseLockIfPresent(lock_id);
+        return json({ ok: true, skipped: "missing_metadata" }, 200);
+      }
+
+      // Expand to read unit_amount + period_end
       const full = await stripe.checkout.sessions.retrieve(session.id, {
         expand: ["subscription", "line_items.data.price"],
       });
 
-      sub = typeof full.subscription === "string" ? null : full.subscription || null;
+      const sub = typeof full.subscription === "string" ? null : full.subscription || null;
 
-      unit_amount =
-        full.line_items?.data?.[0]?.price?.unit_amount ??
-        null;
+      const unit_amount =
+        full.line_items?.data?.[0]?.price?.unit_amount ?? null;
 
-      if (!business_id || !area_id || !category_id || !subId || !custId) {
-        await releaseLockIfPresent(lock_id);
-        return json({ ok: false, error: "Missing required metadata/subscription/customer" }, 200);
-      }
-
-      // ✅ compute remaining geometry (THE TRUTH)
+      // ✅ Remaining region (must match DB trigger logic)
       const rem = await computeRemainingGeom(area_id, category_id, slot);
 
+      // If no remaining, cancel so they aren’t charged monthly
       if (rem.soldOut || !rem.ewkt) {
-        // no remaining -> cancel immediately so they are not charged monthly
         await cancelStripeSubscription(subId, "no_remaining_or_overlap");
         await releaseLockIfPresent(lock_id);
         return json({ ok: true, canceled: true, reason: "no_remaining" }, 200);
@@ -233,81 +251,88 @@ export default async (req) => {
           stripe_customer_id: custId,
           stripe_subscription_id: subId,
           unit_amount_pennies: unit_amount,
-          currency,
+          currency: session.currency || "gbp",
           status: sub?.status || "active",
           current_period_end_iso,
           sponsored_geom_ewkt: rem.ewkt,
         });
       } catch (e) {
-        // If DB overlap trigger fires, cancel subscription + release lock
         console.warn("[webhook] DB upsert failed:", e?.code || "", e?.message || e);
-        await cancelStripeSubscription(subId, "db_overlap_trigger");
+        await cancelStripeSubscription(subId, "db_write_failed_or_overlap_trigger");
         await releaseLockIfPresent(lock_id);
         return json({ ok: true, canceled: true, reason: "db_write_failed" }, 200);
       }
 
       await releaseLockIfPresent(lock_id);
-      return json({ ok: true });
+      return json({ ok: true }, 200);
     }
 
-    // subscription.created/updated
-    const subscription = obj;
-    subId = subscription.id;
-    custId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id || null;
-    currency = subscription.currency || "gbp";
-    unit_amount =
-      subscription.items?.data?.[0]?.price?.unit_amount ??
-      null;
+    // ---------------- customer.subscription.created / updated ----------------
+    {
+      const subscription = obj;
 
-    const meta = pickMeta(subscription);
-    const business_id = meta.business_id;
-    const area_id = meta.area_id;
-    const category_id = meta.category_id;
-    const slot = meta.slot || 1;
-    const lock_id = meta.lock_id;
+      const meta = pickMeta(subscription);
+      const business_id = meta.business_id;
+      const area_id = meta.area_id;
+      const category_id = meta.category_id;
+      const slot = meta.slot || 1;
+      const lock_id = meta.lock_id;
 
-    if (!business_id || !area_id || !category_id || !subId || !custId) {
+      const subId = subscription.id;
+      const custId =
+        typeof subscription.customer === "string"
+          ? subscription.customer
+          : subscription.customer?.id || null;
+
+      if (!business_id || !area_id || !category_id || !subId || !custId) {
+        await releaseLockIfPresent(lock_id);
+        return json({ ok: true, skipped: "missing_metadata" }, 200);
+      }
+
+      const unit_amount =
+        subscription.items?.data?.[0]?.price?.unit_amount ?? null;
+
+      // ✅ Remaining region (must match DB trigger logic)
+      const rem = await computeRemainingGeom(area_id, category_id, slot);
+
+      if (rem.soldOut || !rem.ewkt) {
+        await cancelStripeSubscription(subId, "no_remaining_or_overlap");
+        await releaseLockIfPresent(lock_id);
+        return json({ ok: true, canceled: true, reason: "no_remaining" }, 200);
+      }
+
+      const current_period_end_iso =
+        subscription.current_period_end
+          ? new Date(subscription.current_period_end * 1000).toISOString()
+          : null;
+
+      try {
+        await upsertSponsoredRow({
+          business_id,
+          area_id,
+          category_id,
+          slot,
+          stripe_customer_id: custId,
+          stripe_subscription_id: subId,
+          unit_amount_pennies: unit_amount,
+          currency: subscription.currency || "gbp",
+          status: subscription.status || "active",
+          current_period_end_iso,
+          sponsored_geom_ewkt: rem.ewkt,
+        });
+      } catch (e) {
+        console.warn("[webhook] DB upsert failed:", e?.code || "", e?.message || e);
+        await cancelStripeSubscription(subId, "db_write_failed_or_overlap_trigger");
+        await releaseLockIfPresent(lock_id);
+        return json({ ok: true, canceled: true, reason: "db_write_failed" }, 200);
+      }
+
       await releaseLockIfPresent(lock_id);
-      return json({ ok: true, skipped: "missing_metadata" }, 200);
+      return json({ ok: true }, 200);
     }
-
-    const rem = await computeRemainingGeom(area_id, category_id, slot);
-
-    if (rem.soldOut || !rem.ewkt) {
-      await cancelStripeSubscription(subId, "no_remaining_or_overlap");
-      await releaseLockIfPresent(lock_id);
-      return json({ ok: true, canceled: true, reason: "no_remaining" }, 200);
-    }
-
-    const current_period_end_iso =
-      subscription.current_period_end ? new Date(subscription.current_period_end * 1000).toISOString() : null;
-
-    try {
-      await upsertSponsoredRow({
-        business_id,
-        area_id,
-        category_id,
-        slot,
-        stripe_customer_id: custId,
-        stripe_subscription_id: subId,
-        unit_amount_pennies: unit_amount,
-        currency,
-        status: subscription.status || "active",
-        current_period_end_iso,
-        sponsored_geom_ewkt: rem.ewkt,
-      });
-    } catch (e) {
-      console.warn("[webhook] DB upsert failed:", e?.code || "", e?.message || e);
-      await cancelStripeSubscription(subId, "db_overlap_trigger");
-      await releaseLockIfPresent(lock_id);
-      return json({ ok: true, canceled: true, reason: "db_write_failed" }, 200);
-    }
-
-    await releaseLockIfPresent(lock_id);
-    return json({ ok: true });
   } catch (e) {
-    console.error("[stripe-webhook] handler error:", e);
-    // Return 200 so Stripe doesn’t spam retries while we’re canceling safely
+    console.error("[stripe-webhook] handler error:", e?.message || e);
+    // Return 200 so Stripe doesn’t spam retries while we cancel safely
     return json({ ok: true, handled_error: true }, 200);
   }
 };
