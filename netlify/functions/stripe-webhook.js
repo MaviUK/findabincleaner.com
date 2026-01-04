@@ -1,122 +1,109 @@
+// netlify/functions/stripe-webhook.js
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED stripe-webhook v2026-01-03-GEOM-SAFE+OVERLAP-GRACE");
+console.log("LOADED stripe-webhook v2026-01-04-GEOM-EWKT-MULTI+OVERLAP-GRACE");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const supabase = createClient(
+const sb = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-const json = (statusCode, body) =>
-  ({
-    statusCode,
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
   });
 
-/**
- * IMPORTANT:
- * - Stripe sends the webhook body as raw text. Netlify provides it in event.body.
- * - You must pass raw body to constructEvent for signature verification.
- */
-function getRawBody(event) {
-  // Netlify sometimes gives base64 encoded body depending on config
-  if (event.isBase64Encoded) {
-    return Buffer.from(event.body || "", "base64").toString("utf8");
-  }
-  return event.body || "";
+// statuses that should be treated as "blocking/owned"
+const BLOCKING = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "incomplete_expired",
+  "paused",
+]);
+
+function isBlockingStatus(s) {
+  return BLOCKING.has(String(s || "").toLowerCase());
+}
+
+function safeLower(x) {
+  return String(x || "").toLowerCase();
 }
 
 async function releaseLockSafe(lockId) {
   if (!lockId) return;
   try {
-    await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+    await sb.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
   } catch (e) {
-    console.error("[webhook] failed to release lock:", lockId, e?.message || e);
+    console.warn("[webhook] failed to release lock:", lockId, e?.message || e);
   }
 }
 
-function normalizeStatus(s) {
-  return String(s || "").toLowerCase();
-}
-
 /**
- * Pull sponsorship metadata from Stripe object (subscription or checkout session)
- * Your system uses these metadata keys across functions:
- * business_id, area_id, category_id, slot, lock_id
- */
-function readSponsorshipMeta(meta = {}) {
-  const business_id =
-    meta.business_id || meta.cleaner_id || meta.cleanerId || meta.businessId || null;
-
-  const area_id = meta.area_id || meta.areaId || null;
-  const category_id = meta.category_id || meta.categoryId || null;
-  const slot = Number(meta.slot || 1);
-
-  const lock_id = meta.lock_id || meta.lockId || null;
-
-  return { business_id, area_id, category_id, slot, lock_id };
-}
-
-/**
- * Fetch service area geometry (PostGIS) as GeoJSON so we can store something safe.
- * BUT: your DB wants MultiPolygon — so we normalize with a SQL RPC call (recommended),
- * or we rely on a DB trigger to fill sponsored_geom.
+ * ✅ IMPORTANT: fetch the service area geometry and return EWKT MultiPolygon in 4326.
+ * This prevents "has no geometry" and prevents Polygon vs MultiPolygon mismatch.
  *
- * If you already have a DB trigger `sponsored_subscriptions_fill_geom()` that fills
- * sponsored_geom, you can omit sending geometry entirely. However, you previously
- * hit "has no geometry" so we ensure it can be set.
- *
- * NOTE: This code assumes service_areas.geom exists (geometry column).
+ * Assumes: service_areas.geom exists (PostGIS geometry)
  */
-async function fetchServiceAreaGeoJSON(area_id) {
-  const { data, error } = await supabase
-    .from("service_areas")
-    .select("id, geom")
-    .eq("id", area_id)
-    .maybeSingle();
+async function getAreaSponsoredGeomEWKT(areaId) {
+  if (!areaId) return null;
 
-  if (error) throw error;
-  if (!data) return null;
+  // Use a PostgREST computed select via PostGIS SQL in a view? Not needed:
+  // Supabase supports "select" but not raw SQL expressions.
+  // So we call an RPC that returns EWKT if you already have one.
+  //
+  // If you DON'T have an RPC yet, simplest is to add it (SQL below).
+  //
+  // We'll attempt RPC first:
+  const { data, error } = await sb.rpc("get_service_area_geom_ewkt", { p_area_id: areaId });
 
-  // geom comes as PostGIS geometry object in supabase? depends on your config.
-  // safest: have a SQL RPC that returns ST_AsGeoJSON(geom)::jsonb.
-  // If you already have such RPC, use it instead.
+  if (!error) {
+    // function may return { ewkt: 'SRID=4326;MULTIPOLYGON(...)' } or plain text
+    if (typeof data === "string") return data;
+    if (Array.isArray(data) && data[0]?.ewkt) return data[0].ewkt;
+    if (data?.ewkt) return data.ewkt;
+  }
+
+  // If RPC doesn't exist, we can't reliably compute EWKT from JS without coordinates.
+  // Return null so we fail loudly with a clear message.
+  console.error(
+    "[webhook] Missing RPC get_service_area_geom_ewkt() or it errored:",
+    error?.message || error
+  );
   return null;
 }
 
-/**
- * If your DB trigger fills sponsored_geom, you can leave sponsored_geom null,
- * BUT you must ensure the trigger can compute it (and not raise "no geometry").
- *
- * From your error: trigger trg_block_sponsorship_overlap raises if sponsored_geom is null.
- * That means your fill trigger must run BEFORE overlap trigger, or overlap trigger
- * must tolerate null during early lifecycle.
- *
- * Since you have:
- * - trg_sponsored_subscriptions_fill_geom BEFORE INSERT OR UPDATE
- * - sponsored_subscriptions_no_overlap BEFORE INSERT OR UPDATE OF sponsored_geom, status, category_id, slot
- *
- * The overlap trigger should see sponsored_geom after fill trigger IF ordering is correct.
- * Postgres trigger ordering for same timing is name order. So ensure fill trigger name sorts earlier.
- *
- * This webhook keeps insert minimal and relies on your fill trigger.
- */
-async function upsertSponsoredSubscription({
-  business_id,
-  area_id,
-  category_id,
-  slot,
-  stripe_customer_id,
-  stripe_subscription_id,
-  price_monthly_pennies,
-  currency,
-  status,
-  current_period_end,
-}) {
+function extractMeta(obj) {
+  const meta = obj?.metadata || {};
+  const business_id =
+    meta.business_id || meta.cleaner_id || meta.cleanerId || meta.businessId || null;
+  const area_id = meta.area_id || meta.areaId || null;
+  const category_id = meta.category_id || meta.categoryId || null;
+  const slot = Number(meta.slot || 1);
+  const lock_id = meta.lock_id || null;
+  return { business_id, area_id, category_id, slot, lock_id };
+}
+
+async function upsertSubscription({ business_id, area_id, category_id, slot, stripe_customer_id, stripe_subscription_id, status, price_monthly_pennies, currency, current_period_end, lock_id }) {
+  // ✅ Fetch EWKT MultiPolygon 4326 and write it directly into sponsored_geom
+  const ewkt = await getAreaSponsoredGeomEWKT(area_id);
+
+  if (!ewkt) {
+    // This is what was causing your "has no geometry" (trigger fires and throws).
+    // We log and release lock, but return gracefully.
+    console.warn("[webhook] no area geometry EWKT available; releasing lock", {
+      business_id, area_id, category_id, slot, stripe_subscription_id,
+    });
+    await releaseLockSafe(lock_id);
+    return { ok: false, reason: "no_geometry" };
+  }
+
   const payload = {
     business_id,
     area_id,
@@ -124,204 +111,206 @@ async function upsertSponsoredSubscription({
     slot,
     stripe_customer_id,
     stripe_subscription_id,
-    price_monthly_pennies,
-    currency,
-    status,
-    current_period_end,
+    price_monthly_pennies: price_monthly_pennies ?? null,
+    currency: (currency || "gbp")?.toLowerCase(),
+    status: status || "active",
+    current_period_end: current_period_end || null,
+
+    // ✅ the critical field:
+    sponsored_geom: ewkt, // EWKT string -> PostGIS geometry column
   };
 
-  const { error } = await supabase
+  const { error } = await sb
     .from("sponsored_subscriptions")
     .upsert(payload, { onConflict: "stripe_subscription_id" });
 
-  if (error) throw error;
-}
-
-function isOverlapError(e) {
-  const code = e?.code || e?.cause?.code;
-  const msg = String(e?.message || "");
-  // You’ve seen:
-  // - 23505 unique/constraint with message "Area overlaps..."
-  // - custom exceptions with P0001 messages
-  // Treat either as overlap-ish
-  return code === "23505" || msg.toLowerCase().includes("overlaps an existing sponsored area");
-}
-
-exports.handler = async (event) => {
-  if (event.httpMethod === "GET") {
-    return json(200, { ok: true, note: "Use POST (Stripe webhook)." });
-  }
-  if (event.httpMethod !== "POST") {
-    return json(405, { ok: false, error: "Method not allowed" });
+  if (!error) {
+    // release lock if present
+    await releaseLockSafe(lock_id);
+    return { ok: true };
   }
 
-  const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
+  // ✅ Overlap-grace: if DB blocks because overlap rule, do NOT crash webhook
+  const msg = String(error?.message || "");
+  const code = String(error?.code || "");
+
+  const isOverlap =
+    code === "23505" || // uniqueness / raised errors sometimes surface as this
+    msg.includes("overlap") ||
+    msg.includes("conflict=");
+
+  const isGeomTypeMismatch =
+    code === "22023" || msg.includes("does not match column type");
+
+  const isNoGeom =
+    code === "P0001" && msg.includes("has no geometry");
+
+  if (isOverlap) {
+    console.warn("[webhook] overlap prevented DB write; lock will be released.", {
+      business_id, area_id, category_id, slot, stripe_subscription_id,
+    });
+    await releaseLockSafe(lock_id);
+    return { ok: false, reason: "overlap" };
+  }
+
+  if (isGeomTypeMismatch) {
+    console.error("[webhook] geom type mismatch even after EWKT multi:", error);
+    await releaseLockSafe(lock_id);
+    return { ok: false, reason: "geom_type_mismatch" };
+  }
+
+  if (isNoGeom) {
+    console.error("[webhook] still no geometry after EWKT fetch:", error);
+    await releaseLockSafe(lock_id);
+    return { ok: false, reason: "no_geometry" };
+  }
+
+  console.error("[stripe-webhook] DB upsert failed:", error);
+  await releaseLockSafe(lock_id);
+  throw new Error("DB write(sponsored_subscriptions) failed");
+}
+
+export default async (req) => {
+  if (req.method === "GET") {
+    return json({ ok: true, note: "stripe-webhook deployed. Stripe calls POST." });
+  }
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+
+  const sig = req.headers.get("stripe-signature");
   const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
   if (!sig || !endpointSecret) {
-    return json(400, { ok: false, error: "Missing stripe signature/secret" });
+    return json({ ok: false, error: "Missing stripe signature or webhook secret" }, 400);
   }
 
-  let stripeEvent;
+  let event;
   try {
-    const rawBody = getRawBody(event);
-    stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
-  } catch (err) {
-    console.error("[stripe-webhook] signature verify failed:", err?.message || err);
-    return json(400, { ok: false, error: "Invalid signature" });
+    const rawBody = await req.text();
+    event = stripe.webhooks.constructEvent(rawBody, sig, endpointSecret);
+  } catch (e) {
+    console.error("[webhook] signature verify failed:", e?.message || e);
+    return json({ ok: false, error: "Signature verification failed" }, 400);
   }
 
-  const type = stripeEvent.type;
-  const obj = stripeEvent.data.object;
-
   try {
-    // We only need to write sponsored_subscriptions on subscription lifecycle.
-    // You can add/adjust event types here.
-    const relevant = new Set([
-      "checkout.session.completed",
-      "customer.subscription.created",
-      "customer.subscription.updated",
-      "customer.subscription.deleted",
-      "invoice.paid",
-    ]);
+    const t = event.type;
+    const obj = event.data?.object;
 
-    if (!relevant.has(type)) {
-      return json(200, { ok: true, ignored: type });
-    }
+    // ---- checkout.session.completed ----
+    if (t === "checkout.session.completed") {
+      console.log("[webhook] checkout.session.completed id=" + event.id);
 
-    // ---- Pull core sponsorship metadata ----
-    // checkout.session.completed: meta on session
-    // subscription events: meta on subscription
-    let meta = obj?.metadata || {};
-    let subscriptionId = null;
-    let customerId = null;
-    let status = null;
-    let currentPeriodEndIso = null;
-    let priceMonthlyPennies = null;
-    let currency = (obj?.currency || "gbp")?.toLowerCase();
-
-    if (type === "checkout.session.completed") {
       const session = obj;
-      subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
-      customerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
-      status = "active";
+      const meta = extractMeta(session);
 
-      // Best effort: expand subscription to get period end if you want
-      // (optional, but helpful)
-      if (subscriptionId) {
-        try {
-          const sub = await stripe.subscriptions.retrieve(subscriptionId);
-          currentPeriodEndIso = sub?.current_period_end
-            ? new Date(sub.current_period_end * 1000).toISOString()
-            : null;
-          status = normalizeStatus(sub?.status) || status;
-          // subscription metadata tends to match checkout metadata
-          meta = { ...meta, ...(sub?.metadata || {}) };
-        } catch {}
+      // Need subscription & customer
+      const subId = session?.subscription || null;
+      const custId = session?.customer || null;
+
+      if (!meta.business_id || !meta.area_id || !meta.category_id || !subId || !custId) {
+        await releaseLockSafe(meta.lock_id);
+        return json({
+          ok: true,
+          skipped: true,
+          reason: "missing_metadata",
+          got: { ...meta, subId, custId },
+        });
       }
 
-      // You previously relied on line_items for price; keep it simple:
-      // If you want exact unit amount, you can retrieve the session expanded, but that’s slower.
-      // This may remain null and you can derive price later from plan/price.
-      priceMonthlyPennies = null;
-      currency = (session.currency || currency || "gbp")?.toLowerCase();
-    } else if (type.startsWith("customer.subscription.")) {
-      const sub = obj;
-      subscriptionId = sub.id;
-      customerId = sub.customer;
-      status = normalizeStatus(sub.status) || null;
-      currentPeriodEndIso = sub?.current_period_end
+      // Fetch subscription for period end & status
+      const sub = await stripe.subscriptions.retrieve(String(subId));
+      const currentPeriodEndIso = sub?.current_period_end
         ? new Date(sub.current_period_end * 1000).toISOString()
         : null;
-      meta = sub?.metadata || meta;
-      currency = currency || "gbp";
-    } else if (type === "invoice.paid") {
-      // You said you only want paid-only notifications; keep invoice handling minimal here
-      return json(200, { ok: true, handled: "invoice.paid" });
-    }
 
-    const { business_id, area_id, category_id, slot, lock_id } = readSponsorshipMeta(meta);
+      // Use session amount if available
+      const pricePennies =
+        session?.amount_total ?? session?.amount_subtotal ?? null;
 
-    // If missing core meta, just acknowledge webhook (don’t retry forever)
-    if (!business_id || !area_id || !category_id || !subscriptionId || !customerId) {
-      console.warn("[webhook] missing required sponsorship metadata; skipping write", {
-        type,
-        business_id,
-        area_id,
-        category_id,
-        slot,
-        subscriptionId,
-        customerId,
-      });
-      await releaseLockSafe(lock_id);
-      return json(200, { ok: true, skipped: "missing-metadata" });
-    }
+      const currency = session?.currency || "gbp";
 
-    // If subscription deleted, mark canceled (optional)
-    if (type === "customer.subscription.deleted") {
-      const { error } = await supabase
-        .from("sponsored_subscriptions")
-        .update({ status: "canceled" })
-        .eq("stripe_subscription_id", subscriptionId);
-
-      if (error) console.error("[webhook] failed to mark canceled:", error);
-      await releaseLockSafe(lock_id);
-      return json(200, { ok: true, canceled: true });
-    }
-
-    // ---- Upsert subscription row ----
-    try {
-      await upsertSponsoredSubscription({
-        business_id,
-        area_id,
-        category_id,
-        slot: Number(slot || 1),
-        stripe_customer_id: String(customerId),
-        stripe_subscription_id: String(subscriptionId),
-        price_monthly_pennies: priceMonthlyPennies,
+      // Upsert
+      await upsertSubscription({
+        business_id: meta.business_id,
+        area_id: meta.area_id,
+        category_id: meta.category_id,
+        slot: meta.slot || 1,
+        stripe_customer_id: String(custId),
+        stripe_subscription_id: String(subId),
+        status: safeLower(sub?.status || "active"),
+        price_monthly_pennies: pricePennies,
         currency,
-        status: status || "active",
         current_period_end: currentPeriodEndIso,
+        lock_id: meta.lock_id,
       });
 
-      // Release lock after successful write
-      await releaseLockSafe(lock_id);
+      return json({ ok: true });
+    }
 
-      return json(200, {
-        ok: true,
-        type,
-        business_id,
-        area_id,
-        category_id,
-        slot,
-        stripe_subscription_id: subscriptionId,
-      });
-    } catch (e) {
-      // ✅ OVERLAP GRACE: if DB blocks overlap, do not hard-fail webhook
-      if (isOverlapError(e)) {
-        console.warn("[webhook] overlap prevented DB write; lock will be released.", {
-          business_id,
-          area_id,
-          category_id,
-          slot,
-          stripe_subscription_id: subscriptionId,
+    // ---- customer.subscription.created/updated/deleted ----
+    if (
+      t === "customer.subscription.created" ||
+      t === "customer.subscription.updated" ||
+      t === "customer.subscription.deleted"
+    ) {
+      console.log(`[webhook] ${t} id=${event.id}`);
+
+      const sub = obj;
+      const meta = extractMeta(sub);
+
+      const subId = sub?.id || null;
+      const custId = sub?.customer || null;
+
+      if (!meta.business_id || !meta.area_id || !meta.category_id || !subId || !custId) {
+        await releaseLockSafe(meta.lock_id);
+        return json({
+          ok: true,
+          skipped: true,
+          reason: "missing_metadata",
+          got: { ...meta, subId, custId },
         });
-        await releaseLockSafe(lock_id);
-        return json(200, { ok: true, overlap: true });
       }
 
-      console.error("[stripe-webhook] DB upsert failed:", e);
-      await releaseLockSafe(lock_id);
-      return json(500, { ok: false, error: "DB write failed" });
+      const currentPeriodEndIso = sub?.current_period_end
+        ? new Date(sub.current_period_end * 1000).toISOString()
+        : null;
+
+      const status = safeLower(sub?.status || "active");
+
+      // price: grab from items[0].price.unit_amount if expanded (may not be)
+      let pricePennies = null;
+      try {
+        pricePennies =
+          sub?.items?.data?.[0]?.price?.unit_amount ?? null;
+      } catch {}
+
+      await upsertSubscription({
+        business_id: meta.business_id,
+        area_id: meta.area_id,
+        category_id: meta.category_id,
+        slot: meta.slot || 1,
+        stripe_customer_id: String(custId),
+        stripe_subscription_id: String(subId),
+        status,
+        price_monthly_pennies: pricePennies,
+        currency: (sub?.currency || "gbp"),
+        current_period_end: currentPeriodEndIso,
+        lock_id: meta.lock_id,
+      });
+
+      return json({ ok: true });
     }
-  } catch (err) {
-    console.error("[stripe-webhook] handler error:", err);
-    // never leave locks hanging if we can help it
-    try {
-      const meta = stripeEvent?.data?.object?.metadata || {};
-      const { lock_id } = readSponsorshipMeta(meta);
-      await releaseLockSafe(lock_id);
-    } catch {}
-    return json(500, { ok: false, error: err?.message || "Webhook failed" });
+
+    // ---- invoice.paid / invoice.finalized etc ----
+    // You can keep your invoicing/email logic here; we just ACK by default.
+    if (t.startsWith("invoice.")) {
+      return json({ ok: true });
+    }
+
+    // default: acknowledge
+    return json({ ok: true });
+  } catch (e) {
+    console.error("[stripe-webhook] handler error:", e);
+    return json({ ok: false, error: e?.message || "Webhook error" }, 500);
   }
 };
