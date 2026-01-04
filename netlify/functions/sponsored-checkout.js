@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-03-SILENT-NO-REMAINING");
+console.log("LOADED sponsored-checkout v2026-01-04-INDUSTRY-REMAINING-PARTIAL");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -26,7 +26,7 @@ const json = (body, status = 200) =>
     headers: corsHeaders,
   });
 
-// statuses that block purchase
+// statuses that block purchase / count as "owned"
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -61,9 +61,8 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // optional but recommended if you have categories
-  const categoryId =
-    String(body.categoryId || body.category_id || "").trim() || null;
+  // ✅ REQUIRED: industry scope
+  const categoryId = String(body.categoryId || body.category_id || "").trim();
 
   // optional lock id if you are using sponsored_locks
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
@@ -73,65 +72,49 @@ export default async (req) => {
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
+  if (!categoryId)
+    return json({ ok: false, error: "Missing categoryId (industry)" }, 400);
+
   if (![1].includes(slot))
     return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) Is slot taken? (use MOST RECENT blocking row)
-    const { data: rows, error: takenErr } = await sb
+    // 1) ✅ If YOU already sponsor this SAME service area in this SAME industry+slot,
+    // don’t create another subscription (Manage should be used instead).
+    const { data: myRows, error: myErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id, status, stripe_subscription_id, created_at")
+      .select("stripe_subscription_id, status, created_at")
       .eq("area_id", areaId)
+      .eq("category_id", categoryId)
       .eq("slot", slot)
+      .eq("business_id", cleanerId)
       .order("created_at", { ascending: false });
 
-    if (takenErr) throw takenErr;
+    if (myErr) throw myErr;
 
-    const blockingRows = (rows || []).filter((r) =>
+    const myBlocking = (myRows || []).find((r) =>
       BLOCKING.has(String(r.status || "").toLowerCase())
     );
 
-    const latestBlocking = blockingRows[0] || null;
-    const ownerBusinessId = latestBlocking?.business_id
-      ? String(latestBlocking.business_id)
-      : null;
-
-    const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
-    const ownedByOther =
-      ownerBusinessId && ownerBusinessId !== String(cleanerId);
-
-    // ✅ If already sponsored by someone else, block purchase
-    if (ownedByOther) {
-      return json(
-        {
-          ok: false,
-          code: "slot_taken",
-          message: "This area is already sponsored for this slot.",
-          owner_business_id: ownerBusinessId,
-        },
-        409
-      );
-    }
-
-    // ✅ If already sponsored by YOU, do NOT create another subscription
-    if (ownedByMe && !allowTopUp) {
+    if (myBlocking && !allowTopUp) {
       return json(
         {
           ok: false,
           code: "already_sponsored",
           message:
-            "You already sponsor this area. Use Manage Billing to view your subscription, or edit your area if you meant to expand it.",
-          stripe_subscription_id: latestBlocking?.stripe_subscription_id || null,
+            "You already sponsor this area for this industry. Use Manage to view billing / cancel.",
+          stripe_subscription_id: myBlocking.stripe_subscription_id || null,
         },
         409
       );
     }
 
-    // 2) Remaining area preview
+    // 2) ✅ Remaining area preview (industry-specific)
     const { data: previewRow, error: prevErr } = await sb.rpc(
       "area_remaining_preview",
       {
         p_area_id: areaId,
+        p_category_id: categoryId,
         p_slot: slot,
       }
     );
@@ -149,9 +132,8 @@ export default async (req) => {
     if (!Number.isFinite(available_km2)) available_km2 = 0;
     available_km2 = Math.max(0, available_km2);
 
-    // ✅ IMPORTANT CHANGE:
-    // Don't return a user-facing message here (prevents UI tooltip/toast text)
-    if (available_km2 <= EPS) {
+    // ✅ If there is NO remaining purchasable sub-region, block
+    if (available_km2 <= EPS || row.sold_out === true || row.reason === "no_remaining") {
       return json(
         {
           ok: false,
@@ -223,7 +205,7 @@ export default async (req) => {
       business_id: cleaner.id, // back-compat
       area_id: areaId,
       slot: String(slot),
-      category_id: categoryId || "",
+      category_id: categoryId,
       lock_id: lockId || "",
     };
 
