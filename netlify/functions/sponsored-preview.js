@@ -1,27 +1,22 @@
 // netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED sponsored-preview v2026-01-04-INDUSTRY");
+console.log("LOADED sponsored-preview v2026-01-04-USE-SPONSORED_GEOM");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE
 );
 
-const corsHeaders = {
-  "content-type": "application/json",
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "POST,OPTIONS",
-  "access-control-allow-headers": "content-type",
-};
-
 const json = (status, body) =>
-  new Response(JSON.stringify(body), { status, headers: corsHeaders });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 
 const EPS = 1e-6;
 
 export default async (req) => {
-  if (req.method === "OPTIONS") return json(200, { ok: true });
   if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
 
   let body;
@@ -35,12 +30,8 @@ export default async (req) => {
   const categoryId = String(body.categoryId || body.category_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  if (!areaId || !categoryId) {
-    return json(400, { ok: false, error: "Missing areaId or categoryId" });
-  }
-  if (!Number.isFinite(slot) || slot < 1) {
-    return json(400, { ok: false, error: "Invalid slot" });
-  }
+  if (!areaId || !categoryId) return json(400, { ok: false, error: "Missing areaId or categoryId" });
+  if (!Number.isFinite(slot) || slot < 1) return json(400, { ok: false, error: "Invalid slot" });
 
   try {
     const { data, error } = await sb.rpc("area_remaining_preview", {
@@ -48,6 +39,7 @@ export default async (req) => {
       p_category_id: categoryId,
       p_slot: slot,
     });
+
     if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;
