@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-04-INDUSTRY-REMAINING-PARTIAL");
+console.log("LOADED sponsored-checkout v2026-01-04-INDUSTRY+REMAINING");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -26,25 +26,11 @@ const json = (body, status = 200) =>
     headers: corsHeaders,
   });
 
-// statuses that block purchase / count as "owned"
-const BLOCKING = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "paused",
-]);
-
 const EPS = 1e-6;
 
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
-
-  if (req.method !== "POST") {
-    return json({ ok: false, error: "Method not allowed" }, 405);
-  }
+  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
   let body;
   try {
@@ -53,7 +39,6 @@ export default async (req) => {
     return json({ ok: false, error: "Invalid JSON" }, 400);
   }
 
-  // ✅ Accept both old + new naming
   const cleanerId = String(
     body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
   ).trim();
@@ -61,97 +46,67 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // ✅ REQUIRED: industry scope
-  const categoryId = String(body.categoryId || body.category_id || "").trim();
-
-  // optional lock id if you are using sponsored_locks
+  const categoryId = String(body.categoryId || body.category_id || "").trim() || null;
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
 
-  // OPTIONAL: for future “top-up remaining area” flows
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-  if (!categoryId)
-    return json({ ok: false, error: "Missing categoryId (industry)" }, 400);
-
-  if (![1].includes(slot))
-    return json({ ok: false, error: "Invalid slot" }, 400);
+  if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
+  if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
-    // 1) ✅ If YOU already sponsor this SAME service area in this SAME industry+slot,
-    // don’t create another subscription (Manage should be used instead).
-    const { data: myRows, error: myErr } = await sb
+    // 1) Prevent duplicate subscription for SAME area by SAME business (manage instead)
+    const { data: mineRows, error: mineErr } = await sb
       .from("sponsored_subscriptions")
-      .select("stripe_subscription_id, status, created_at")
+      .select("id, status, stripe_subscription_id, created_at")
       .eq("area_id", areaId)
       .eq("category_id", categoryId)
       .eq("slot", slot)
       .eq("business_id", cleanerId)
       .order("created_at", { ascending: false });
 
-    if (myErr) throw myErr;
+    if (mineErr) throw mineErr;
 
-    const myBlocking = (myRows || []).find((r) =>
-      BLOCKING.has(String(r.status || "").toLowerCase())
+    const latestMine = (mineRows || []).find((r) =>
+      ["active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired", "paused"].includes(
+        String(r.status || "").toLowerCase()
+      )
     );
 
-    if (myBlocking && !allowTopUp) {
+    if (latestMine && !allowTopUp) {
       return json(
         {
           ok: false,
           code: "already_sponsored",
           message:
-            "You already sponsor this area for this industry. Use Manage to view billing / cancel.",
-          stripe_subscription_id: myBlocking.stripe_subscription_id || null,
+            "You already sponsor this service area in this industry. Use Manage to view billing.",
+          stripe_subscription_id: latestMine.stripe_subscription_id || null,
         },
         409
       );
     }
 
-    // 2) ✅ Remaining area preview (industry-specific)
-    const { data: previewRow, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_category_id: categoryId,
-        p_slot: slot,
-      }
-    );
+    // 2) Remaining area preview (THIS is the real “sold out” check)
+    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
+      p_area_id: areaId,
+      p_category_id: categoryId,
+      p_slot: slot,
+    });
 
     if (prevErr) throw prevErr;
 
-    const row = Array.isArray(previewRow)
-      ? previewRow[0] || {}
-      : previewRow || {};
+    const row = Array.isArray(previewData) ? previewData[0] || {} : previewData || {};
+    const available_km2 = Math.max(0, Number(row.available_km2 ?? 0) || 0);
 
-    const rawAvailable =
-      row.available_km2 ?? row.area_km2 ?? row.remaining_km2 ?? 0;
-
-    let available_km2 = Number(rawAvailable);
-    if (!Number.isFinite(available_km2)) available_km2 = 0;
-    available_km2 = Math.max(0, available_km2);
-
-    // ✅ If there is NO remaining purchasable sub-region, block
-    if (available_km2 <= EPS || row.sold_out === true || row.reason === "no_remaining") {
-      return json(
-        {
-          ok: false,
-          code: "no_remaining",
-          silent: true,
-          available_km2: 0,
-        },
-        409
-      );
+    if (!Number.isFinite(available_km2) || available_km2 <= EPS) {
+      return json({ ok: false, code: "no_remaining", silent: true, available_km2: 0 }, 409);
     }
 
     // 3) Price
     const rate_per_km2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
-          process.env.RATE_PER_KM2_PER_MONTH ??
-          0
-      ) || 0;
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
 
     if (!rate_per_km2 || rate_per_km2 <= 0) {
       return json(
@@ -165,12 +120,9 @@ export default async (req) => {
       );
     }
 
-    const amount_cents = Math.max(
-      1,
-      Math.round(available_km2 * rate_per_km2 * 100)
-    );
+    const amount_cents = Math.max(100, Math.round(available_km2 * rate_per_km2 * 100));
 
-    // 4) Get or create Stripe customer (CLEANERS schema)
+    // 4) Stripe customer (cleaners table)
     const { data: cleaner, error: cleanerErr } = await sb
       .from("cleaners")
       .select("id, stripe_customer_id, business_name, contact_email")
@@ -199,21 +151,19 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // ✅ metadata used by webhook to resolve context
+    // ✅ metadata used by webhook to compute remaining geometry and store it
     const meta = {
       cleaner_id: cleaner.id,
-      business_id: cleaner.id, // back-compat
+      business_id: cleaner.id,
       area_id: areaId,
       slot: String(slot),
       category_id: categoryId,
       lock_id: lockId || "",
     };
 
-    // 5) Subscription checkout session
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
-
       metadata: meta,
       subscription_data: { metadata: meta },
 
