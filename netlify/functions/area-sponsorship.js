@@ -1,7 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-04-INDUSTRY-FILTER");
+console.log("LOADED area-sponsorship v2026-01-04-CATEGORY-AWARE-SINGLE-SLOT");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -18,6 +18,7 @@ const corsHeaders = {
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
+// statuses that should block purchase (treated as "taken")
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -28,6 +29,7 @@ const BLOCKING = new Set([
   "paused",
 ]);
 
+// ✅ single slot (Featured)
 const DEFAULT_SLOTS = [1];
 
 export default async (req) => {
@@ -42,38 +44,41 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  const cleaner_id =
-    body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
+  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
 
+  // ✅ REQUIRED for industry-specific sponsorship
   const categoryId = String(body?.categoryId || body?.category_id || "").trim() || null;
 
-  const slots =
-    Array.isArray(body?.slots) && body.slots.length
-      ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-      : DEFAULT_SLOTS;
+  // Allow caller to request specific slots, but default to [1]
+  const slots = Array.isArray(body?.slots) && body.slots.length
+    ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+    : DEFAULT_SLOTS;
 
   if (!areaIds.length) return json({ areas: [] });
 
   try {
+    // Pull all rows for these areas/slots/category
     let q = supabase
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, created_at, category_id")
+      .select("area_id, slot, status, business_id, category_id, created_at, stripe_subscription_id, current_period_end, price_monthly_pennies, currency")
       .in("area_id", areaIds)
       .in("slot", slots);
 
-    // ✅ industry isolate
+    // ✅ category-aware
     if (categoryId) q = q.eq("category_id", categoryId);
 
     const { data: rows, error } = await q;
     if (error) throw error;
 
-    const byAreaSlot = new Map();
+    // Group by area:slot
+    const byAreaSlot = new Map(); // key = `${area}:${slot}` -> array of rows
     for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
       if (!byAreaSlot.has(k)) byAreaSlot.set(k, []);
       byAreaSlot.get(k).push(r);
     }
 
+    // Build response
     const areasOut = [];
     for (const area_id of areaIds) {
       const areaObj = { area_id, slots: [] };
@@ -82,8 +87,10 @@ export default async (req) => {
         const k = `${area_id}:${slot}`;
         const arr = byAreaSlot.get(k) || [];
 
+        // newest first
         arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
+        // prefer most recent BLOCKING row if any
         const blockingRow = arr.find((r) =>
           BLOCKING.has(String(r.status || "").toLowerCase())
         );
@@ -91,12 +98,10 @@ export default async (req) => {
 
         const status = chosen?.status ?? null;
         const owner_business_id = chosen?.business_id ?? null;
-        const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
 
+        const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
         const taken_by_me =
-          Boolean(cleaner_id) &&
-          Boolean(owner_business_id) &&
-          String(owner_business_id) === String(cleaner_id);
+          Boolean(cleaner_id) && Boolean(owner_business_id) && String(owner_business_id) === String(cleaner_id);
 
         areaObj.slots.push({
           slot,
@@ -104,13 +109,18 @@ export default async (req) => {
           taken_by_me,
           status,
           owner_business_id,
+          category_id: chosen?.category_id ?? categoryId ?? null,
+          stripe_subscription_id: chosen?.stripe_subscription_id ?? null,
+          current_period_end: chosen?.current_period_end ?? null,
+          price_monthly_pennies: chosen?.price_monthly_pennies ?? null,
+          currency: chosen?.currency ?? null,
         });
       }
 
       areasOut.push(areaObj);
     }
 
-    return json({ areas: areasOut });
+    return json({ ok: true, areas: areasOut });
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
