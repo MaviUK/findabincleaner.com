@@ -223,19 +223,20 @@ export default async (req) => {
 
       // 3) Upsert DB row
       try {
-        await upsertSponsoredRow({
-          business_id,
-          area_id,
-          category_id,
-          slot,
-          stripe_customer_id: custId,
-          stripe_subscription_id: subId,
-          unit_amount_pennies: unit_amount,
-          currency,
-          status: sub?.status || "active",
-          current_period_end_iso,
-          sponsored_geom_ewkt: rem.ewkt,
-        });
+        await sb.rpc("upsert_sponsored_subscription_from_geojson", {
+  p_business_id: business_id,
+  p_area_id: area_id,
+  p_category_id: category_id,
+  p_slot: slot,
+  p_stripe_customer_id: custId,
+  p_stripe_subscription_id: subId,
+  p_price_monthly_pennies: unit_amount,
+  p_currency: currency,
+  p_status: subscription.status || "active",
+  p_current_period_end: current_period_end_iso,
+  p_sponsored_geojson: rem.geojson, // ✅ direct from DB
+});
+
       } catch (e) {
         console.warn("[webhook] DB upsert failed:", e?.code || "", e?.message || e);
         await cancelStripeSubscription(subId, "db_write_failed_or_overlap_trigger");
@@ -276,19 +277,20 @@ export default async (req) => {
     }
 
     try {
-      await upsertSponsoredRow({
-        business_id,
-        area_id,
-        category_id,
-        slot,
-        stripe_customer_id: custId,
-        stripe_subscription_id: subId,
-        unit_amount_pennies: unit_amount,
-        currency,
-        status: subscription.status || "active",
-        current_period_end_iso,
-        sponsored_geom_ewkt: rem.ewkt,
-      });
+      await sb.rpc("upsert_sponsored_subscription_from_geojson", {
+  p_business_id: business_id,
+  p_area_id: area_id,
+  p_category_id: category_id,
+  p_slot: slot,
+  p_stripe_customer_id: custId,
+  p_stripe_subscription_id: subId,
+  p_price_monthly_pennies: unit_amount,
+  p_currency: currency,
+  p_status: subscription.status || "active",
+  p_current_period_end: current_period_end_iso,
+  p_sponsored_geojson: rem.geojson, // ✅ direct from DB
+});
+
     } catch (e) {
       console.warn("[webhook] DB upsert failed:", e?.code || "", e?.message || e);
       await cancelStripeSubscription(subId, "db_write_failed_or_overlap_trigger");
