@@ -1,7 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-03-CATEGORY-AWARE");
+console.log("LOADED area-sponsorship v2026-01-04-INDUSTRY-FILTER");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -18,7 +18,6 @@ const corsHeaders = {
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
-// statuses that should block purchase (MATCH DB trigger rules)
 const BLOCKING = new Set([
   "active",
   "trialing",
@@ -43,15 +42,15 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
+  const cleaner_id =
+    body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
 
-  // ✅ category aware
-  const categoryId =
-    body?.categoryId || body?.category_id || null;
+  const categoryId = String(body?.categoryId || body?.category_id || "").trim() || null;
 
-  const slots = Array.isArray(body?.slots) && body.slots.length
-    ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-    : DEFAULT_SLOTS;
+  const slots =
+    Array.isArray(body?.slots) && body.slots.length
+      ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+      : DEFAULT_SLOTS;
 
   if (!areaIds.length) return json({ areas: [] });
 
@@ -62,13 +61,12 @@ export default async (req) => {
       .in("area_id", areaIds)
       .in("slot", slots);
 
-    // ✅ critical: industry isolation
+    // ✅ industry isolate
     if (categoryId) q = q.eq("category_id", categoryId);
 
     const { data: rows, error } = await q;
     if (error) throw error;
 
-    // Group by area:slot
     const byAreaSlot = new Map();
     for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
@@ -84,10 +82,8 @@ export default async (req) => {
         const k = `${area_id}:${slot}`;
         const arr = byAreaSlot.get(k) || [];
 
-        // newest first
         arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-        // prefer most recent BLOCKING row if any
         const blockingRow = arr.find((r) =>
           BLOCKING.has(String(r.status || "").toLowerCase())
         );
@@ -95,8 +91,8 @@ export default async (req) => {
 
         const status = chosen?.status ?? null;
         const owner_business_id = chosen?.business_id ?? null;
-
         const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
+
         const taken_by_me =
           Boolean(cleaner_id) &&
           Boolean(owner_business_id) &&
@@ -108,7 +104,6 @@ export default async (req) => {
           taken_by_me,
           status,
           owner_business_id,
-          category_id: chosen?.category_id ?? null,
         });
       }
 
