@@ -1,7 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-04-CATEGORY-AWARE-SINGLE-SLOT");
+console.log("LOADED area-sponsorship v2025-12-30-SINGLE-SLOT");
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -16,7 +16,10 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: corsHeaders });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: corsHeaders,
+  });
 
 // statuses that should block purchase (treated as "taken")
 const BLOCKING = new Set([
@@ -29,7 +32,7 @@ const BLOCKING = new Set([
   "paused",
 ]);
 
-// ✅ single slot (Featured)
+// ✅ default to SINGLE SLOT (Featured)
 const DEFAULT_SLOTS = [1];
 
 export default async (req) => {
@@ -44,10 +47,7 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
-
-  // ✅ REQUIRED for industry-specific sponsorship
-  const categoryId = String(body?.categoryId || body?.category_id || "").trim() || null;
+  const cleaner_id = body?.cleaner_id || body?.business_id || body?.cleanerId || null;
 
   // Allow caller to request specific slots, but default to [1]
   const slots = Array.isArray(body?.slots) && body.slots.length
@@ -57,17 +57,13 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull all rows for these areas/slots/category
-    let q = supabase
+    // Pull all rows for these areas/slots
+    const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, category_id, created_at, stripe_subscription_id, current_period_end, price_monthly_pennies, currency")
+      .select("area_id, slot, status, business_id, created_at")
       .in("area_id", areaIds)
       .in("slot", slots);
 
-    // ✅ category-aware
-    if (categoryId) q = q.eq("category_id", categoryId);
-
-    const { data: rows, error } = await q;
     if (error) throw error;
 
     // Group by area:slot
@@ -109,18 +105,13 @@ export default async (req) => {
           taken_by_me,
           status,
           owner_business_id,
-          category_id: chosen?.category_id ?? categoryId ?? null,
-          stripe_subscription_id: chosen?.stripe_subscription_id ?? null,
-          current_period_end: chosen?.current_period_end ?? null,
-          price_monthly_pennies: chosen?.price_monthly_pennies ?? null,
-          currency: chosen?.currency ?? null,
         });
       }
 
       areasOut.push(areaObj);
     }
 
-    return json({ ok: true, areas: areasOut });
+    return json({ areas: areasOut });
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);

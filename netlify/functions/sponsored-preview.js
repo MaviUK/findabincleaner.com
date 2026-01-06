@@ -1,7 +1,4 @@
-// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
-
-console.log("LOADED sponsored-preview v2026-01-04-USE-SPONSORED_GEOM");
 
 const sb = createClient(
   process.env.SUPABASE_URL,
@@ -17,7 +14,9 @@ const json = (status, body) =>
 const EPS = 1e-6;
 
 export default async (req) => {
-  if (req.method !== "POST") return json(405, { ok: false, error: "Method not allowed" });
+  if (req.method !== "POST") {
+    return json(405, { ok: false, error: "Method not allowed" });
+  }
 
   let body;
   try {
@@ -30,8 +29,12 @@ export default async (req) => {
   const categoryId = String(body.categoryId || body.category_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  if (!areaId || !categoryId) return json(400, { ok: false, error: "Missing areaId or categoryId" });
-  if (!Number.isFinite(slot) || slot < 1) return json(400, { ok: false, error: "Invalid slot" });
+  if (!areaId || !categoryId) {
+    return json(400, { ok: false, error: "Missing areaId or categoryId" });
+  }
+  if (!Number.isFinite(slot) || slot < 1) {
+    return json(400, { ok: false, error: "Invalid slot" });
+  }
 
   try {
     const { data, error } = await sb.rpc("area_remaining_preview", {
@@ -39,7 +42,6 @@ export default async (req) => {
       p_category_id: categoryId,
       p_slot: slot,
     });
-
     if (error) throw error;
 
     const row = Array.isArray(data) ? data[0] : data;
@@ -47,7 +49,6 @@ export default async (req) => {
 
     const totalKm2 = Number(row.total_km2 ?? 0) || 0;
     const availableKm2 = Number(row.available_km2 ?? 0) || 0;
-
     const soldOut =
       Boolean(row.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
 

@@ -3,7 +3,10 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -22,6 +25,7 @@ export default async (req) => {
     const { checkout_session } = await req.json();
     if (!checkout_session) return json({ ok: false, error: "checkout_session required" }, 400);
 
+    // Expand so we can pull subscription/customer + line item price reliably
     const session = await stripe.checkout.sessions.retrieve(checkout_session, {
       expand: ["subscription", "customer", "line_items.data.price"],
     });
@@ -41,72 +45,62 @@ export default async (req) => {
         ? session.customer
         : session.customer?.id || null;
 
+    // ✅ metadata (MATCHES sponsored-checkout)
     const meta = session.metadata || {};
     const business_id =
       meta.business_id || meta.cleaner_id || meta.cleanerId || meta.businessId || null;
     const area_id = meta.area_id || meta.areaId || null;
     const category_id = meta.category_id || meta.categoryId || null;
     const slot = Number(meta.slot || 1);
-    const lock_id = meta.lock_id || null;
 
     if (!business_id || !area_id || !category_id || !subId || !custId) {
       return json(
         {
           ok: false,
           error: "Missing required metadata/customer/subscription",
-          got: { business_id, area_id, category_id, slot, subId, custId, lock_id },
+          got: { business_id, area_id, category_id, slot, subId, custId },
         },
         400
       );
     }
 
-    const unitAmount = session.line_items?.data?.[0]?.price?.unit_amount ?? null;
+    // ✅ price from line item (most reliable)
+    const unitAmount =
+      session.line_items?.data?.[0]?.price?.unit_amount ??
+      null;
 
+    // ✅ current_period_end from subscription (also reliable)
     const currentPeriodEndIso =
       subObj?.current_period_end
         ? new Date(subObj.current_period_end * 1000).toISOString()
         : null;
 
-    // ✅ get geojson from lock (best source of "final clipped" geometry)
-    let final_geojson = null;
-    if (lock_id) {
-      const { data: lockRow } = await supabase
-        .from("sponsored_locks")
-        .select("final_geojson")
-        .eq("id", lock_id)
-        .maybeSingle();
+    await supabase
+      .from("sponsored_subscriptions")
+      .upsert(
+        {
+          business_id,
+          area_id,
+          category_id,
+          slot,
+          stripe_customer_id: custId,
+          stripe_subscription_id: subId,
+          price_monthly_pennies: unitAmount, // pennies
+          currency: (session.currency || "gbp")?.toLowerCase(),
+          status: "active",
+          current_period_end: currentPeriodEndIso,
+        },
+        { onConflict: "stripe_subscription_id" }
+      );
 
-      final_geojson = lockRow?.final_geojson ?? null;
-    }
-
-    // ✅ write using RPC that guarantees geometry
-    const { data: upsertedId, error: upErr } = await supabase.rpc(
-      "upsert_sponsored_subscription_with_geom",
-      {
-        p_business_id: business_id,
-        p_area_id: area_id,
-        p_category_id: category_id,
-        p_slot: slot,
-        p_stripe_customer_id: custId,
-        p_stripe_subscription_id: subId,
-        p_price_monthly_pennies: unitAmount ?? 0,
-        p_currency: (session.currency || "gbp")?.toLowerCase(),
-        p_status: "active",
-        p_current_period_end: currentPeriodEndIso,
-        p_final_geojson: final_geojson,
-      }
-    );
-
-    if (upErr) throw upErr;
-
-    // ✅ release lock immediately
-    if (lock_id) {
-      await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lock_id);
+    // ✅ release lock immediately if present (so you don't see "being purchased")
+    const lockId = meta.lock_id || null;
+    if (lockId) {
+      await supabase.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
     }
 
     return json({
       ok: true,
-      id: upsertedId,
       business_id,
       area_id,
       category_id,

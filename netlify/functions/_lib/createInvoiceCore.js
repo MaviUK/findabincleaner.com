@@ -2,7 +2,7 @@
 console.log("LOADED createInvoiceCore v2025-12-29-INVOICE-UPsert-INDUSTRY-PDF");
 
 const Stripe = require("stripe");
-const { createClient } = require("@supabase/supabase-js");
+const { getSupabaseAdmin } = require("./supabase");
 const { Resend } = require("resend");
 const { PDFDocument, StandardFonts } = require("pdf-lib");
 
@@ -11,7 +11,7 @@ const fetchFn = global.fetch;
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE);
+const supabase = () => getSupabaseAdmin();
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ---------------- helpers ---------------- */
@@ -145,7 +145,7 @@ async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvo
   const path = `${prefix}/${businessId}/${fileName}`;
 
   try {
-    const { error: upErr } = await supabase.storage
+    const { error: upErr } = await supabase().storage
       .from(bucket)
       .upload(path, pdfBuffer, { contentType: "application/pdf", upsert: true });
 
@@ -164,7 +164,7 @@ async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvo
 async function signInvoicePdfUrl({ bucket, path }) {
   try {
     const expiresIn = Number(process.env.INVOICE_SIGNED_URL_SECONDS || 60 * 60 * 24 * 30); // 30 days
-    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(path, expiresIn);
+    const { data, error } = await supabase().storage.from(bucket).createSignedUrl(path, expiresIn);
     if (error) return { ok: false, error };
     return { ok: true, signedUrl: data?.signedUrl || null };
   } catch (e) {
@@ -507,7 +507,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   };
 
   if (!existing?.id) {
-    const { error } = await supabase.from("invoices").insert(invoiceRow);
+    const { error } = await supabase().from("invoices").insert(invoiceRow);
     if (error) throw error;
   } else {
     const { error } = await supabase
