@@ -1,5 +1,5 @@
 // netlify/functions/_lib/createInvoiceCore.js
-console.log("LOADED createInvoiceCore v2025-12-29-INVOICE-UPsert-INDUSTRY-PDF");
+console.log("LOADED createInvoiceCore v2026-01-06-FIX-SUPABASE-CALLS");
 
 const Stripe = require("stripe");
 const { getSupabaseAdmin } = require("./supabase");
@@ -9,10 +9,22 @@ const { PDFDocument, StandardFonts } = require("pdf-lib");
 // Node 18+ has global fetch
 const fetchFn = global.fetch;
 
+if (!process.env.STRIPE_SECRET_KEY) {
+  console.warn("[invoiceCore] Missing STRIPE_SECRET_KEY env var");
+}
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
 
+// ✅ IMPORTANT: supabase is a FUNCTION returning the client
 const supabase = () => getSupabaseAdmin();
-const resend = new Resend(process.env.RESEND_API_KEY);
+
+// ✅ Create Resend lazily so missing key doesn't crash import-time
+const resendClient = () => {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error("Missing RESEND_API_KEY env var");
+  }
+  return new Resend(process.env.RESEND_API_KEY);
+};
 
 /* ---------------- helpers ---------------- */
 
@@ -77,7 +89,7 @@ async function getIndustryName(categoryId) {
 
   // categories
   try {
-    const { data: cat } = await supabase
+    const { data: cat } = await supabase()
       .from("categories")
       .select("name")
       .eq("id", categoryId)
@@ -87,7 +99,7 @@ async function getIndustryName(categoryId) {
 
   // service_categories
   try {
-    const { data: cat2 } = await supabase
+    const { data: cat2 } = await supabase()
       .from("service_categories")
       .select("name")
       .eq("id", categoryId)
@@ -145,8 +157,8 @@ async function uploadInvoicePdfToStorage({ invoiceNumber, businessId, stripeInvo
   const path = `${prefix}/${businessId}/${fileName}`;
 
   try {
-    const { error: upErr } = await supabase().storage
-      .from(bucket)
+    const { error: upErr } = await supabase()
+      .storage.from(bucket)
       .upload(path, pdfBuffer, { contentType: "application/pdf", upsert: true });
 
     if (upErr) {
@@ -377,7 +389,8 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-  const { data: existing } = await supabase
+  // ✅ FIX: supabase() everywhere
+  const { data: existing } = await supabase()
     .from("invoices")
     .select("id, invoice_number, emailed_at")
     .eq("stripe_invoice_id", stripe_invoice_id)
@@ -390,7 +403,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   if (!subscriptionId) return "no-subscription";
 
-  const { data: subRow } = await supabase
+  const { data: subRow } = await supabase()
     .from("sponsored_subscriptions")
     .select("business_id, area_id, category_id, slot, stripe_subscription_id")
     .eq("stripe_subscription_id", subscriptionId)
@@ -398,7 +411,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   if (!subRow?.business_id) return "no-business-id";
 
-  const { data: cleaner } = await supabase
+  const { data: cleaner } = await supabase()
     .from("cleaners")
     .select("business_name, contact_email, address")
     .eq("id", subRow.business_id)
@@ -410,7 +423,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   // Area name
   let areaName = "Area";
   if (subRow.area_id) {
-    const { data: area } = await supabase
+    const { data: area } = await supabase()
       .from("service_areas")
       .select("name")
       .eq("id", subRow.area_id)
@@ -418,10 +431,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     if (area?.name) areaName = area.name;
   }
 
-  // ✅ Category/Industry fallback chain:
-  // 1) sponsored_subscriptions.category_id
-  // 2) Stripe invoice metadata
-  // 3) Stripe subscription metadata
+  // Category/Industry fallback chain
   const invMeta = inv.metadata || {};
   const metaCategoryId =
     invMeta.category_id ||
@@ -434,7 +444,8 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   try {
     const subLive = await stripe.subscriptions.retrieve(subscriptionId);
     const sm = subLive?.metadata || {};
-    subMetaCategoryId = sm.category_id || sm.categoryId || sm.service_category_id || sm.serviceCategoryId || null;
+    subMetaCategoryId =
+      sm.category_id || sm.categoryId || sm.service_category_id || sm.serviceCategoryId || null;
   } catch (_) {}
 
   const categoryId = subRow.category_id || metaCategoryId || subMetaCategoryId || null;
@@ -450,10 +461,11 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   const areaCoveredKm2 = ratePerKm2Cents > 0 ? lineAmountCents / ratePerKm2Cents : 0;
 
   const vatCents = Number(inv.tax ?? 0);
-  const totalCents = Number(inv.total ?? (lineAmountCents + vatCents));
+  const totalCents = Number(inv.total ?? lineAmountCents + vatCents);
 
   const invoiceNumber =
-    existing?.invoice_number || `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
+    existing?.invoice_number ||
+    `INV-${new Date().getUTCFullYear()}-${String(Date.now()).slice(-6)}`;
 
   const supplier = supplierDetails();
 
@@ -481,7 +493,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     totalCents,
   });
 
-  // ✅ Upsert invoice record (always stored)
+  // Upsert invoice record
   const invoiceRow = {
     cleaner_id: subRow.business_id,
     area_id: subRow.area_id,
@@ -510,14 +522,14 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     const { error } = await supabase().from("invoices").insert(invoiceRow);
     if (error) throw error;
   } else {
-    const { error } = await supabase
+    const { error } = await supabase()
       .from("invoices")
       .update(invoiceRow)
       .eq("stripe_invoice_id", inv.id);
     if (error) throw error;
   }
 
-  // ✅ Store PDF + signed URL (your invoices table already has pdf_storage_path + pdf_signed_url)
+  // Store PDF + signed URL
   const storePdf = String(process.env.STORE_INVOICE_PDF || "true").toLowerCase() !== "false";
   if (storePdf) {
     const storageInfo = await uploadInvoicePdfToStorage({
@@ -530,7 +542,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     if (storageInfo?.ok) {
       const signed = await signInvoicePdfUrl({ bucket: storageInfo.bucket, path: storageInfo.path });
 
-      await supabase
+      await supabase()
         .from("invoices")
         .update({
           pdf_storage_path: storageInfo.path,
@@ -545,7 +557,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   const emailLine = `${industryName} - ${areaName}`;
 
-  const sendResp = await resend.emails.send({
+  const sendResp = await resendClient().emails.send({
     from: supplier.fromEmail,
     to: customerEmail,
     subject: `Invoice ${invoiceNumber}`,
@@ -568,7 +580,7 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     return `email-error:${sendResp.error.message || "unknown"}`;
   }
 
-  await supabase
+  await supabase()
     .from("invoices")
     .update({ emailed_at: new Date().toISOString() })
     .eq("stripe_invoice_id", inv.id);
