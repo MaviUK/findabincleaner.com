@@ -2,25 +2,20 @@ import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
-const sb = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
 
-export default async function handler(req) {
-  const sig = req.headers["stripe-signature"];
-  const body = await readRawBody(req);
+function getSupabase() {
+  const url = process.env.SUPABASE_URL;
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY || // your current name
+    process.env.SUPABASE_SERVICE_ROLE;       // common alternative
 
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET
-    );
-  } catch (err) {
-    return json({ error: err.message }, 400);
+  if (!url || !key) {
+    throw new Error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY (service role) in Netlify env.");
   }
+
+  return createClient(url, key);
+}
+
 
   const type = event.type;
   const obj = event.data.object;
