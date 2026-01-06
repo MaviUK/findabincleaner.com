@@ -1,12 +1,16 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-01-PAYFAIL-NOTIFY-PAID-ONLY");
+console.log("LOADED stripe-webhook v2026-01-06-SPONSOR-REMAINING-GEOM-FIX");
 
 const Stripe = require("stripe");
 const { getSupabaseAdmin } = require("./_lib/supabase");
 
-const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
+const {
+  createInvoiceAndEmailByStripeInvoiceId,
+} = require("./_lib/createInvoiceCore");
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
+  apiVersion: "2024-06-20",
+});
 
 // IMPORTANT: Use lazy client creation to avoid import-time crashes when env vars are missing.
 const supabase = () => getSupabaseAdmin();
@@ -31,12 +35,16 @@ async function sendPaymentFailedEmail(inv) {
   try {
     const { RESEND_API_KEY, BILLING_FROM } = process.env;
     if (!RESEND_API_KEY || !BILLING_FROM) {
-      console.warn("[webhook] missing RESEND_API_KEY or BILLING_FROM; skipping failed-payment email");
+      console.warn(
+        "[webhook] missing RESEND_API_KEY or BILLING_FROM; skipping failed-payment email"
+      );
       return;
     }
 
     const subId =
-      typeof inv.subscription === "string" ? inv.subscription : inv.subscription?.id ?? null;
+      typeof inv.subscription === "string"
+        ? inv.subscription
+        : inv.subscription?.id ?? null;
 
     // Try to resolve businessId from subscription metadata
     let businessId = null;
@@ -158,12 +166,52 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
   }
 }
 
+// ----------------------------
+// Sponsorship geometry rules
+// ----------------------------
+const HOLDING_STATUSES = new Set(["active", "trialing", "past_due"]);
+const NON_HOLDING_STATUSES = new Set([
+  "incomplete",
+  "incomplete_expired",
+  "unpaid",
+  "paused",
+  "canceled",
+  "cancelled",
+]);
+
+const EPS = 1e-6;
+
+async function fetchRemainingGeomEWKT({ area_id, category_id, slot }) {
+  // MUST use the INTERNAL function that returns remaining geometry + ewkt
+  const { data, error } = await supabase().rpc("area_remaining_preview_internal", {
+    p_area_id: area_id,
+    p_category_id: category_id,
+    p_slot: Number(slot),
+  });
+
+  if (error) throw error;
+
+  const row = Array.isArray(data) ? data[0] : data;
+  if (!row) return { sold_out: true, available_km2: 0, ewkt: null, reason: "area_not_found" };
+
+  const available_km2 = Number(row.available_km2 ?? 0) || 0;
+  const sold_out =
+    Boolean(row.sold_out) || !Number.isFinite(available_km2) || available_km2 <= EPS;
+
+  return {
+    sold_out,
+    available_km2: Math.max(0, available_km2),
+    ewkt: row.ewkt || null,
+    reason: row.reason || (sold_out ? "no_remaining" : "ok"),
+  };
+}
+
 /**
- * ✅ Works even if there is NO usable unique constraint for ON CONFLICT.
- * Strategy:
- * 1) Try UPDATE the row for (business_id, area_id, slot)
- * 2) If nothing updated, INSERT a new row
- * 3) If INSERT fails due to uniqueness, treat as owned-by-other and cancel
+ * ✅ KEY FIXES IN THIS VERSION:
+ * - When status is ACTIVE/TRIALING/PAST_DUE -> we MUST set sponsored_geom to REMAINING geom EWKT.
+ * - When status is NOT holding -> we MUST set sponsored_geom = null (release area).
+ * - If remaining is sold out -> cancel subscription + do not hold area.
+ * - Cancel on DB overlap errors (P0001 overlap trigger), not only 23505.
  */
 async function upsertSubscription(sub, meta = {}) {
   const customerId = typeof sub.customer === "string" ? sub.customer : sub.customer?.id ?? null;
@@ -187,8 +235,68 @@ async function upsertSubscription(sub, meta = {}) {
     return;
   }
 
+  if (!category_id) {
+    console.error("[webhook] missing category_id in metadata — cannot compute remaining geom", {
+      sub_id: sub.id,
+      business_id,
+      area_id,
+      slot,
+      meta,
+    });
+    await releaseLockSafe(lock_id);
+    return;
+  }
+
   const firstItem = sub.items?.data?.[0];
   const price = firstItem?.price;
+
+  const status = String(sub.status || "").toLowerCase();
+
+  // Determine what sponsored_geom should be for this status
+  let sponsored_geom_ewkt = null;
+
+  if (HOLDING_STATUSES.has(status)) {
+    const rem = await fetchRemainingGeomEWKT({ area_id, category_id, slot });
+
+    // Sold out or no ewkt -> cancel subscription and do not hold geom
+    if (rem.sold_out || !rem.ewkt) {
+      console.warn("[webhook] no remaining area at activation; canceling", {
+        sub_id: sub.id,
+        business_id,
+        area_id,
+        slot,
+        category_id,
+        available_km2: rem.available_km2,
+        reason: rem.reason,
+      });
+
+      await cancelStripeSubscriptionSafe(sub.id, "no_remaining");
+
+      // also release any lock
+      await releaseLockSafe(lock_id);
+
+      // best-effort: if a row already exists, clear sponsored_geom
+      try {
+        await supabase()
+          .from("sponsored_subscriptions")
+          .update({
+            status: "canceled",
+            sponsored_geom: null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("stripe_subscription_id", sub.id);
+      } catch (_) {}
+
+      return;
+    }
+
+    sponsored_geom_ewkt = rem.ewkt;
+  } else if (NON_HOLDING_STATUSES.has(status)) {
+    sponsored_geom_ewkt = null;
+  } else {
+    // Unknown status -> be safe: do not hold area
+    sponsored_geom_ewkt = null;
+  }
 
   const payload = {
     business_id,
@@ -199,14 +307,17 @@ async function upsertSubscription(sub, meta = {}) {
     stripe_subscription_id: sub.id,
     price_monthly_pennies: price?.unit_amount ?? null,
     currency: (price?.currency || sub.currency || "gbp")?.toLowerCase(),
-    status: sub.status,
+    status,
     current_period_end: sub.current_period_end
       ? new Date(sub.current_period_end * 1000).toISOString()
       : null,
+    // 🔥 THE IMPORTANT FIELD:
+    // - if holding -> EWKT of REMAINING
+    // - else -> null (release)
+    sponsored_geom: sponsored_geom_ewkt,
   };
 
   // 0) Idempotency: if we already have this Stripe subscription id, just update and exit.
-  // This prevents duplicate webhook deliveries from causing inserts/uniques (and accidental cancels).
   {
     const { data: existing, error: exErr } = await supabase()
       .from("sponsored_subscriptions")
@@ -226,13 +337,14 @@ async function upsertSubscription(sub, meta = {}) {
           price_monthly_pennies: payload.price_monthly_pennies,
           currency: payload.currency,
           category_id: payload.category_id,
+          sponsored_geom: payload.sponsored_geom, // ✅ ensure correct geom on updates
           updated_at: new Date().toISOString(),
         })
         .eq("id", existing.id);
 
       if (updByStripeErr) {
         console.error("[webhook] update-by-stripe_subscription_id failed", updByStripeErr);
-        // fall through to normal flow
+        // fall through
       } else {
         await releaseLockSafe(lock_id);
         return;
@@ -240,7 +352,7 @@ async function upsertSubscription(sub, meta = {}) {
     }
   }
 
-  // 1) UPDATE first
+  // 1) UPDATE first (by business+area+slot)
   const { data: updatedRows, error: updErr } = await supabase()
     .from("sponsored_subscriptions")
     .update({
@@ -251,6 +363,7 @@ async function upsertSubscription(sub, meta = {}) {
       status: payload.status,
       current_period_end: payload.current_period_end,
       category_id: payload.category_id,
+      sponsored_geom: payload.sponsored_geom, // ✅ critical
       updated_at: new Date().toISOString(),
     })
     .eq("business_id", business_id)
@@ -267,7 +380,7 @@ async function upsertSubscription(sub, meta = {}) {
       area_id,
       slot,
       sub_id: sub.id,
-      status: sub.status,
+      status: payload.status,
     });
     await releaseLockSafe(lock_id);
     return;
@@ -286,7 +399,7 @@ async function upsertSubscription(sub, meta = {}) {
       area_id,
       slot,
       sub_id: sub.id,
-      status: sub.status,
+      status: payload.status,
     });
     await releaseLockSafe(lock_id);
     return;
@@ -294,14 +407,18 @@ async function upsertSubscription(sub, meta = {}) {
 
   console.error("[webhook] insert sponsored_subscriptions error:", insErr, payload);
 
-  // 3) If insert fails due to uniqueness/overlap, cancel subscription
+  // 3) If insert fails due to overlap trigger, cancel subscription
   const msg = String(insErr?.message || "").toLowerCase();
-  const code = String(insErr?.code || "").toLowerCase();
+  const code = String(insErr?.code || "").toUpperCase();
 
-  // Only cancel for *real* overlap conflicts.
-  // Do NOT cancel on generic uniqueness/duplicate errors (common with retries).
-  const isOverlap = msg.includes("overlaps:") || msg.includes("sponsorship exceeds available");
-  if (code === "23505" && isOverlap) {
+  const looksLikeOverlap =
+    msg.includes("area overlaps") ||
+    msg.includes("overlaps an existing") ||
+    msg.includes("overlaps:") ||
+    msg.includes("sponsorship exceeds available");
+
+  // Supabase RAISE EXCEPTION in trigger typically shows as P0001 (not 23505)
+  if (looksLikeOverlap && (code === "P0001" || code === "23505")) {
     await cancelStripeSubscriptionSafe(sub.id, "Overlap violation");
     await releaseLockSafe(lock_id);
     return;
@@ -351,7 +468,7 @@ async function upsertInvoice(inv) {
     }
   }
 
-  // 3) ✅ Fallback: use metadata identity (business_id + area_id + slot)
+  // 3) Fallback: use metadata identity (business_id + area_id + slot)
   if (!subRow && subscriptionId) {
     if (!stripeSub) stripeSub = await stripe.subscriptions.retrieve(subscriptionId);
     const meta = stripeSub.metadata || {};
@@ -361,7 +478,7 @@ async function upsertInvoice(inv) {
     const slot = meta.slot != null ? Number(meta.slot) : null;
 
     if (business_id && area_id && slot != null) {
-    const { data, error } = await supabase()
+      const { data, error } = await supabase()
         .from("sponsored_subscriptions")
         .select("id")
         .eq("business_id", business_id)
@@ -411,9 +528,7 @@ async function upsertInvoice(inv) {
 }
 
 /**
- * ✅ KEY FIX:
  * Pull the subscription from Stripe and upsert it on invoice events.
- * This moves sponsored_subscriptions.status from incomplete -> active when the first invoice is paid.
  */
 async function refreshSubscriptionFromInvoice(inv) {
   try {
@@ -425,7 +540,6 @@ async function refreshSubscriptionFromInvoice(inv) {
     await upsertSubscription(sub, sub.metadata || {});
   } catch (e) {
     console.error("[webhook] refreshSubscriptionFromInvoice failed:", e?.message || e);
-    // don't throw; invoice record is more important than this refresh
   }
 }
 
@@ -480,6 +594,7 @@ exports.handler = async (event) => {
         const session = stripeEvent.data.object;
         if (session.mode === "subscription" && session.subscription) {
           const sub = await stripe.subscriptions.retrieve(session.subscription);
+          // IMPORTANT: session.metadata has the area_id/category_id/slot set by checkout
           await upsertSubscription(sub, session.metadata || {});
         }
         break;
@@ -494,9 +609,18 @@ exports.handler = async (event) => {
 
       case "customer.subscription.deleted": {
         const sub = stripeEvent.data.object;
+
+        // ✅ CRITICAL: release the held area when subscription is deleted
         const { error } = await supabase()
           .from("sponsored_subscriptions")
-          .update({ status: "canceled", updated_at: new Date().toISOString() })
+          .update({
+            status: "canceled",
+            sponsored_geom: null,
+            current_period_end: sub.current_period_end
+              ? new Date(sub.current_period_end * 1000).toISOString()
+              : null,
+            updated_at: new Date().toISOString(),
+          })
           .eq("stripe_subscription_id", sub.id);
 
         if (error) throw new Error("DB cancel(sub) failed");
@@ -519,14 +643,13 @@ exports.handler = async (event) => {
         // Always refresh subscription state from Stripe
         await refreshSubscriptionFromInvoice(inv);
 
-        // ✅ Only send your invoice email when PAID
-        // This prevents “invoice email even though payment failed”
+        // Only send your invoice email when PAID
         if (stripeEvent.type === "invoice.paid") {
           console.log("[webhook] invoice.paid -> createInvoiceAndEmail", inv.id);
           await safeCreateAndEmailInvoice(inv.id, { force: true });
         }
 
-        // ✅ If payment failed: send a “payment failed” email instead (with pay link)
+        // If payment failed: send a “payment failed” email instead (with pay link)
         if (stripeEvent.type === "invoice.payment_failed") {
           console.log("[webhook] invoice.payment_failed -> notify customer", inv.id);
           await sendPaymentFailedEmail(inv);
