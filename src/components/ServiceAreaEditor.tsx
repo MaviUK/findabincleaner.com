@@ -20,11 +20,12 @@ export interface ServiceAreaRow {
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 
-  // lock info (from RPC)
+  // ✅ NEW: lock info (from RPC)
   is_sponsored_locked?: boolean;
   sponsored_until?: string | null;
 }
 
+// Keep Slot type for back-compat where needed
 type Slot = 1;
 
 type SingleSlotState = {
@@ -35,7 +36,7 @@ type SingleSlotState = {
 
 type SponsorshipState = {
   area_id: string;
-  slot: SingleSlotState;
+  slot: SingleSlotState; // single Featured slot
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 
@@ -43,9 +44,7 @@ type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 type Libraries = ("drawing" | "geometry")[];
 
 const isBlockingStatus = (s?: string | null) =>
-  ["active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired", "paused"].includes(
-    (s || "").toLowerCase()
-  );
+  ["active", "trialing", "past_due"].includes((s || "").toLowerCase());
 
 const MAP_CONTAINER = { width: "100%", height: "600px" } as const;
 const DEFAULT_CENTER = { lat: 54.607868, lng: -5.926437 };
@@ -137,6 +136,7 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
+/** Accept Polygon/MultiPolygon/Feature/FeatureCollection and return array of rings-paths for <Polygon /> */
 function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (!geo) return [];
 
@@ -195,6 +195,7 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   return [];
 }
 
+/** area size helper for sorting (km²) */
 function geoMultiPolygonAreaKm2(gj: any): number {
   if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates))
     return 0;
@@ -216,12 +217,16 @@ type Props = {
   cleanerId?: string;
   categoryId?: string | null;
   sponsorshipVersion?: number;
-  onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
+  onSlotAction?: (
+    area: { id: string; name?: string },
+    slot: Slot
+  ) => void | Promise<void>;
 };
 
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
+// ✅ categories for "Copy to Industry"
 type CategoryRow = { id: string; name: string; slug: string | null };
 
 export default function ServiceAreaEditor({
@@ -247,6 +252,7 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // availability from server
   const [avail, setAvail] = useState<AvailMap>({});
   const [availLoading, setAvailLoading] = useState<AvailLoadingMap>({});
 
@@ -261,6 +267,7 @@ export default function ServiceAreaEditor({
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
 
+  // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
   const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
@@ -268,6 +275,7 @@ export default function ServiceAreaEditor({
   const previewActiveForArea =
     sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
+  // ✅ Copy-to-industry state
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyArea, setCopyArea] = useState<ServiceAreaRow | null>(null);
@@ -276,25 +284,28 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!myBusinessId) return;
+// ✅ Fetch ONLY active industries for this cleaner
+useEffect(() => {
+  if (!myBusinessId) return;
 
-    (async () => {
-      const { data, error } = await supabase.rpc(
-        "list_active_categories_for_cleaner",
-        { p_cleaner_id: myBusinessId }
-      );
+  (async () => {
+    const { data, error } = await supabase.rpc(
+      "list_active_categories_for_cleaner",
+      { p_cleaner_id: myBusinessId }
+    );
 
-      if (error) {
-        console.warn("active categories fetch error:", error);
-        setCategories([]);
-        return;
-      }
+    if (error) {
+      console.warn("active categories fetch error:", error);
+      setCategories([]);
+      return;
+    }
 
-      setCategories((data as any) || []);
-    })();
-  }, [myBusinessId]);
+    setCategories((data as any) || []);
+  })();
+}, [myBusinessId]);
 
+
+  // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
     setSponsorship({});
     setAvail({});
@@ -305,6 +316,7 @@ export default function ServiceAreaEditor({
     setManageOpen(false);
     setManageAreaId(null);
 
+    // also close copy modal
     setCopyOpen(false);
     setCopyArea(null);
     setCopyTargetCategoryId("");
@@ -320,6 +332,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
+  // Fetch areas (per industry)
   const fetchAreas = useCallback(async () => {
     if (!myBusinessId) return;
     setLoading(true);
@@ -327,7 +340,7 @@ export default function ServiceAreaEditor({
     try {
       const { data, error } = await supabase.rpc("list_service_areas", {
         p_cleaner_id: myBusinessId,
-        p_category_id: categoryId,
+        p_category_id: categoryId, // ✅ per-industry areas
       });
       if (error) throw error;
       setServiceAreas(data || []);
@@ -342,6 +355,8 @@ export default function ServiceAreaEditor({
     if (!myBusinessId) return;
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
+
+  // ------- Sponsorship occupancy (single-slot) -------
 
   const OWNED_BY_ME_PAINT = {
     tier: 3,
@@ -375,7 +390,7 @@ export default function ServiceAreaEditor({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             areaIds,
-            categoryId, // industry isolate
+            categoryId, // ✅ isolate by industry
           }),
         });
         if (!res.ok) throw new Error(`sponsorship ${res.status}`);
@@ -427,6 +442,7 @@ export default function ServiceAreaEditor({
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
+  // ------- Availability by geometry -------
   const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
@@ -441,7 +457,7 @@ export default function ServiceAreaEditor({
             cleanerId: myBusinessId,
             areaId,
             slot: 1,
-            categoryId,
+            categoryId, // ✅ per-industry sold-out
           }),
         });
 
@@ -487,6 +503,7 @@ export default function ServiceAreaEditor({
 
       const bounds = new google.maps.LatLngBounds();
 
+      // Supports MultiPolygon and Polygon (just in case)
       const polys: number[][][][] =
         gj.type === "Polygon"
           ? [gj.coordinates as unknown as number[][][]]
@@ -501,7 +518,7 @@ export default function ServiceAreaEditor({
       });
 
       if (!bounds.isEmpty()) {
-        mapRef.current.fitBounds(bounds, 60);
+        mapRef.current.fitBounds(bounds, 60); // padding
       }
     },
     [isLoaded]
@@ -589,7 +606,7 @@ export default function ServiceAreaEditor({
           p_area_id: activeAreaId,
           p_gj: multi,
           p_name: draftName || "Untitled Area",
-          p_category_id: categoryId,
+          p_category_id: categoryId, // ✅ keep industry
         });
         if (error) throw error;
       } else {
@@ -597,7 +614,7 @@ export default function ServiceAreaEditor({
           p_cleaner_id: myBusinessId,
           p_gj: multi,
           p_name: draftName || "Untitled Area",
-          p_category_id: categoryId,
+          p_category_id: categoryId, // ✅ keep industry
         });
         if (error) throw error;
       }
@@ -649,6 +666,7 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [resetDraft]);
 
+  // Fit bounds to first area when loaded
   useEffect(() => {
     if (!isLoaded || !mapRef.current || !serviceAreas.length) return;
     const first = serviceAreas[0];
@@ -676,9 +694,11 @@ export default function ServiceAreaEditor({
   }
 
   function isAreaLocked(area: ServiceAreaRow): boolean {
+    // Prefer DB truth if present
     if (typeof area.is_sponsored_locked === "boolean")
       return area.is_sponsored_locked;
 
+    // Fallback: if sponsorship map says YOU own an active/past_due/trialing slot, lock it
     const s = getAreaSlotState(area.id);
     const mine =
       !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
@@ -717,63 +737,66 @@ export default function ServiceAreaEditor({
     });
   }, [isLoaded, serviceAreas, sponsorship]);
 
-  const openCopyModal = useCallback(
-    (area: ServiceAreaRow) => {
-      setCopyErr(null);
-
-      if (!categories.length) {
-        setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
-        setCopyOpen(true);
-        setCopyArea(area);
-        setCopyTargetCategoryId("");
-        setCopyName(area.name ? `${area.name} (copy)` : "");
-        return;
-      }
-
-      setCopyArea(area);
-      setCopyOpen(true);
-
-      const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
-      setCopyTargetCategoryId(firstOther?.id || "");
-      setCopyName(area.name ? `${area.name} (copy)` : "");
-    },
-    [categories, categoryId]
-  );
-
-  const doCopyToIndustry = useCallback(async () => {
-    if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
-
-    setCopyBusy(true);
+  // ✅ COPY ACTION
+ const openCopyModal = useCallback(
+  (area: ServiceAreaRow) => {
     setCopyErr(null);
 
-    try {
-      const { error } = await supabase.rpc("clone_service_area_to_category", {
-        p_area_id: copyArea.id,
-        p_cleaner_id: myBusinessId,
-        p_target_category_id: copyTargetCategoryId,
-        p_new_name: copyName?.trim() || null,
-      });
-      if (error) throw error;
-
-      setCopyOpen(false);
-      setCopyArea(null);
+    if (!categories.length) {
+      setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
+      setCopyOpen(true);
+      setCopyArea(area);
       setCopyTargetCategoryId("");
-      setCopyName("");
-      await fetchAreas();
-    } catch (e: any) {
-      const msg = String(e?.message || "");
-
-      if (msg.includes("uix_service_areas_cleaner_category_name")) {
-        setCopyErr(
-          "This area already exists in the selected industry. Try using a different name."
-        );
-      } else {
-        setCopyErr("Failed to copy area. Please try again.");
-      }
-    } finally {
-      setCopyBusy(false);
+      setCopyName(area.name ? `${area.name} (copy)` : "");
+      return;
     }
-  }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
+
+    setCopyArea(area);
+    setCopyOpen(true);
+
+    const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
+    setCopyTargetCategoryId(firstOther?.id || "");
+    setCopyName(area.name ? `${area.name} (copy)` : "");
+  },
+  [categories, categoryId]
+);
+
+
+const doCopyToIndustry = useCallback(async () => {
+  if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
+
+  setCopyBusy(true);
+  setCopyErr(null);
+
+  try {
+    const { error } = await supabase.rpc("clone_service_area_to_category", {
+      p_area_id: copyArea.id,
+      p_cleaner_id: myBusinessId,
+      p_target_category_id: copyTargetCategoryId,
+      p_new_name: copyName?.trim() || null,
+    });
+    if (error) throw error;
+
+    setCopyOpen(false);
+    setCopyArea(null);
+    setCopyTargetCategoryId("");
+    setCopyName("");
+    await fetchAreas();
+  } catch (e: any) {
+    const msg = String(e?.message || "");
+
+    if (msg.includes("uix_service_areas_cleaner_category_name")) {
+      setCopyErr(
+        "This area already exists in the selected industry. Try using a different name."
+      );
+    } else {
+      setCopyErr("Failed to copy area. Please try again.");
+    }
+  } finally {
+    setCopyBusy(false);
+  }
+}, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
+
 
   if (loadError) {
     return (
@@ -786,6 +809,7 @@ export default function ServiceAreaEditor({
   return (
     <>
       <div className="grid md:grid-cols-12 gap-6">
+        {/* Left panel */}
         <div className="md:col-span-4 space-y-4">
           <div className="card card-pad">
             <div className="flex items-center justify-between mb-2">
@@ -852,10 +876,10 @@ export default function ServiceAreaEditor({
               </div>
             )}
 
+            {/* List */}
             <ul className="space-y-2">
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
-
                 const mine =
                   !!s &&
                   isBlockingStatus(s.status) &&
@@ -869,17 +893,16 @@ export default function ServiceAreaEditor({
                   isBlockingStatus(s.status) &&
                   s.owner_business_id !== myBusinessId;
 
-                const hasGeo = avail[a.id] ?? true;
+                const hasGeo = avail[a.id] ?? true; // optimistic until computed
                 const busy = availLoading[a.id];
 
-                // if someone else owns THIS area in THIS industry, treat as sold out
                 const disabled =
                   takenByOther || (!mine && !takenByOther && hasGeo === false);
 
                 const title = mine
                   ? "You sponsor this area"
                   : takenByOther
-                  ? `Sold out${s?.status ? ` (${s.status})` : ""}`
+                  ? `Taken${s?.status ? ` (${s.status})` : ""}`
                   : hasGeo === false
                   ? "No purchasable region available"
                   : busy
@@ -889,7 +912,7 @@ export default function ServiceAreaEditor({
                 const label = mine
                   ? "Manage"
                   : takenByOther
-                  ? "Sold out"
+                  ? "Taken"
                   : hasGeo === false
                   ? "Sold out"
                   : "Sponsor (Featured)";
@@ -911,98 +934,103 @@ export default function ServiceAreaEditor({
                   setSponsorOpen(true);
                 };
 
-                return (
-                  <li
-                    key={a.id}
-                    className={`border rounded-lg p-3 transition-colors
-                      ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => zoomToArea(a)}
-                      className="text-left w-full group"
-                      title="Click to zoom to this area"
-                    >
-                      <div className="font-medium truncate group-hover:underline">
-                        {a.name}
-                      </div>
+               return (
+  <li
+  key={a.id}
+  className={`border rounded-lg p-3 transition-colors
+    ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
+>
+  {/* Row 1: Title + Meta (click to zoom) */}
+  <button
+    type="button"
+    onClick={() => zoomToArea(a)}
+    className="text-left w-full group"
+    title="Click to zoom to this area"
+  >
+    <div className="font-medium truncate group-hover:underline">
+      {a.name}
+    </div>
 
-                      <div className="text-xs text-gray-500 mt-1">
-                        {new Date(a.created_at).toLocaleString()} •{" "}
-                        {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
-                        {locked && until ? (
-                          <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
-                            Locked until {until}
-                          </span>
-                        ) : null}
-                      </div>
-                    </button>
+    <div className="text-xs text-gray-500 mt-1">
+      {new Date(a.created_at).toLocaleString()} •{" "}
+      {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
+      {locked && until ? (
+        <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+          Locked until {until}
+        </span>
+      ) : null}
+    </div>
+  </button>
 
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (locked) return;
-                          editArea(a);
-                        }}
-                        disabled={loading || locked}
-                        title={locked ? "Sponsored areas are locked" : "Edit"}
-                        className={[
-                          "btn",
-                          locked ? "opacity-40 cursor-not-allowed grayscale" : "",
-                        ].join(" ")}
-                      >
-                        Edit
-                      </button>
+  {/* Row 2: Edit / Delete / Copy (below title) */}
+  <div className="mt-2 flex items-center gap-2">
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        if (locked) return;
+        editArea(a);
+      }}
+      disabled={loading || locked}
+      title={locked ? "Sponsored areas are locked" : "Edit"}
+      className={[
+        "btn",
+        locked ? "opacity-40 cursor-not-allowed grayscale" : "",
+      ].join(" ")}
+    >
+      Edit
+    </button>
 
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteArea(a);
-                        }}
-                        disabled={loading}
-                      >
-                        Delete
-                      </button>
+    <button
+      type="button"
+      className="btn"
+      onClick={(e) => {
+        e.stopPropagation();
+        deleteArea(a);
+      }}
+      disabled={loading}
+    >
+      Delete
+    </button>
 
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openCopyModal(a);
-                        }}
-                        disabled={loading}
-                        title="Copy this exact area to another industry"
-                      >
-                        Copy
-                      </button>
-                    </div>
+    <button
+      type="button"
+      className="btn"
+      onClick={(e) => {
+        e.stopPropagation();
+        openCopyModal(a);
+      }}
+      disabled={loading}
+      title="Copy this exact area to another industry"
+    >
+      Copy
+    </button>
+  </div>
 
-                    <div className="mt-2 flex flex-wrap gap-2 items-center">
-                      <button
-                        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onClick();
-                        }}
-                        disabled={disabled}
-                        title={title}
-                      >
-                        {label}
-                      </button>
+  {/* Row 3: Sponsor/Manage (unchanged) */}
+  <div className="mt-2 flex flex-wrap gap-2 items-center">
+    <button
+      className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      disabled={disabled}
+      title={title}
+    >
+      {label}
+    </button>
 
-                      {busy && (
-                        <div className="text-[10px] text-gray-500 mt-1">
-                          Checking availability…
-                        </div>
-                      )}
-                    </div>
-                  </li>
-                );
+    {busy && (
+      <div className="text-[10px] text-gray-500 mt-1">
+        Checking availability…
+      </div>
+    )}
+  </div>
+</li>
+
+);
+
               })}
 
               {!serviceAreas.length && !loading && (
@@ -1053,6 +1081,7 @@ export default function ServiceAreaEditor({
           </div>
         </div>
 
+        {/* Map */}
         <div className="md:col-span-8">
           {isLoaded ? (
             <GoogleMap
@@ -1075,6 +1104,7 @@ export default function ServiceAreaEditor({
                 }}
               />
 
+              {/* non-editable painted overlays */}
               {activeAreaId === null &&
                 sortedServiceAreas.map((a) => {
                   const gj = a.gj;
@@ -1105,6 +1135,7 @@ export default function ServiceAreaEditor({
                   });
                 })}
 
+              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -1129,6 +1160,7 @@ export default function ServiceAreaEditor({
         </div>
       </div>
 
+      {/* Sponsor modal */}
       {sponsorOpen && sponsorAreaId && (
         <AreaSponsorModal
           open={sponsorOpen}
@@ -1137,7 +1169,7 @@ export default function ServiceAreaEditor({
             clearPreview();
           }}
           businessId={myBusinessId}
-          categoryId={categoryId}
+          categoryId={categoryId} // ✅ pass through
           areaId={sponsorAreaId}
           areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
@@ -1145,6 +1177,7 @@ export default function ServiceAreaEditor({
         />
       )}
 
+      {/* Manage modal */}
       {manageOpen && manageAreaId && (
         <AreaManageModal
           open={manageOpen}
@@ -1155,10 +1188,12 @@ export default function ServiceAreaEditor({
         />
       )}
 
+      {/* ✅ Copy to Industry Modal */}
       {copyOpen && copyArea && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+
               <div>
                 <div className="font-semibold">Copy area to another industry</div>
                 <div className="text-xs text-gray-500">
@@ -1195,7 +1230,7 @@ export default function ServiceAreaEditor({
                 >
                   <option value="">Select…</option>
                   {categories
-                    .filter((c) => c.id !== (categoryId ?? ""))
+                    .filter((c) => c.id !== (categoryId ?? "")) // don’t default to same
                     .map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}

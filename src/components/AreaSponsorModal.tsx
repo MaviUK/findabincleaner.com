@@ -72,7 +72,8 @@ export default function AreaSponsorModal({
       if (!open) return;
 
       if (!categoryId) {
-        const next: PreviewState = {
+        setPv((s) => ({
+          ...s,
           loading: false,
           error: "Missing categoryId",
           soldOut: false,
@@ -81,8 +82,7 @@ export default function AreaSponsorModal({
           priceCents: null,
           ratePerKm2: null,
           geojson: null,
-        };
-        setPv(next);
+        }));
         onPreviewGeoJSON?.(null);
         return;
       }
@@ -105,18 +105,8 @@ export default function AreaSponsorModal({
         const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
         const availableKm2 = typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
-        // ✅ only sold out if remaining is zero/none
         const soldOut =
-          Boolean(j.sold_out) ||
-          j.reason === "no_remaining" ||
-          !Number.isFinite(availableKm2) ||
-          availableKm2 <= EPS;
-
-        const geojson = j.geojson ?? null;
-
-        // If server says there's remaining area but geojson is missing,
-        // treat as not purchasable (prevents DB mismatch / bad checkout).
-        const purchasableGeojson = soldOut ? null : geojson;
+          Boolean(j.sold_out) || availableKm2 <= EPS || j.reason === "no_remaining";
 
         if (!cancelled) {
           setPv({
@@ -127,12 +117,12 @@ export default function AreaSponsorModal({
             availableKm2,
             priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
             ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: purchasableGeojson,
+            geojson: j.geojson ?? null,
             reason: j.reason,
           });
         }
 
-        onPreviewGeoJSON?.(purchasableGeojson);
+        onPreviewGeoJSON?.(j.geojson ?? null);
       } catch (e: any) {
         if (!cancelled) {
           setPv({
@@ -151,11 +141,10 @@ export default function AreaSponsorModal({
     };
 
     run();
-
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, categoryId]); // intentionally not depending on callbacks
+  }, [open, businessId, areaId, slot, categoryId]); // (intentionally not depending on onPreviewGeoJSON)
 
   const handleClose = () => {
     onClearPreview?.();
@@ -165,18 +154,8 @@ export default function AreaSponsorModal({
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
-  // ✅ Must have remaining area AND a valid remaining geometry to purchase
-  const hasRemainingKm2 = (pv.availableKm2 ?? 0) > EPS;
-  const hasRemainingGeo = !!pv.geojson;
-
-  const canBuy =
-    open &&
-    !!categoryId &&
-    !checkingOut &&
-    !pv.loading &&
-    !pv.soldOut &&
-    hasRemainingKm2 &&
-    hasRemainingGeo;
+  const hasArea = (pv.availableKm2 ?? 0) > EPS;
+  const canBuy = open && hasArea && !checkingOut && !!categoryId && !pv.soldOut;
 
   const startCheckout = async () => {
     if (!canBuy) return;
@@ -186,9 +165,9 @@ export default function AreaSponsorModal({
       return;
     }
 
-    if (!hasRemainingKm2 || pv.soldOut || !hasRemainingGeo) {
-      setCheckoutErr("No purchasable region available for this industry in this polygon.");
-      setPv((s) => ({ ...s, soldOut: true, availableKm2: 0, geojson: null }));
+    if (!hasArea || pv.soldOut) {
+      setCheckoutErr("No purchasable area left for this industry in this polygon.");
+      setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
       return;
     }
 
@@ -196,6 +175,9 @@ export default function AreaSponsorModal({
     setCheckoutErr(null);
 
     try {
+      // ✅ IMPORTANT: log exactly what we are about to send
+      console.log("[sponsored-checkout] sending", { businessId, areaId, slot, categoryId });
+
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -209,13 +191,13 @@ export default function AreaSponsorModal({
           j?.message ||
           j?.error ||
           (res.status === 409
-            ? "No purchasable region available for this industry in this polygon."
+            ? "No purchasable area left for this industry in this polygon."
             : `Checkout failed (${res.status})`);
 
         setCheckoutErr(message);
 
         if (res.status === 409) {
-          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0, geojson: null }));
+          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
         }
 
         setCheckingOut(false);
@@ -250,8 +232,12 @@ export default function AreaSponsorModal({
 
         <div className="p-4 space-y-3">
           <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-            Featured sponsorship makes you first in local search results. The preview highlights the purchasable sub-region
-            (any overlapping sponsored parts are excluded).
+            Featured sponsorship makes you first in local search results. Preview highlights the purchasable sub-region.
+          </div>
+
+          {/* tiny debug line (remove later) */}
+          <div className="text-[11px] text-gray-500">
+            Debug: areaId={areaId} • categoryId={categoryId || "null"}
           </div>
 
           {!categoryId && (
@@ -272,15 +258,9 @@ export default function AreaSponsorModal({
             </div>
           )}
 
-          {pv.soldOut && (
+          {pv.soldOut && !hasArea && (
             <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-              This polygon has no remaining purchasable region for this industry.
-            </div>
-          )}
-
-          {!pv.soldOut && hasRemainingKm2 && !hasRemainingGeo && (
-            <div className="rounded-md border border-amber-200 bg-amber-50 text-amber-800 text-sm p-2">
-              Remaining area exists, but the server could not return a valid purchasable geometry preview. Please try again.
+              No purchasable area left for this industry in this polygon.
             </div>
           )}
 
@@ -297,15 +277,15 @@ export default function AreaSponsorModal({
             <button className="btn" onClick={handleClose}>
               Cancel
             </button>
-
             <button
-              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
-              onClick={startCheckout}
-              disabled={!canBuy}
-              title={canBuy ? "Buy now" : ""}
-            >
-              {checkingOut ? "Redirecting..." : "Buy now"}
-            </button>
+  className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
+  onClick={startCheckout}
+  disabled={!canBuy}
+  title={canBuy ? "Buy now" : ""} // <-- prevents the tooltip when disabled
+>
+  {checkingOut ? "Redirecting..." : "Buy now"}
+</button>
+
           </div>
         </div>
       </div>
