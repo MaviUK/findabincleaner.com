@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-06-FIXED");
+console.log("LOADED sponsored-checkout v2026-01-06-FIXED-CLEAN");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -26,29 +26,34 @@ const EPS = 1e-6;
 // ✅ Only REAL blocking statuses (do NOT include incomplete / paused)
 const BLOCKING = new Set(["active", "trialing", "past_due"]); // optionally add "unpaid"
 
-function getSupabaseAdmin() {
-  const url = process.env.SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) {
-    throw new Error(
-      "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE (service role key) in Netlify env."
-    );
-  }
-
-  return createClient(url, key);
-}
-
 function requireEnv(name) {
   const val = process.env[name];
   if (!val) throw new Error(`Missing required env var: ${name}`);
   return val;
 }
 
+function getSupabaseAdmin() {
+  const url = process.env.SUPABASE_URL;
+
+  // support both naming styles you’ve used elsewhere
+  const key =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+
+  if (!url || !key) {
+    throw new Error(
+      "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SERVICE_ROLE in Netlify env."
+    );
+  }
+
+  return createClient(url, key);
+}
+
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
-  if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+  if (req.method !== "POST")
+    return json({ ok: false, error: "Method not allowed" }, 405);
 
   let body;
   try {
@@ -65,7 +70,7 @@ export default async (req) => {
   const areaId = String(body.areaId || body.area_id || "").trim();
   const slot = Number(body.slot ?? 1);
 
-  // categories are required for your current pricing/availability model
+  // category required for availability/pricing logic
   const categoryId = String(body.categoryId || body.category_id || "").trim();
 
   const lockId = String(body.lockId || body.lock_id || "").trim() || null;
@@ -74,7 +79,8 @@ export default async (req) => {
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
   if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
   if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
-  if (!Number.isFinite(slot) || slot < 1) return json({ ok: false, error: "Invalid slot" }, 400);
+  if (!Number.isFinite(slot) || slot < 1)
+    return json({ ok: false, error: "Invalid slot" }, 400);
   if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
 
   try {
@@ -85,7 +91,6 @@ export default async (req) => {
     const sb = getSupabaseAdmin();
 
     // 1) If this exact area_id is already sponsored by someone else for this slot, block
-    // (Overlap protection is still enforced server-side by your DB rules.)
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at")
@@ -96,9 +101,13 @@ export default async (req) => {
     if (takenErr) throw takenErr;
 
     const latestBlocking =
-      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) || null;
+      (rows || []).find((r) =>
+        BLOCKING.has(String(r.status || "").toLowerCase())
+      ) || null;
 
-    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
+    const ownerBusinessId = latestBlocking?.business_id
+      ? String(latestBlocking.business_id)
+      : null;
 
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
@@ -128,14 +137,17 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview (use the INTERNAL function you just fixed in SQL)
-    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
-  p_area_id: areaId,
-  p_category_id: categoryId,
-  p_slot: slot,
+    // 2) Remaining area preview (category-aware)
+    const { data: previewData, error: prevErr } = await sb.rpc(
+      "area_remaining_preview",
+      {
+        p_area_id: areaId,
+        p_category_id: categoryId,
+        p_slot: slot,
       }
     );
-    if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
+
+    if (prevErr) throw prevErr;
 
     const row = Array.isArray(previewData) ? previewData[0] : previewData;
     if (!row) return json({ ok: false, error: "Area not found" }, 404);
@@ -176,10 +188,7 @@ export default async (req) => {
     }
 
     // Floor = £1.00 minimum (100 cents)
-    const amountCents = Math.max(
-      100,
-      Math.round(availableKm2 * ratePerKm2 * 100)
-    );
+    const amountCents = Math.max(100, Math.round(availableKm2 * ratePerKm2 * 100));
 
     // 4) Load cleaner + ensure Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
@@ -224,7 +233,6 @@ export default async (req) => {
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       customer: stripeCustomerId,
-
       metadata: meta,
       subscription_data: { metadata: meta },
 
