@@ -129,12 +129,10 @@ export default async (req) => {
     }
 
     // 2) Remaining area preview (use the INTERNAL function you just fixed in SQL)
-    const { data: previewData, error: prevErr } = await sb.rpc(
-      "area_remaining_preview_internal",
-      {
-        p_area_id: areaId,
-        p_category_id: categoryId,
-        p_slot: slot,
+    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
+  p_area_id: areaId,
+  p_category_id: categoryId,
+  p_slot: slot,
       }
     );
     if (prevErr) throw prevErr;
