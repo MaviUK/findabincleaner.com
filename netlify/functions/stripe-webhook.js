@@ -162,9 +162,15 @@ async function cancelStripeSubscriptionSafe(subId, reason) {
     console.warn("[webhook] canceling subscription:", subId, reason || "");
     await stripe.subscriptions.cancel(subId);
   } catch (e) {
-    console.error("[webhook] failed to cancel subscription:", subId, e?.message || e);
+    const msg = String(e?.message || "");
+    if (msg.includes("No such subscription")) {
+      console.warn("[webhook] subscription already gone:", subId);
+      return;
+    }
+    console.error("[webhook] failed to cancel subscription:", subId, msg);
   }
 }
+
 
 // ----------------------------
 // Sponsorship geometry rules
