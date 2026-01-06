@@ -135,7 +135,7 @@ export default async (req) => {
   p_slot: slot,
       }
     );
-    if (prevErr) throw prevErr;
+    if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
 
     const row = Array.isArray(previewData) ? previewData[0] : previewData;
     if (!row) return json({ ok: false, error: "Area not found" }, 404);
