@@ -80,43 +80,52 @@ function metaGet(meta, ...keys) {
   }
   return null;
 }
-
 function normalizeSponsoredRowFromSubscription(sub) {
-  const meta = sub.metadata || {};
+  const subscription = sub; // <-- fixes "subscription is not defined"
 
-  const business_id =
-    metaGet(meta, "business_id", "cleaner_id", "cleanerId", "businessId") || null;
-  const area_id = metaGet(meta, "area_id", "areaId") || null;
-  const category_id = metaGet(meta, "category_id", "categoryId") || null;
+  const status = String(subscription.status || "").toLowerCase();
 
-  const slotRaw = metaGet(meta, "slot") || "1";
-  const slot = Number(slotRaw || 1) || 1;
+  const item = subscription.items?.data?.[0] || null;
 
-  const stripe_customer_id =
-    typeof sub.customer === "string" ? sub.customer : sub.customer?.id || null;
+  // Stripe sometimes returns unit_amount on price, sometimes on plan in older objects
+  const unitAmount =
+    item?.price?.unit_amount ??
+    item?.plan?.amount ??
+    null;
 
-  // price / currency (best-effort; actual billing comes from Stripe invoice anyway)
-  const currency = (sub.currency || metaGet(meta, "currency") || "gbp").toLowerCase();
+  const price_monthly_pennies =
+    typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : 0;
 
-  const current_period_end =
-    sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString() : null;
+  const currency =
+    (item?.price?.currency || subscription.currency || "gbp").toLowerCase();
+
+  const meta = subscription.metadata || {};
+
+  const business_id = meta.business_id || meta.cleaner_id || meta.cleanerId || null;
+  const area_id = meta.area_id || meta.areaId || null;
+  const category_id = meta.category_id || meta.categoryId || null;
+  const slot = Number(meta.slot ?? 1);
+
+  const current_period_end = subscription.current_period_end
+    ? new Date(subscription.current_period_end * 1000).toISOString()
+    : null;
 
   return {
     business_id,
     area_id,
     category_id,
     slot,
-    stripe_customer_id,
-    stripe_subscription_id: sub.id,
-    price_monthly_pennies: subscription.items.data[0].price.unit_amount,
+    stripe_customer_id: subscription.customer || null,
+    stripe_subscription_id: subscription.id,
+    price_monthly_pennies,               // <-- ALWAYS NON-NULL (DB requires it)
     currency,
-    status: sub.status || null,
+    status,
     current_period_end,
-    // IMPORTANT: let DB fill geom only for blocking statuses (after you patch triggers)
-    sponsored_geom: null,
+    sponsored_geom: null,                // your fill_geom trigger will populate for blocking statuses
     updated_at: new Date().toISOString(),
   };
 }
+
 
 async function upsertSubscriptionRow(sb, row) {
   // Use upsert to avoid “update then insert” races
