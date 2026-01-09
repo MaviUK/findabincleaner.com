@@ -98,22 +98,26 @@ function normalizeSponsoredRowFromSubscription(sub) {
   const business_id = metaGet(meta, "business_id", "cleaner_id", "cleanerId");
   const area_id = metaGet(meta, "area_id", "areaId");
   const category_id = metaGet(meta, "category_id", "categoryId");
-  const slot = Number(metaGet(meta, "slot") ?? 1);
 
+  // slot
+  const slotRaw = metaGet(meta, "slot");
+  const slot = Number.isFinite(Number(slotRaw)) && Number(slotRaw) > 0 ? Number(slotRaw) : 1;
+
+  // price
   const item = subscription.items?.data?.[0] || null;
-
   const unitAmount =
     item?.price?.unit_amount ??
     item?.plan?.amount ??
     null;
 
-  // fallback: allow checkout to pass this in metadata if needed
   const metaAmount = metaGet(meta, "price_monthly_pennies", "price_monthly_pence", "amount_pennies");
 
-  const price_monthly_pennies =
+  const priceParsed =
     (typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : null) ??
-    (metaAmount ? Number(metaAmount) : null) ??
+    (metaAmount && Number.isFinite(Number(metaAmount)) ? Number(metaAmount) : null) ??
     100; // last-resort floor (never null)
+
+  const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
 
   const currency =
     (item?.price?.currency || subscription.currency || "gbp").toLowerCase();
@@ -121,6 +125,20 @@ function normalizeSponsoredRowFromSubscription(sub) {
   const current_period_end = subscription.current_period_end
     ? new Date(subscription.current_period_end * 1000).toISOString()
     : null;
+
+  // ✅ sponsored geom from metadata (EWKT recommended: "SRID=4326;MULTIPOLYGON((...))")
+  const geomFromMeta = metaGet(
+    meta,
+    "sponsored_geom",
+    "sponsoredGeom",
+    "geom",
+    "geometry",
+    "sponsored_geometry"
+  );
+
+  // Only treat these as "blocking/owns slot"
+  const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+  const sponsored_geom = BLOCKING.has(status) ? (geomFromMeta || null) : null;
 
   return {
     business_id,
@@ -133,7 +151,7 @@ function normalizeSponsoredRowFromSubscription(sub) {
     currency,
     status,
     current_period_end,
-    sponsored_geom: null,
+    sponsored_geom, // ✅ now populated when provided
     updated_at: new Date().toISOString(),
   };
 }
