@@ -59,8 +59,17 @@ async function safeCancelSubscription(subId, why) {
 
   try {
     console.warn("[webhook] canceling subscription:", subId, why);
-    // Stripe node supports .cancel in newer versions, but .del is widely compatible
-    await stripe.subscriptions.del(subId);
+
+    // Compatibility across Stripe SDK versions:
+    if (stripe.subscriptions?.cancel) {
+      await stripe.subscriptions.cancel(subId);
+    } else if (stripe.subscriptions?.del) {
+      await stripe.subscriptions.del(subId);
+    } else {
+      // safest fallback
+      await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    }
+
     return { ok: true };
   } catch (e) {
     const msg = String(e?.message || "");
@@ -81,30 +90,33 @@ function metaGet(meta, ...keys) {
   return null;
 }
 function normalizeSponsoredRowFromSubscription(sub) {
-  const subscription = sub; // <-- fixes "subscription is not defined"
+  const subscription = sub;
 
   const status = String(subscription.status || "").toLowerCase();
+  const meta = subscription.metadata || {};
+
+  const business_id = metaGet(meta, "business_id", "cleaner_id", "cleanerId");
+  const area_id = metaGet(meta, "area_id", "areaId");
+  const category_id = metaGet(meta, "category_id", "categoryId");
+  const slot = Number(metaGet(meta, "slot") ?? 1);
 
   const item = subscription.items?.data?.[0] || null;
 
-  // Stripe sometimes returns unit_amount on price, sometimes on plan in older objects
   const unitAmount =
     item?.price?.unit_amount ??
     item?.plan?.amount ??
     null;
 
+  // fallback: allow checkout to pass this in metadata if needed
+  const metaAmount = metaGet(meta, "price_monthly_pennies", "price_monthly_pence", "amount_pennies");
+
   const price_monthly_pennies =
-    typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : 0;
+    (typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : null) ??
+    (metaAmount ? Number(metaAmount) : null) ??
+    100; // last-resort floor (never null)
 
   const currency =
     (item?.price?.currency || subscription.currency || "gbp").toLowerCase();
-
-  const meta = subscription.metadata || {};
-
-  const business_id = meta.business_id || meta.cleaner_id || meta.cleanerId || null;
-  const area_id = meta.area_id || meta.areaId || null;
-  const category_id = meta.category_id || meta.categoryId || null;
-  const slot = Number(meta.slot ?? 1);
 
   const current_period_end = subscription.current_period_end
     ? new Date(subscription.current_period_end * 1000).toISOString()
@@ -117,14 +129,15 @@ function normalizeSponsoredRowFromSubscription(sub) {
     slot,
     stripe_customer_id: subscription.customer || null,
     stripe_subscription_id: subscription.id,
-    price_monthly_pennies,               // <-- ALWAYS NON-NULL (DB requires it)
+    price_monthly_pennies,
     currency,
     status,
     current_period_end,
-    sponsored_geom: null,                // your fill_geom trigger will populate for blocking statuses
+    sponsored_geom: null,
     updated_at: new Date().toISOString(),
   };
 }
+
 
 
 async function upsertSubscriptionRow(sb, row) {
