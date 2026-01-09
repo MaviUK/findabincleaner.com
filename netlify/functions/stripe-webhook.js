@@ -108,7 +108,7 @@ function normalizeSponsoredRowFromSubscription(sub) {
     slot,
     stripe_customer_id,
     stripe_subscription_id: sub.id,
-    price_monthly_pennies: null,
+    price_monthly_pennies: subscription.items.data[0].price.unit_amount,
     currency,
     status: sub.status || null,
     current_period_end,
