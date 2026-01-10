@@ -1,12 +1,12 @@
 // netlify/functions/stripe-webhook.js
 console.log(
-  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID"
+  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID+INVOICE_RETRIEVE"
 );
 
 // CommonJS (Netlify functions)
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
-// kept import (email/invoicing), but invoice.paid activation does NOT depend on it
+// kept import (email/invoicing), but activation does NOT depend on it
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 // ---- env helpers ----
@@ -70,8 +70,9 @@ function assertUuidOrNull(name, v) {
 function metaGet(meta, ...keys) {
   if (!meta) return null;
   for (const k of keys) {
-    if (meta[k] != null && String(meta[k]).trim() !== "")
+    if (meta[k] != null && String(meta[k]).trim() !== "") {
       return String(meta[k]).trim();
+    }
   }
   return null;
 }
@@ -80,20 +81,6 @@ function numOrNull(v) {
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
-}
-
-// ---- invoice helpers ----
-// ✅ Robustly extract subscription id from an invoice payload
-function getInvoiceSubId(inv) {
-  if (typeof inv?.subscription === "string") return inv.subscription;
-  if (typeof inv?.subscription?.id === "string") return inv.subscription.id;
-
-  const lineSub =
-    inv?.lines?.data?.find((l) => typeof l?.subscription === "string")
-      ?.subscription;
-  if (lineSub) return lineSub;
-
-  return null;
 }
 
 // ---- Stripe / Supabase error classifiers ----
@@ -142,9 +129,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const status = String(subscription?.status || "").toLowerCase();
   const meta = subscription?.metadata || {};
 
-  const business_id = uuidOrNull(
-    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
-  );
+  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -165,9 +150,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   );
 
   const priceParsed =
-    (typeof unitAmount === "number" && Number.isFinite(unitAmount)
-      ? unitAmount
-      : null) ??
+    (typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : null) ??
     (metaAmount && Number.isFinite(Number(metaAmount)) ? Number(metaAmount) : null) ??
     100;
 
@@ -189,11 +172,10 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     "sponsored_geometry"
   );
 
-  // ✅ We only allow sponsored_geom to be set when ACTIVE (blocking)
+  // only set geom when truly blocking (we're not blocking here anyway)
   const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
 
-  // ✅ VERY IMPORTANT:
-  // Do NOT mark rows active here. We activate on invoice.paid only.
+  // ✅ VERY IMPORTANT: never mark active here; activate on invoice.paid
   const safeStatus = "incomplete";
 
   return {
@@ -215,9 +197,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 function normalizeSponsoredRowFromCheckoutSession(session) {
   const meta = session?.metadata || {};
 
-  const business_id = uuidOrNull(
-    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
-  );
+  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -225,23 +205,16 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
   const slotNum = numOrNull(slotRaw);
   const slot = slotNum && slotNum > 0 ? Math.floor(slotNum) : 1;
 
-  // amount_total usually in cents; your DB expects pennies/cents integer anyway
+  // amount_total usually in cents; your DB expects integer pennies/cents
   const amountTotal = numOrNull(session?.amount_total);
-  const price_monthly_pennies =
-    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
+  const price_monthly_pennies = amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
   const stripe_subscription_id =
     typeof session?.subscription === "string" ? session.subscription : null;
 
-  const geomFromMeta = metaGet(
-    meta,
-    "sponsored_geom",
-    "sponsoredGeom",
-    "geom",
-    "geometry"
-  );
+  const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
   const sponsored_geom = geomFromMeta || null;
 
   return {
@@ -274,15 +247,10 @@ async function upsertByStripeSubscriptionId(sb, row) {
 // ---- handler ----
 exports.handler = async (event) => {
   try {
-    const sig =
-      event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
+    const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
     const webhookSecret = requireEnv("STRIPE_WEBHOOK_SECRET");
 
-    const stripeEvent = stripe.webhooks.constructEvent(
-      event.body,
-      sig,
-      webhookSecret
-    );
+    const stripeEvent = stripe.webhooks.constructEvent(event.body, sig, webhookSecret);
 
     const sb = getSupabaseAdmin();
 
@@ -300,15 +268,13 @@ exports.handler = async (event) => {
       console.log("[webhook]", type, "id=" + stripeEvent.id);
     }
 
-    // 1) checkout.session.completed → store metadata early (incomplete) keyed by subscription id
+    // 1) checkout.session.completed → store metadata early (incomplete)
     if (type === "checkout.session.completed") {
       const session = obj;
       const draft = normalizeSponsoredRowFromCheckoutSession(session);
 
-      if (!draft.stripe_subscription_id)
-        return ok(200, { ok: true, skipped: "no-sub-id" });
+      if (!draft.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
 
-      // UUID assertions (helps catch "f")
       assertUuidOrNull("business_id", draft.business_id);
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
@@ -327,8 +293,7 @@ exports.handler = async (event) => {
       const sub = obj;
 
       const row = normalizeSponsoredRowFromSubscription(sub);
-      if (!row.stripe_subscription_id)
-        return ok(200, { ok: true, skipped: "no-sub-id" });
+      if (!row.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
 
       assertUuidOrNull("business_id", row.business_id);
       assertUuidOrNull("area_id", row.area_id);
@@ -339,7 +304,7 @@ exports.handler = async (event) => {
       if (error) {
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
 
-        // Only cancel on REAL overlap/sold-out errors (not random uniques)
+        // Only cancel on REAL overlap/sold-out errors
         if (isOverlapDbError(error)) {
           await safeCancelSubscription(sub.id, "Overlap/Sold-out violation");
           return ok(200, { ok: true, canceled: true });
@@ -351,78 +316,77 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wrote: true, id: data?.id || null });
     }
 
-  // 3) invoice.paid → activate (claim inventory)
-if (type === "invoice.paid") {
-  const inv = obj;
+    // 3) invoice.paid → retrieve invoice from Stripe, extract subscription, activate row
+    if (type === "invoice.paid") {
+      const inv = obj;
 
-  // Always retrieve full invoice from Stripe to get subscription reliably
-  let fullInv = inv;
-  try {
-    fullInv = await stripe.invoices.retrieve(inv.id, {
-      expand: ["subscription", "lines.data.subscription"],
-    });
-  } catch (e) {
-    console.error("[webhook] invoice.retrieve failed:", inv.id, e?.message || e);
-    return ok(200, { ok: false, error: "invoice.retrieve failed" });
-  }
+      let fullInv = inv;
+      try {
+        fullInv = await stripe.invoices.retrieve(inv.id, {
+          expand: ["subscription", "lines.data.subscription"],
+        });
+      } catch (e) {
+        console.error("[webhook] invoice.retrieve failed:", inv.id, e?.message || e);
+        return ok(200, { ok: false, error: "invoice.retrieve failed" });
+      }
 
-  const subscriptionId =
-    typeof fullInv?.subscription === "string"
-      ? fullInv.subscription
-      : fullInv?.subscription?.id ||
-        fullInv?.lines?.data?.find((l) => typeof l?.subscription === "string")
-          ?.subscription ||
-        null;
+      const subscriptionId =
+        typeof fullInv?.subscription === "string"
+          ? fullInv.subscription
+          : fullInv?.subscription?.id ||
+            fullInv?.lines?.data?.find((l) => typeof l?.subscription === "string")?.subscription ||
+            null;
 
-  if (!subscriptionId) {
-    console.warn("[webhook] invoice.paid still missing subscription id", {
-      invoice: fullInv.id,
-      keys: Object.keys(fullInv || {}),
-    });
-    return ok(200, { ok: true, skipped: "no-sub-id" });
-  }
+      if (!subscriptionId) {
+        console.warn("[webhook] invoice.paid still missing subscription id", {
+          invoice: fullInv.id,
+        });
+        return ok(200, { ok: true, skipped: "no-sub-id" });
+      }
 
-  // Period end (best-effort)
-  const periodEndSec = fullInv?.lines?.data?.[0]?.period?.end ?? null;
-  const current_period_end =
-    typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
-      ? new Date(periodEndSec * 1000).toISOString()
-      : null;
+      const periodEndSec = fullInv?.lines?.data?.[0]?.period?.end ?? null;
+      const current_period_end =
+        typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
+          ? new Date(periodEndSec * 1000).toISOString()
+          : null;
 
-  // ✅ Activate row (this triggers DB overlap/unique active rule)
-  const { data, error } = await sb
-    .from("sponsored_subscriptions")
-    .update({
-      status: "active",
-      current_period_end,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("stripe_subscription_id", subscriptionId)
-    .select("id, status, business_id, area_id, slot")
-    .maybeSingle();
+      const { data, error } = await sb
+        .from("sponsored_subscriptions")
+        .update({
+          status: "active",
+          current_period_end,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("stripe_subscription_id", subscriptionId)
+        .select("id, status, business_id, area_id, slot")
+        .maybeSingle();
 
-  if (error) {
-    console.error("[webhook] invoice.paid activate error:", error, {
-      subscriptionId,
-    });
+      if (error) {
+        console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
 
-    // If activation failed due to overlap/sold-out, cancel subscription to unwind
-    if (isOverlapDbError(error)) {
-      await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
-      return ok(200, { ok: true, canceled: true });
+        if (isOverlapDbError(error)) {
+          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+          return ok(200, { ok: true, canceled: true });
+        }
+
+        return ok(200, { ok: false, error: "activate failed" });
+      }
+
+      if (!data?.id) {
+        console.error("[webhook] invoice.paid activate: no matching row", { subscriptionId });
+        return ok(200, { ok: false, error: "no matching row to activate" });
+      }
+
+      console.log("[webhook] activated subscription", subscriptionId, data);
+      return ok(200, { ok: true, activated: true, subscriptionId });
     }
 
-    return ok(200, { ok: false, error: "activate failed" });
+    // ignore everything else
+    return ok(200, { ok: true });
+  } catch (err) {
+    console.error("[webhook] handler error:", err);
+    const msg = String(err?.message || "");
+    const isSig = msg.includes("No signatures found") || msg.includes("signature");
+    return ok(isSig ? 400 : 200, { ok: false, error: msg });
   }
-
-  if (!data?.id) {
-    console.error("[webhook] invoice.paid activate: no matching row", {
-      subscriptionId,
-    });
-    return ok(200, { ok: false, error: "no matching row to activate" });
-  }
-
-  console.log("[webhook] activated subscription", subscriptionId, data);
-  return ok(200, { ok: true, activated: true, subscriptionId });
-}
-
+};
