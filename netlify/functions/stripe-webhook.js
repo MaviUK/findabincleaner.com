@@ -187,7 +187,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 
   // ✅ If metadata is missing/invalid UUIDs, do NOT allow a "blocking" row
   const safeStatus =
-    isBlocking && (!business_id || !area_id || !category_id) ? "incomplete" : status;
+    "incomplete";
 
   return {
     business_id,
