@@ -45,14 +45,14 @@ function ok(statusCode, body) {
 function isOverlapDbError(err) {
   const code = err?.code || err?.cause?.code;
   const msg = String(err?.message || err?.cause?.message || "");
+
   return (
     code === "P0001" ||
-    code === "23505" ||
     msg.includes("Area overlaps an existing sponsored area") ||
-    msg.includes("overlaps") ||
     msg.includes("sponsorship exceeds available remaining area")
   );
 }
+
 
 async function safeCancelSubscription(subId, why) {
   if (!subId) return { ok: false, reason: "no-sub-id" };
