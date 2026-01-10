@@ -1,11 +1,12 @@
 // netlify/functions/stripe-webhook.js
 console.log(
-  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY"
+  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID"
 );
 
 // CommonJS (Netlify functions)
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
+// kept import (email/invoicing), but invoice.paid activation does NOT depend on it
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 // ---- env helpers ----
@@ -31,8 +32,7 @@ const stripe = new Stripe(requireEnv("STRIPE_SECRET_KEY"), {
   apiVersion: "2024-06-20",
 });
 
-// ✅ IMPORTANT: treat ONLY 'active' as blocking.
-// Anything else during checkout lifecycle must NOT claim the slot.
+// ✅ IMPORTANT: only ACTIVE is blocking / owns inventory
 const BLOCKING = new Set(["active"]);
 
 // ---- HTTP helper ----
@@ -58,11 +58,10 @@ function uuidOrNull(v) {
   return isUuid(s) ? s : null;
 }
 
-// ✅ NEW: fail-fast assertions (pinpoints the "f" culprit BEFORE Supabase/Postgres)
+// ✅ Fail-fast assertions (pinpoints bad UUIDs before hitting DB)
 function assertUuidOrNull(name, v) {
   if (v == null) return;
   if (!isUuid(v)) {
-    // This will show EXACTLY which field became "f"/false/"" etc
     throw new Error(`BAD UUID ${name}=${JSON.stringify(v)}`);
   }
 }
@@ -83,25 +82,32 @@ function numOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+// ---- invoice helpers ----
+// ✅ Robustly extract subscription id from an invoice payload
+function getInvoiceSubId(inv) {
+  if (typeof inv?.subscription === "string") return inv.subscription;
+  if (typeof inv?.subscription?.id === "string") return inv.subscription.id;
+
+  const lineSub =
+    inv?.lines?.data?.find((l) => typeof l?.subscription === "string")
+      ?.subscription;
+  if (lineSub) return lineSub;
+
+  return null;
+}
+
 // ---- Stripe / Supabase error classifiers ----
 function isOverlapDbError(err) {
   const code = err?.code || err?.cause?.code;
-  const msg = String(err?.message || err?.cause?.message || "");
+  const msg = String(err?.message || err?.cause?.message || "").toLowerCase();
 
-  // ✅ Do NOT treat all 23505 as overlap (that was over-canceling)
+  // ✅ Do NOT treat all 23505 as overlap
   return (
     code === "P0001" ||
-    msg.toLowerCase().includes("area overlaps an existing sponsored area") ||
-    msg.toLowerCase().includes("sponsorship exceeds available remaining area") ||
-    msg.toLowerCase().includes("overlaps")
+    msg.includes("area overlaps an existing sponsored area") ||
+    msg.includes("sponsorship exceeds available remaining area") ||
+    msg.includes("overlaps")
   );
-}
-
-function isDuplicateActiveSlotError(err) {
-  const code = err?.code || err?.cause?.code;
-  const msg = String(err?.message || err?.cause?.message || "");
-  // Your logs show constraint name "ux_active_area_slot"
-  return code === "23505" && (msg.includes("ux_active_area_slot") || msg.includes("uniq_active_slot_per_business"));
 }
 
 async function safeCancelSubscription(subId, why) {
@@ -134,10 +140,11 @@ async function safeCancelSubscription(subId, why) {
 // ---- Normalize helpers ----
 function normalizeSponsoredRowFromSubscription(subscription) {
   const status = String(subscription?.status || "").toLowerCase();
-  const isBlocking = BLOCKING.has(status);
   const meta = subscription?.metadata || {};
 
-  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
+  const business_id = uuidOrNull(
+    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
+  );
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -182,12 +189,12 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     "sponsored_geometry"
   );
 
-  // Only set sponsored_geom for blocking statuses; otherwise null
-  const sponsored_geom = isBlocking ? (geomFromMeta || null) : null;
+  // ✅ We only allow sponsored_geom to be set when ACTIVE (blocking)
+  const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
 
-  // ✅ If metadata is missing/invalid UUIDs, do NOT allow a "blocking" row
-  const safeStatus =
-    "incomplete";
+  // ✅ VERY IMPORTANT:
+  // Do NOT mark rows active here. We activate on invoice.paid only.
+  const safeStatus = "incomplete";
 
   return {
     business_id,
@@ -208,7 +215,9 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 function normalizeSponsoredRowFromCheckoutSession(session) {
   const meta = session?.metadata || {};
 
-  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
+  const business_id = uuidOrNull(
+    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
+  );
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -216,15 +225,23 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
   const slotNum = numOrNull(slotRaw);
   const slot = slotNum && slotNum > 0 ? Math.floor(slotNum) : 1;
 
+  // amount_total usually in cents; your DB expects pennies/cents integer anyway
   const amountTotal = numOrNull(session?.amount_total);
-  const price_monthly_pennies = amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
+  const price_monthly_pennies =
+    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
   const stripe_subscription_id =
     typeof session?.subscription === "string" ? session.subscription : null;
 
-  const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
+  const geomFromMeta = metaGet(
+    meta,
+    "sponsored_geom",
+    "sponsoredGeom",
+    "geom",
+    "geometry"
+  );
   const sponsored_geom = geomFromMeta || null;
 
   return {
@@ -236,7 +253,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
     stripe_subscription_id,
     price_monthly_pennies,
     currency,
-    status: "incomplete", // non-blocking
+    status: "incomplete",
     current_period_end: null,
     sponsored_geom,
     updated_at: new Date().toISOString(),
@@ -244,7 +261,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 }
 
 // ---- DB ops ----
-async function upsertSubscriptionRow(sb, row) {
+async function upsertByStripeSubscriptionId(sb, row) {
   const { data, error } = await sb
     .from("sponsored_subscriptions")
     .upsert(row, { onConflict: "stripe_subscription_id" })
@@ -252,36 +269,6 @@ async function upsertSubscriptionRow(sb, row) {
     .maybeSingle();
 
   return { data, error };
-}
-
-async function upsertCheckoutDraft(sb, row) {
-  if (!row?.stripe_subscription_id) return { data: null, error: null };
-
-  const { data, error } = await sb
-    .from("sponsored_subscriptions")
-    .upsert(row, { onConflict: "stripe_subscription_id" })
-    .select("id, business_id, status, stripe_subscription_id")
-    .maybeSingle();
-
-  return { data, error };
-}
-
-async function hasAcceptedSponsoredRow(sb, subscriptionId) {
-  if (!subscriptionId) return false;
-
-  const { data, error } = await sb
-    .from("sponsored_subscriptions")
-    .select("id, business_id, status")
-    .eq("stripe_subscription_id", subscriptionId)
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (error) return false;
-
-  const row = Array.isArray(data) ? data[0] : data;
-  if (!row?.business_id) return false;
-
-  return BLOCKING.has(String(row.status || "").toLowerCase());
 }
 
 // ---- handler ----
@@ -313,21 +300,20 @@ exports.handler = async (event) => {
       console.log("[webhook]", type, "id=" + stripeEvent.id);
     }
 
-    // 1) checkout.session.completed → upsert draft row (incomplete) keyed by subscription id
+    // 1) checkout.session.completed → store metadata early (incomplete) keyed by subscription id
     if (type === "checkout.session.completed") {
       const session = obj;
-
       const draft = normalizeSponsoredRowFromCheckoutSession(session);
 
       if (!draft.stripe_subscription_id)
         return ok(200, { ok: true, skipped: "no-sub-id" });
 
-      // ✅ ASSERT UUIDs HERE (this is where "f" will be caught)
+      // UUID assertions (helps catch "f")
       assertUuidOrNull("business_id", draft.business_id);
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
 
-      const { data, error } = await upsertCheckoutDraft(sb, draft);
+      const { data, error } = await upsertByStripeSubscriptionId(sb, draft);
       if (error) {
         console.error("[webhook] upsert checkout draft error:", error, draft);
         return ok(200, { ok: false, error: "DB write failed (draft)" });
@@ -336,28 +322,26 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wroteDraft: true, id: data?.id || null });
     }
 
-    // 2) subscription.* → upsert subscription row (still non-blocking unless status becomes active)
+    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here
     if (type.startsWith("customer.subscription.")) {
       const sub = obj;
 
       const row = normalizeSponsoredRowFromSubscription(sub);
-
       if (!row.stripe_subscription_id)
         return ok(200, { ok: true, skipped: "no-sub-id" });
 
-      // ✅ ASSERT UUIDs HERE TOO
       assertUuidOrNull("business_id", row.business_id);
       assertUuidOrNull("area_id", row.area_id);
       assertUuidOrNull("category_id", row.category_id);
 
-      const { data, error } = await upsertSubscriptionRow(sb, row);
+      const { data, error } = await upsertByStripeSubscriptionId(sb, row);
 
       if (error) {
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
 
-        // Cancel ONLY on true overlap/sold-out or true active-slot duplicates
-        if (isOverlapDbError(error) || isDuplicateActiveSlotError(error)) {
-          await safeCancelSubscription(sub.id, "Overlap/Sold-out/duplicate violation");
+        // Only cancel on REAL overlap/sold-out errors (not random uniques)
+        if (isOverlapDbError(error)) {
+          await safeCancelSubscription(sub.id, "Overlap/Sold-out violation");
           return ok(200, { ok: true, canceled: true });
         }
 
@@ -367,39 +351,49 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wrote: true, id: data?.id || null });
     }
 
-    // 3) invoice.paid → create invoice + email only if accepted row exists
+    // 3) invoice.paid → THIS is where we activate (claim inventory)
     if (type === "invoice.paid") {
       const inv = obj;
+      const subscriptionId = getInvoiceSubId(inv);
 
-      const subscriptionId =
-        typeof inv.subscription === "string"
-          ? inv.subscription
-          : inv.subscription?.id || null;
-
-      const accepted = await hasAcceptedSponsoredRow(sb, subscriptionId);
-
-      if (!accepted) {
-        console.warn(
-          "[webhook] invoice.paid but no accepted sponsored_subscriptions row; skipping email",
-          { invoice: inv.id, subId: subscriptionId }
-        );
-        return ok(200, { ok: true, skipped: "no-accepted-row" });
+      if (!subscriptionId) {
+        console.warn("[webhook] invoice.paid missing subscription id", { invoice: inv.id });
+        return ok(200, { ok: true, skipped: "no-sub-id" });
       }
 
-      try {
-        const result = await createInvoiceAndEmailByStripeInvoiceId(inv.id, {
-          force: true,
-        });
-        console.log("[webhook] createInvoiceAndEmail result:", inv.id, result);
-      } catch (e) {
-        console.error(
-          "[webhook] createInvoiceAndEmail ERROR:",
-          inv.id,
-          e?.message || e
-        );
+      // Try to pull a sensible period end from the first line item if present
+      const periodEndSec = inv?.lines?.data?.[0]?.period?.end ?? null;
+      const current_period_end =
+        typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
+          ? new Date(periodEndSec * 1000).toISOString()
+          : null;
+
+      // ✅ Activate (this will trigger your DB allocation/overlap/unique active slot rules)
+      const { data, error } = await sb
+        .from("sponsored_subscriptions")
+        .update({
+          status: "active",
+          current_period_end,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("stripe_subscription_id", subscriptionId)
+        .select("id, status, business_id, area_id, slot")
+        .maybeSingle();
+
+      if (error) {
+        console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
+
+        // If activation failed due to overlap/sold-out, cancel subscription to unwind
+        if (isOverlapDbError(error)) {
+          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+          return ok(200, { ok: true, canceled: true });
+        }
+
+        return ok(200, { ok: false, error: "activate failed" });
       }
 
-      return ok(200, { ok: true });
+      console.log("[webhook] activated subscription", subscriptionId, data);
+      return ok(200, { ok: true, activated: true, subscriptionId });
     }
 
     // ignore everything else
