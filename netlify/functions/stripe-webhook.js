@@ -351,57 +351,78 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wrote: true, id: data?.id || null });
     }
 
-    // 3) invoice.paid → THIS is where we activate (claim inventory)
-    if (type === "invoice.paid") {
-      const inv = obj;
-      const subscriptionId = getInvoiceSubId(inv);
+  // 3) invoice.paid → activate (claim inventory)
+if (type === "invoice.paid") {
+  const inv = obj;
 
-      if (!subscriptionId) {
-        console.warn("[webhook] invoice.paid missing subscription id", { invoice: inv.id });
-        return ok(200, { ok: true, skipped: "no-sub-id" });
-      }
+  // Always retrieve full invoice from Stripe to get subscription reliably
+  let fullInv = inv;
+  try {
+    fullInv = await stripe.invoices.retrieve(inv.id, {
+      expand: ["subscription", "lines.data.subscription"],
+    });
+  } catch (e) {
+    console.error("[webhook] invoice.retrieve failed:", inv.id, e?.message || e);
+    return ok(200, { ok: false, error: "invoice.retrieve failed" });
+  }
 
-      // Try to pull a sensible period end from the first line item if present
-      const periodEndSec = inv?.lines?.data?.[0]?.period?.end ?? null;
-      const current_period_end =
-        typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
-          ? new Date(periodEndSec * 1000).toISOString()
-          : null;
+  const subscriptionId =
+    typeof fullInv?.subscription === "string"
+      ? fullInv.subscription
+      : fullInv?.subscription?.id ||
+        fullInv?.lines?.data?.find((l) => typeof l?.subscription === "string")
+          ?.subscription ||
+        null;
 
-      // ✅ Activate (this will trigger your DB allocation/overlap/unique active slot rules)
-      const { data, error } = await sb
-        .from("sponsored_subscriptions")
-        .update({
-          status: "active",
-          current_period_end,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("stripe_subscription_id", subscriptionId)
-        .select("id, status, business_id, area_id, slot")
-        .maybeSingle();
+  if (!subscriptionId) {
+    console.warn("[webhook] invoice.paid still missing subscription id", {
+      invoice: fullInv.id,
+      keys: Object.keys(fullInv || {}),
+    });
+    return ok(200, { ok: true, skipped: "no-sub-id" });
+  }
 
-      if (error) {
-        console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
+  // Period end (best-effort)
+  const periodEndSec = fullInv?.lines?.data?.[0]?.period?.end ?? null;
+  const current_period_end =
+    typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
+      ? new Date(periodEndSec * 1000).toISOString()
+      : null;
 
-        // If activation failed due to overlap/sold-out, cancel subscription to unwind
-        if (isOverlapDbError(error)) {
-          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
-          return ok(200, { ok: true, canceled: true });
-        }
+  // ✅ Activate row (this triggers DB overlap/unique active rule)
+  const { data, error } = await sb
+    .from("sponsored_subscriptions")
+    .update({
+      status: "active",
+      current_period_end,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("stripe_subscription_id", subscriptionId)
+    .select("id, status, business_id, area_id, slot")
+    .maybeSingle();
 
-        return ok(200, { ok: false, error: "activate failed" });
-      }
+  if (error) {
+    console.error("[webhook] invoice.paid activate error:", error, {
+      subscriptionId,
+    });
 
-      console.log("[webhook] activated subscription", subscriptionId, data);
-      return ok(200, { ok: true, activated: true, subscriptionId });
+    // If activation failed due to overlap/sold-out, cancel subscription to unwind
+    if (isOverlapDbError(error)) {
+      await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+      return ok(200, { ok: true, canceled: true });
     }
 
-    // ignore everything else
-    return ok(200, { ok: true });
-  } catch (err) {
-    console.error("[webhook] handler error:", err);
-    const msg = String(err?.message || "");
-    const isSig = msg.includes("No signatures found") || msg.includes("signature");
-    return ok(isSig ? 400 : 200, { ok: false, error: msg });
+    return ok(200, { ok: false, error: "activate failed" });
   }
-};
+
+  if (!data?.id) {
+    console.error("[webhook] invoice.paid activate: no matching row", {
+      subscriptionId,
+    });
+    return ok(200, { ok: false, error: "no matching row to activate" });
+  }
+
+  console.log("[webhook] activated subscription", subscriptionId, data);
+  return ok(200, { ok: true, activated: true, subscriptionId });
+}
+
