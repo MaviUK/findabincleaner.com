@@ -1,5 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
-import Draggable from "react-draggable";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 type Slot = 1;
 
@@ -65,7 +64,88 @@ export default function AreaSponsorModal({
     return pv.priceCents / 100;
   }, [pv.priceCents]);
 
+  // -------------------------
+  // ✅ Draggable (no deps)
+  // -------------------------
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const posStartRef = useRef({ x: 0, y: 0 });
+
+  // initial position: centered-ish
+  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [posReady, setPosReady] = useState(false);
+
+  // Set initial position once when opened
+  useEffect(() => {
+    if (!open) return;
+    // reset to a nice default each open (optional)
+    setPos({ x: 0, y: 0 });
+    setPosReady(true);
+  }, [open]);
+
+  const clampToViewport = (x: number, y: number) => {
+    const el = modalRef.current;
+    if (!el) return { x, y };
+
+    const rect = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Keep at least 12px visible margin
+    const margin = 12;
+
+    // rect is current size; x/y are translate offsets from the centered base
+    // We'll clamp based on intended top-left after translate:
+    // Base anchor is centered container, so easiest: clamp by limiting translate
+    // relative to viewport bounds with element size.
+    const maxLeftShift = (vw / 2) - margin; // how far left we can move center anchor
+    const maxRightShift = (vw / 2) - margin;
+    const maxUpShift = (vh / 5) - margin; // base top is 18% (approx), close enough
+    const maxDownShift = vh - rect.height - margin;
+
+    // practical clamps that work well in-app
+    const cx = Math.max(-maxLeftShift, Math.min(x, maxRightShift));
+    const cy = Math.max(-maxUpShift, Math.min(y, maxDownShift));
+    return { x: cx, y: cy };
+  };
+
+  const getPoint = (e: React.PointerEvent) => ({ x: e.clientX, y: e.clientY });
+
+  const onPointerDown = (e: React.PointerEvent) => {
+    // only left click / primary touch
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+
+    draggingRef.current = true;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+
+    const p = getPoint(e);
+    dragStartRef.current = p;
+    posStartRef.current = { ...pos };
+  };
+
+  const onPointerMove = (e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+
+    const p = getPoint(e);
+    const dx = p.x - dragStartRef.current.x;
+    const dy = p.y - dragStartRef.current.y;
+
+    const next = clampToViewport(posStartRef.current.x + dx, posStartRef.current.y + dy);
+    setPos(next);
+  };
+
+  const onPointerUp = (e: React.PointerEvent) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {}
+  };
+
+  // -------------------------
   // ✅ Preview (per industry)
+  // -------------------------
   useEffect(() => {
     let cancelled = false;
 
@@ -104,13 +184,10 @@ export default function AreaSponsorModal({
         }
 
         const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
-        const availableKm2 =
-          typeof j.available_km2 === "number" ? j.available_km2 : 0;
+        const availableKm2 = typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
         const soldOut =
-          Boolean(j.sold_out) ||
-          availableKm2 <= EPS ||
-          j.reason === "no_remaining";
+          Boolean(j.sold_out) || availableKm2 <= EPS || j.reason === "no_remaining";
 
         if (!cancelled) {
           setPv({
@@ -148,7 +225,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, categoryId]); // (intentionally not depending on onPreviewGeoJSON)
+  }, [open, businessId, areaId, slot, categoryId]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -179,13 +256,7 @@ export default function AreaSponsorModal({
     setCheckoutErr(null);
 
     try {
-      // ✅ IMPORTANT: log exactly what we are about to send
-      console.log("[sponsored-checkout] sending", {
-        businessId,
-        areaId,
-        slot,
-        categoryId,
-      });
+      console.log("[sponsored-checkout] sending", { businessId, areaId, slot, categoryId });
 
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
@@ -231,109 +302,108 @@ export default function AreaSponsorModal({
 
   return (
     <div className="fixed inset-0 z-[10000]">
-      {/* Overlay: dims but doesn't swallow clicks on map */}
-      <div
-        className="absolute inset-0 bg-black/40"
-        style={{ pointerEvents: "none" }}
-      />
+      {/* Overlay: dims only; DOES NOT block map clicks */}
+      <div className="absolute inset-0 bg-black/40" style={{ pointerEvents: "none" }} />
 
-      {/* Draggable modal container */}
-      <Draggable handle=".drag-handle" bounds="body">
-        <div
-          className="absolute left-1/2 top-[18%] -translate-x-1/2"
-          style={{ pointerEvents: "auto" }}
-        >
-          <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
-            <div className="drag-handle flex items-center justify-between px-4 py-3 border-b cursor-move select-none">
-              <div className="font-semibold">
-                Sponsor — {areaName || "Area"}
-                <div className="text-[11px] text-gray-400 font-normal">
-                  Drag this bar to move the window
-                </div>
+      {/* Draggable modal wrapper */}
+      <div
+        ref={modalRef}
+        className="absolute left-1/2 top-[18%] -translate-x-1/2"
+        style={{
+          transform: `translate(-50%, 0) translate(${pos.x}px, ${pos.y}px)`,
+          pointerEvents: "auto",
+        }}
+      >
+        <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
+          {/* Drag handle */}
+          <div
+            className="flex items-center justify-between px-4 py-3 border-b cursor-move select-none touch-none"
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
+          >
+            <div className="font-semibold">
+              Sponsor — {areaName || "Area"}
+              <div className="text-[11px] text-gray-400 font-normal">
+                Drag this bar to move the window
               </div>
-              <button className="btn" onClick={handleClose}>
-                Close
-              </button>
             </div>
 
-            <div className="p-4 space-y-3">
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-                Featured sponsorship makes you first in local search results.
-                Preview highlights the purchasable sub-region.
+            <button className="btn" onClick={handleClose}>
+              Close
+            </button>
+          </div>
+
+          <div className="p-4 space-y-3">
+            <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
+              Featured sponsorship makes you first in local search results. Preview highlights the
+              purchasable sub-region.
+            </div>
+
+            {/* tiny debug line (remove later) */}
+            <div className="text-[11px] text-gray-500">
+              Debug: areaId={areaId} • categoryId={categoryId || "null"}
+            </div>
+
+            {!categoryId && (
+              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+                Missing categoryId
               </div>
+            )}
 
-              {/* tiny debug line (remove later) */}
-              <div className="text-[11px] text-gray-500">
-                Debug: areaId={areaId} • categoryId={categoryId || "null"}
+            {pv.error && (
+              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+                {pv.error}
               </div>
+            )}
 
-              {!categoryId && (
-                <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                  Missing categoryId
-                </div>
-              )}
-
-              {pv.error && (
-                <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                  {pv.error}
-                </div>
-              )}
-
-              {checkoutErr && (
-                <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                  {checkoutErr}
-                </div>
-              )}
-
-              {pv.soldOut && !hasArea && (
-                <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                  No purchasable area left for this industry in this polygon.
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-3">
-                <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
-                <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
-                <Stat
-                  label="Price per km² / month"
-                  hint="From server"
-                  value={GBP(pv.ratePerKm2 ?? null)}
-                />
-                <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
-                <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-                <Stat label="Coverage" value={coverageLabel} />
+            {checkoutErr && (
+              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+                {checkoutErr}
               </div>
+            )}
 
-              <div className="flex items-center justify-end gap-2 pt-1">
-                <button className="btn" onClick={handleClose}>
-                  Cancel
-                </button>
-                <button
-                  className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
-                  onClick={startCheckout}
-                  disabled={!canBuy}
-                  title={canBuy ? "Buy now" : ""} // prevents tooltip when disabled
-                >
-                  {checkingOut ? "Redirecting..." : "Buy now"}
-                </button>
+            {pv.soldOut && !hasArea && (
+              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
+                No purchasable area left for this industry in this polygon.
               </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
+              <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
+              <Stat
+                label="Price per km² / month"
+                hint="From server"
+                value={GBP(pv.ratePerKm2 ?? null)}
+              />
+              <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
+              <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
+              <Stat label="Coverage" value={coverageLabel} />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-1">
+              <button className="btn" onClick={handleClose}>
+                Cancel
+              </button>
+              <button
+                className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
+                onClick={startCheckout}
+                disabled={!canBuy}
+                title={canBuy ? "Buy now" : ""}
+              >
+                {checkingOut ? "Redirecting..." : "Buy now"}
+              </button>
             </div>
           </div>
         </div>
-      </Draggable>
+      </div>
     </div>
   );
 }
 
-function Stat({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
   return (
     <div className="border rounded-lg p-3">
       <div className="text-xs text-gray-500">{label}</div>
