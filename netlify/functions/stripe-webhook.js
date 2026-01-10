@@ -1,6 +1,6 @@
 // netlify/functions/stripe-webhook.js
 console.log(
-  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID+INVOICE_RETRIEVE"
+  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID+INVOICE_RETRIEVE+NO_DOWNGRADE"
 );
 
 // CommonJS (Netlify functions)
@@ -93,8 +93,22 @@ function isOverlapDbError(err) {
     code === "P0001" ||
     msg.includes("area overlaps an existing sponsored area") ||
     msg.includes("sponsorship exceeds available remaining area") ||
-    msg.includes("overlaps")
+    msg.includes("overlaps") ||
+    msg.includes("remaining area")
   );
+}
+
+// Helpers for monotonic status (never downgrade active)
+function statusRank(s) {
+  const v = String(s || "").toLowerCase();
+  if (v === "active") return 3;
+  if (v === "trialing" || v === "past_due" || v === "unpaid") return 2;
+  if (v === "incomplete" || v === "incomplete_expired") return 1;
+  if (v === "canceled" || v === "cancelled") return 0;
+  return 1;
+}
+function isActiveOrBetter(s) {
+  return statusRank(s) >= 3;
 }
 
 async function safeCancelSubscription(subId, why) {
@@ -172,7 +186,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     "sponsored_geometry"
   );
 
-  // only set geom when truly blocking (we're not blocking here anyway)
+  // only set geom when Stripe says active (but we still won't *set* active here)
   const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
 
   // ✅ VERY IMPORTANT: never mark active here; activate on invoice.paid
@@ -238,10 +252,28 @@ async function upsertByStripeSubscriptionId(sb, row) {
   const { data, error } = await sb
     .from("sponsored_subscriptions")
     .upsert(row, { onConflict: "stripe_subscription_id" })
-    .select("id, business_id, status, stripe_subscription_id")
+    .select("id, business_id, status, stripe_subscription_id, current_period_end")
     .maybeSingle();
 
   return { data, error };
+}
+
+async function fetchExistingBySubId(sb, stripe_subscription_id) {
+  if (!stripe_subscription_id) return { data: null, error: null };
+  return sb
+    .from("sponsored_subscriptions")
+    .select("id, status, current_period_end")
+    .eq("stripe_subscription_id", stripe_subscription_id)
+    .maybeSingle();
+}
+
+function preserveActive(existing, incoming) {
+  // If existing is active, NEVER downgrade
+  if (existing?.status === "active") {
+    incoming.status = "active";
+    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
+  }
+  return incoming;
 }
 
 // ---- handler ----
@@ -268,16 +300,25 @@ exports.handler = async (event) => {
       console.log("[webhook]", type, "id=" + stripeEvent.id);
     }
 
-    // 1) checkout.session.completed → store metadata early (incomplete)
+    // 1) checkout.session.completed → store metadata early (incomplete) BUT NEVER DOWNGRADE ACTIVE
     if (type === "checkout.session.completed") {
       const session = obj;
       const draft = normalizeSponsoredRowFromCheckoutSession(session);
 
       if (!draft.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
 
+      // UUID assertions (helps catch "f")
       assertUuidOrNull("business_id", draft.business_id);
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
+
+      const { data: existing, error: exErr } = await fetchExistingBySubId(
+        sb,
+        draft.stripe_subscription_id
+      );
+      if (exErr) console.error("[webhook] existing lookup failed (checkout):", exErr);
+
+      preserveActive(existing, draft);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, draft);
       if (error) {
@@ -285,10 +326,15 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "DB write failed (draft)" });
       }
 
-      return ok(200, { ok: true, wroteDraft: true, id: data?.id || null });
+      return ok(200, {
+        ok: true,
+        wroteDraft: true,
+        id: data?.id || null,
+        status: data?.status || null,
+      });
     }
 
-    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here
+    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here (and NEVER DOWNGRADE ACTIVE)
     if (type.startsWith("customer.subscription.")) {
       const sub = obj;
 
@@ -298,6 +344,14 @@ exports.handler = async (event) => {
       assertUuidOrNull("business_id", row.business_id);
       assertUuidOrNull("area_id", row.area_id);
       assertUuidOrNull("category_id", row.category_id);
+
+      const { data: existing, error: exErr } = await fetchExistingBySubId(
+        sb,
+        row.stripe_subscription_id
+      );
+      if (exErr) console.error("[webhook] existing lookup failed (sub):", exErr);
+
+      preserveActive(existing, row);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, row);
 
@@ -313,7 +367,7 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "DB write failed" });
       }
 
-      return ok(200, { ok: true, wrote: true, id: data?.id || null });
+      return ok(200, { ok: true, wrote: true, id: data?.id || null, status: data?.status || null });
     }
 
     // 3) invoice.paid → retrieve invoice from Stripe, extract subscription, activate row
@@ -358,12 +412,13 @@ exports.handler = async (event) => {
           updated_at: new Date().toISOString(),
         })
         .eq("stripe_subscription_id", subscriptionId)
-        .select("id, status, business_id, area_id, slot")
+        .select("id, status, business_id, area_id, slot, category_id")
         .maybeSingle();
 
       if (error) {
         console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
 
+        // If activation failed due to overlap/sold-out, cancel subscription to unwind
         if (isOverlapDbError(error)) {
           await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
           return ok(200, { ok: true, canceled: true });
