@@ -389,70 +389,73 @@ export default function ServiceAreaEditor({
   }
 
   const fetchSponsorship = useCallback(
-    async (areaIds: string[]) => {
-      if (!areaIds.length || !myBusinessId) return;
+  async (areaIds: string[]) => {
+    if (!areaIds.length || !myBusinessId) return;
 
-      try {
-        const res = await fetch("/.netlify/functions/area-sponsorship", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            areaIds,
-            categoryId, // ✅ isolate by industry
-          }),
-        });
-        if (!res.ok) throw new Error(`sponsorship ${res.status}`);
+    try {
+      const res = await fetch("/.netlify/functions/area-sponsorship", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          areaIds,
+          categoryId, // ✅ isolate by industry
+        }),
+      });
 
-        const raw: { areas: Array<any> } = await res.json();
+      if (!res.ok) throw new Error(`sponsorship ${res.status}`);
 
-        const map: SponsorshipMap = {};
-        for (const a of raw.areas || []) {
-          let slot: SingleSlotState | null = null;
+      const raw: { areas: Array<any> } = await res.json();
 
-          if (Array.isArray(a.slots)) {
-            const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
-            if (s1) {
-              slot = {
-                taken: Boolean(s1.taken),
-                status: s1.status ?? null,
-                owner_business_id:
-                  s1.owner_business_id ??
-                  s1.by_business_id ??
-                  s1.business_id ??
-                  null,
-                sponsored_geojson: s1.sponsored_geojson ?? null, // ✅ NEW
-              };
-            }
-          }
+      const map: SponsorshipMap = {};
 
-          if (!slot) {
+      for (const a of raw.areas || []) {
+        let slot: SingleSlotState | null = null;
+
+        if (Array.isArray(a.slots)) {
+          const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
+          if (s1) {
             slot = {
-              taken: Boolean(a.taken),
-              status: a.status ?? null,
-              owner_business_id: a.owner_business_id ?? a.business_id ?? null,
-              sponsored_geojson: a.sponsored_geojson ?? null, // ✅ NEW
+              taken: Boolean(s1.taken),
+              status: s1.status ?? null,
+              owner_business_id:
+                s1.owner_business_id ??
+                s1.by_business_id ??
+                s1.business_id ??
+                null,
+              sponsored_geojson: s1.sponsored_geojson ?? null, // ✅ NEW
             };
           }
+        }
 
-          const paint = ownedPaintFor(slot, myBusinessId);
-          const sponsored_geojson = slot?.sponsored_geojson ?? null;
+        if (!slot) {
+          slot = {
+            taken: Boolean(a.taken),
+            status: a.status ?? null,
+            owner_business_id: a.owner_business_id ?? a.business_id ?? null,
+            sponsored_geojson: a.sponsored_geojson ?? null, // ✅ NEW
+          };
+        }
 
-map[a.area_id] = {
-  area_id: a.area_id,
-  slot,
-  sponsored_geojson, // ✅ store at top-level too (optional, but handy)
-  paint,
-};
+        const paint = ownedPaintFor(slot, myBusinessId);
+        const sponsored_geojson = slot?.sponsored_geojson ?? null;
 
-
-        setSponsorship(map);
-      } catch (e) {
-        console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
-        setSponsorship({});
+        map[a.area_id] = {
+          area_id: a.area_id,
+          slot,
+          sponsored_geojson, // optional top-level copy
+          paint,
+        };
       }
-    },
-    [myBusinessId, categoryId]
-  );
+
+      setSponsorship(map);
+    } catch (e) {
+      console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
+      setSponsorship({});
+    }
+  },
+  [myBusinessId, categoryId]
+);
+
 
   useEffect(() => {
     const ids = serviceAreas.map((a) => a.id);
@@ -1175,42 +1178,6 @@ map[a.area_id] = {
     ));
   })}
 
-
-              {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
-              {activeAreaId === null &&
-                !sponsorOpen && // optional: hide sponsored fills while preview modal open
-                sortedServiceAreas.map((a) => {
-                  const s = getAreaSlotState(a.id);
-                  if (!s || !s.taken || !isBlockingStatus(s.status)) return null;
-                  if (!s.sponsored_geojson) return null;
-
-                  const isMine = s.owner_business_id === myBusinessId;
-
-                  const fill = isMine
-                    ? "rgba(34, 197, 94, 0.45)"
-                    : "rgba(239, 68, 68, 0.30)";
-                  const stroke = isMine ? "#16a34a" : "#dc2626";
-
-                  const sponsoredPaths = geoToPaths(s.sponsored_geojson);
-
-                  return sponsoredPaths.map((p, i) => (
-                    <Polygon
-                      key={`sponsored-${a.id}-${i}`}
-                      paths={p.paths}
-                      options={{
-                        strokeWeight: 2,
-                        strokeOpacity: 1,
-                        strokeColor: stroke,
-                        fillColor: fill,
-                        fillOpacity: 0.35,
-                        clickable: false,
-                        editable: false,
-                        draggable: false,
-                        zIndex: 50,
-                      }}
-                    />
-                  ));
-                })}
 
               {/* Preview overlay (available region) */}
               {previewPolys.map((p, i) => (
