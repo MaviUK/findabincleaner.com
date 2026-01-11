@@ -41,8 +41,10 @@ type SingleSlotState = {
 type SponsorshipState = {
   area_id: string;
   slot: SingleSlotState; // single Featured slot
+  sponsored_geojson?: any | null; // ✅ NEW
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
+
 
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 type Libraries = ("drawing" | "geometry")[];
