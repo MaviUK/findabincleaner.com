@@ -20,12 +20,11 @@ export interface ServiceAreaRow {
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
 
-  // ✅ NEW: lock info (from RPC)
+  // lock info (from RPC)
   is_sponsored_locked?: boolean;
   sponsored_until?: string | null;
 }
 
-// Keep Slot type for back-compat where needed
 type Slot = 1;
 
 type SingleSlotState = {
@@ -33,15 +32,14 @@ type SingleSlotState = {
   status: string | null;
   owner_business_id: string | null;
 
-  // ✅ NEW: actual sponsored geometry (ONLY the purchased portion)
-  // Expected to be GeoJSON (Polygon/MultiPolygon/Feature/FeatureCollection).
+  // purchased portion (GeoJSON)
   sponsored_geojson?: any | null;
 };
 
 type SponsorshipState = {
   area_id: string;
-  slot: SingleSlotState; // single Featured slot
-  sponsored_geojson?: any | null; // ✅ NEW
+  slot: SingleSlotState;
+  sponsored_geojson?: any | null;
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 
@@ -141,8 +139,52 @@ function fmtArea(m2: number) {
   return `${km2.toFixed(2)} km² (${hectares.toFixed(1)} ha)`;
 }
 
+/** Parse JSON if string, otherwise pass through */
+function maybeParseGeo(geo: any) {
+  if (!geo) return null;
+  if (typeof geo === "string") {
+    try {
+      return JSON.parse(geo);
+    } catch {
+      return null;
+    }
+  }
+  return geo;
+}
+
+/**
+ * Heuristic: try to interpret coordinate pairs as [lng,lat] (GeoJSON standard),
+ * BUT if it looks like UK [lat,lng] (lat ~ 49..61, lng ~ -11..4), swap.
+ */
+function pairToLatLng(pair: any): { lat: number; lng: number } | null {
+  if (!Array.isArray(pair) || pair.length < 2) return null;
+
+  const a = Number(pair[0]);
+  const b = Number(pair[1]);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+
+  // UK-ish detection: lat ~ 49..61, lng ~ -11..4
+  const aLooksLikeLatUK = a >= 49 && a <= 61;
+  const bLooksLikeLngUK = b >= -11 && b <= 4;
+
+  const bLooksLikeLatUK = b >= 49 && b <= 61;
+  const aLooksLikeLngUK = a >= -11 && a <= 4;
+
+  // If it "strongly" looks like [lat,lng], swap
+  if (aLooksLikeLatUK && bLooksLikeLngUK && !bLooksLikeLatUK) {
+    return { lat: a, lng: b };
+  }
+  if (bLooksLikeLatUK && aLooksLikeLngUK && !aLooksLikeLatUK) {
+    return { lat: b, lng: a };
+  }
+
+  // Default: GeoJSON [lng,lat]
+  return { lat: b, lng: a };
+}
+
 /** Accept Polygon/MultiPolygon/Feature/FeatureCollection and return array of rings-paths for <Polygon /> */
-function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
+function geoToPaths(geoInput: any): { paths: { lat: number; lng: number }[][] }[] {
+  const geo = maybeParseGeo(geoInput);
   if (!geo) return [];
 
   if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
@@ -154,20 +196,11 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   }
 
   if (geo.type === "MultiPolygon" && Array.isArray(geo.coordinates)) {
-    return (geo.coordinates as number[][][][]).map((poly) => ({
-      paths: poly.map((ring) =>
-        ring.map((pair) => {
-          const [a, b] = pair;
-          const lng =
-            typeof a === "number" && typeof b === "number"
-              ? a
-              : (pair as any)[0];
-          const lat =
-            typeof a === "number" && typeof b === "number"
-              ? b
-              : (pair as any)[1];
-          return { lat, lng };
-        })
+    return (geo.coordinates as any[]).map((poly: any) => ({
+      paths: (poly as any[]).map((ring: any[]) =>
+        ring
+          .map((pair: any) => pairToLatLng(pair))
+          .filter(Boolean) as { lat: number; lng: number }[]
       ),
     }));
   }
@@ -175,19 +208,10 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
   if (geo.type === "Polygon" && Array.isArray(geo.coordinates)) {
     return [
       {
-        paths: (geo.coordinates as number[][][]).map((ring) =>
-          ring.map((pair) => {
-            const [a, b] = pair;
-            const lng =
-              typeof a === "number" && typeof b === "number"
-                ? a
-                : (pair as any)[0];
-            const lat =
-              typeof a === "number" && typeof b === "number"
-                ? b
-                : (pair as any)[1];
-            return { lat, lng };
-          })
+        paths: (geo.coordinates as any[]).map((ring: any[]) =>
+          ring
+            .map((pair: any) => pairToLatLng(pair))
+            .filter(Boolean) as { lat: number; lng: number }[]
         ),
       },
     ];
@@ -201,15 +225,19 @@ function geoToPaths(geo: any): { paths: { lat: number; lng: number }[][] }[] {
 }
 
 /** area size helper for sorting (km²) */
-function geoMultiPolygonAreaKm2(gj: any): number {
-  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates))
-    return 0;
+function geoMultiPolygonAreaKm2(gjInput: any): number {
+  const gj = maybeParseGeo(gjInput);
+  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
 
   let totalM2 = 0;
   for (const poly of gj.coordinates as number[][][][]) {
     for (let ringIndex = 0; ringIndex < poly.length; ringIndex++) {
       const ring = poly[ringIndex];
-      const path = ring.map(([lng, lat]) => new google.maps.LatLng(lat, lng));
+      const path = ring
+        .map((pair: any) => pairToLatLng(pair))
+        .filter(Boolean)
+        .map((p) => new google.maps.LatLng(p!.lat, p!.lng));
+
       const ringM2 = google.maps.geometry.spherical.computeArea(path);
       totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
     }
@@ -222,16 +250,12 @@ type Props = {
   cleanerId?: string;
   categoryId?: string | null;
   sponsorshipVersion?: number;
-  onSlotAction?: (
-    area: { id: string; name?: string },
-    slot: Slot
-  ) => void | Promise<void>;
+  onSlotAction?: (area: { id: string; name?: string }, slot: Slot) => void | Promise<void>;
 };
 
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
 
-// ✅ categories for "Copy to Industry"
 type CategoryRow = { id: string; name: string; slug: string | null };
 
 export default function ServiceAreaEditor({
@@ -257,7 +281,6 @@ export default function ServiceAreaEditor({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // availability from server
   const [avail, setAvail] = useState<AvailMap>({});
   const [availLoading, setAvailLoading] = useState<AvailLoadingMap>({});
 
@@ -272,16 +295,11 @@ export default function ServiceAreaEditor({
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
 
-  // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
-  const drawPreview = useCallback(
-    (multi: any) => setPreviewGeo(multi ?? null),
-    []
-  );
+  const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
   const previewPolys = useMemo(() => geoToPaths(previewGeo), [previewGeo]);
 
-  // ✅ Copy-to-industry state
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [copyOpen, setCopyOpen] = useState(false);
   const [copyArea, setCopyArea] = useState<ServiceAreaRow | null>(null);
@@ -290,15 +308,13 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-  // ✅ Fetch ONLY active industries for this cleaner
   useEffect(() => {
     if (!myBusinessId) return;
 
     (async () => {
-      const { data, error } = await supabase.rpc(
-        "list_active_categories_for_cleaner",
-        { p_cleaner_id: myBusinessId }
-      );
+      const { data, error } = await supabase.rpc("list_active_categories_for_cleaner", {
+        p_cleaner_id: myBusinessId,
+      });
 
       if (error) {
         console.warn("active categories fetch error:", error);
@@ -310,7 +326,6 @@ export default function ServiceAreaEditor({
     })();
   }, [myBusinessId]);
 
-  // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
     setSponsorship({});
     setAvail({});
@@ -321,7 +336,6 @@ export default function ServiceAreaEditor({
     setManageOpen(false);
     setManageAreaId(null);
 
-    // also close copy modal
     setCopyOpen(false);
     setCopyArea(null);
     setCopyTargetCategoryId("");
@@ -337,7 +351,6 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [draftPolys]);
 
-  // Fetch areas (per industry)
   const fetchAreas = useCallback(async () => {
     if (!myBusinessId) return;
     setLoading(true);
@@ -345,7 +358,7 @@ export default function ServiceAreaEditor({
     try {
       const { data, error } = await supabase.rpc("list_service_areas", {
         p_cleaner_id: myBusinessId,
-        p_category_id: categoryId, // ✅ per-industry areas
+        p_category_id: categoryId,
       });
       if (error) throw error;
       setServiceAreas(data || []);
@@ -360,8 +373,6 @@ export default function ServiceAreaEditor({
     if (!myBusinessId) return;
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
-
-  // ------- Sponsorship occupancy (single-slot) -------
 
   const OWNED_BY_ME_PAINT = {
     tier: 3,
@@ -395,14 +406,13 @@ export default function ServiceAreaEditor({
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
             areaIds,
-            categoryId, // ✅ isolate by industry
+            categoryId,
           }),
         });
 
         if (!res.ok) throw new Error(`sponsorship ${res.status}`);
 
         const raw: { areas: Array<any> } = await res.json();
-
         const map: SponsorshipMap = {};
 
         for (const a of raw.areas || []) {
@@ -415,10 +425,7 @@ export default function ServiceAreaEditor({
                 taken: Boolean(s1.taken),
                 status: s1.status ?? null,
                 owner_business_id:
-                  s1.owner_business_id ??
-                  s1.by_business_id ??
-                  s1.business_id ??
-                  null,
+                  s1.owner_business_id ?? s1.by_business_id ?? s1.business_id ?? null,
                 sponsored_geojson: s1.sponsored_geojson ?? null,
               };
             }
@@ -434,12 +441,11 @@ export default function ServiceAreaEditor({
           }
 
           const paint = ownedPaintFor(slot, myBusinessId);
-          const sponsored_geojson = slot?.sponsored_geojson ?? null;
 
           map[a.area_id] = {
             area_id: a.area_id,
             slot,
-            sponsored_geojson,
+            sponsored_geojson: slot?.sponsored_geojson ?? a.sponsored_geojson ?? null,
             paint,
           };
         }
@@ -458,7 +464,6 @@ export default function ServiceAreaEditor({
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
-  // ------- Availability by geometry -------
   const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
@@ -491,8 +496,7 @@ export default function ServiceAreaEditor({
         const rawKm2 = j.available_km2 ?? j.area_km2 ?? j.remaining_km2 ?? 0;
         const km2 = Number(rawKm2);
         const soldOut = Boolean(j.sold_out);
-        const hasRemaining =
-          !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
+        const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
 
         setAvail((m) => ({ ...m, [areaId]: hasRemaining }));
       } finally {
@@ -514,28 +518,24 @@ export default function ServiceAreaEditor({
     (area: ServiceAreaRow) => {
       if (!isLoaded || !mapRef.current) return;
 
-      const gj = area?.gj;
+      const gj = maybeParseGeo(area?.gj);
       if (!gj?.coordinates) return;
 
       const bounds = new google.maps.LatLngBounds();
 
-      // Supports MultiPolygon and Polygon (just in case)
-      const polys: number[][][][] =
-        gj.type === "Polygon"
-          ? [gj.coordinates as unknown as number[][][]]
-          : (gj.coordinates as unknown as number[][][][]);
+      const polys: any[] =
+        gj.type === "Polygon" ? [gj.coordinates as any] : (gj.coordinates as any);
 
-      polys.forEach((rings) => {
-        (rings as unknown as number[][][]).forEach((ring) => {
-          ring.forEach(([lng, lat]) =>
-            bounds.extend(new google.maps.LatLng(lat, lng))
-          );
+      polys.forEach((rings: any[]) => {
+        rings.forEach((ring: any[]) => {
+          ring.forEach((pair: any) => {
+            const p = pairToLatLng(pair);
+            if (p) bounds.extend(new google.maps.LatLng(p.lat, p.lng));
+          });
         });
       });
 
-      if (!bounds.isEmpty()) {
-        mapRef.current.fitBounds(bounds, 60);
-      }
+      if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 60);
     },
     [isLoaded]
   );
@@ -557,9 +557,7 @@ export default function ServiceAreaEditor({
     setCreating(true);
     setDraftName("New Service Area");
     setTimeout(() => {
-      drawingMgrRef.current?.setDrawingMode(
-        google.maps.drawing.OverlayType.POLYGON
-      );
+      drawingMgrRef.current?.setDrawingMode(google.maps.drawing.OverlayType.POLYGON);
     }, 0);
   }, [resetDraft, clearPreview]);
 
@@ -570,22 +568,27 @@ export default function ServiceAreaEditor({
       setActiveAreaId(area.id);
       setDraftName(area.name);
 
-      const gj = area.gj;
+      const gj = maybeParseGeo(area.gj);
       if (!gj || gj.type !== "MultiPolygon") return;
 
       const newPolys: google.maps.Polygon[] = [];
-      (gj.coordinates as number[][][][]).forEach((poly) => {
-        const paths = poly.map((ring) =>
-          ring.map(([lng, lat]) => ({ lat, lng }))
+      (gj.coordinates as any[]).forEach((poly: any) => {
+        const paths = (poly as any[]).map((ring: any[]) =>
+          ring
+            .map((pair: any) => pairToLatLng(pair))
+            .filter(Boolean) as { lat: number; lng: number }[]
         );
+
         const gpoly = new google.maps.Polygon({
           paths,
           ...polyStyle,
           editable: true,
         });
+
         gpoly.setMap(mapRef.current);
         newPolys.push(gpoly);
       });
+
       setDraftPolys(newPolys);
     },
     [resetDraft, clearPreview]
@@ -600,7 +603,7 @@ export default function ServiceAreaEditor({
 
     const newKey = normalizeMultiPolygon(multi);
     const dup = serviceAreas.find(
-      (a) => normalizeMultiPolygon(a.gj) === newKey && a.id !== activeAreaId
+      (a) => normalizeMultiPolygon(maybeParseGeo(a.gj)) === newKey && a.id !== activeAreaId
     );
     if (dup) {
       setError(`This area matches an existing one: “${dup.name}”.`);
@@ -681,22 +684,10 @@ export default function ServiceAreaEditor({
     setCreating(false);
   }, [resetDraft]);
 
-  // Fit bounds to first area when loaded
   useEffect(() => {
     if (!isLoaded || !mapRef.current || !serviceAreas.length) return;
-    const first = serviceAreas[0];
-    const gj = first.gj;
-    if (!gj || gj.type !== "MultiPolygon") return;
-
-    const bounds = new google.maps.LatLngBounds();
-    (gj.coordinates as number[][][][]).forEach((poly) => {
-      poly.forEach((ring) =>
-        ring.forEach(([lng, lat]) =>
-          bounds.extend(new google.maps.LatLng(lat, lng))
-        )
-      );
-    });
-    if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds);
+    zoomToArea(serviceAreas[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, serviceAreas]);
 
   const totalDraftArea = useMemo(
@@ -709,14 +700,10 @@ export default function ServiceAreaEditor({
   }
 
   function isAreaLocked(area: ServiceAreaRow): boolean {
-    if (typeof area.is_sponsored_locked === "boolean")
-      return area.is_sponsored_locked;
+    if (typeof area.is_sponsored_locked === "boolean") return area.is_sponsored_locked;
 
     const s = getAreaSlotState(area.id);
-    const mine =
-      !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
-
-    return mine;
+    return !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
   }
 
   function lockedUntilLabel(area: ServiceAreaRow): string | null {
@@ -746,15 +733,12 @@ export default function ServiceAreaEditor({
     });
   }, [isLoaded, serviceAreas, sponsorship]);
 
-  // ✅ COPY ACTION
   const openCopyModal = useCallback(
     (area: ServiceAreaRow) => {
       setCopyErr(null);
 
       if (!categories.length) {
-        setCopyErr(
-          "Industries couldn't load. Fix Supabase RLS on the categories table."
-        );
+        setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
         setCopyOpen(true);
         setCopyArea(area);
         setCopyTargetCategoryId("");
@@ -794,11 +778,8 @@ export default function ServiceAreaEditor({
       await fetchAreas();
     } catch (e: any) {
       const msg = String(e?.message || "");
-
       if (msg.includes("uix_service_areas_cleaner_category_name")) {
-        setCopyErr(
-          "This area already exists in the selected industry. Try using a different name."
-        );
+        setCopyErr("This area already exists in the selected industry. Try using a different name.");
       } else {
         setCopyErr("Failed to copy area. Please try again.");
       }
@@ -808,11 +789,7 @@ export default function ServiceAreaEditor({
   }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
 
   if (loadError) {
-    return (
-      <div className="card card-pad text-red-600">
-        Failed to load Google Maps.
-      </div>
-    );
+    return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
   }
 
   return (
@@ -823,18 +800,12 @@ export default function ServiceAreaEditor({
           <div className="card card-pad">
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-semibold text-lg">Service Areas</h3>
-              <button
-                className="btn"
-                onClick={startNewArea}
-                disabled={!isLoaded || loading}
-              >
+              <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
                 + New Area
               </button>
             </div>
 
-            {loading && (
-              <div className="text-sm text-gray-500 mb-2">Working…</div>
-            )}
+            {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
 
             {error && (
               <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
@@ -855,14 +826,12 @@ export default function ServiceAreaEditor({
 
                 {creating && draftPolys.length === 0 && (
                   <div className="text-xs text-gray-600 mb-2">
-                    Drawing mode is ON — click on the map to add vertices,
-                    double-click to finish the polygon.
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish.
                   </div>
                 )}
 
                 <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} • Coverage:{" "}
-                  {fmtArea(totalDraftArea)}
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -886,28 +855,20 @@ export default function ServiceAreaEditor({
               </div>
             )}
 
-            {/* List */}
             <ul className="space-y-2">
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
-                const mine =
-                  !!s &&
-                  isBlockingStatus(s.status) &&
-                  s.owner_business_id === myBusinessId;
+                const mine = !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
 
                 const locked = isAreaLocked(a);
                 const until = lockedUntilLabel(a);
 
-                const takenByOther =
-                  !!s &&
-                  isBlockingStatus(s.status) &&
-                  s.owner_business_id !== myBusinessId;
+                const takenByOther = !!s && isBlockingStatus(s.status) && s.owner_business_id !== myBusinessId;
 
                 const hasGeo = avail[a.id] ?? true;
                 const busy = availLoading[a.id];
 
-                const disabled =
-                  takenByOther || (!mine && !takenByOther && hasGeo === false);
+                const disabled = takenByOther || (!mine && !takenByOther && hasGeo === false);
 
                 const title = mine
                   ? "You sponsor this area"
@@ -931,9 +892,8 @@ export default function ServiceAreaEditor({
                   if (disabled) return;
 
                   if (mine) {
-                    if (onSlotAction) {
-                      await onSlotAction({ id: a.id, name: a.name }, 1);
-                    } else {
+                    if (onSlotAction) await onSlotAction({ id: a.id, name: a.name }, 1);
+                    else {
                       setManageAreaId(a.id);
                       setManageOpen(true);
                     }
@@ -948,9 +908,7 @@ export default function ServiceAreaEditor({
                   <li
                     key={a.id}
                     className={`border rounded-lg p-3 transition-colors ${
-                      mine
-                        ? "border-amber-300 bg-amber-50"
-                        : "border-gray-200 bg-white"
+                      mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"
                     }`}
                   >
                     <button
@@ -959,14 +917,11 @@ export default function ServiceAreaEditor({
                       className="text-left w-full group"
                       title="Click to zoom to this area"
                     >
-                      <div className="font-medium truncate group-hover:underline">
-                        {a.name}
-                      </div>
+                      <div className="font-medium truncate group-hover:underline">{a.name}</div>
 
                       <div className="text-xs text-gray-500 mt-1">
                         {new Date(a.created_at).toLocaleString()} •{" "}
-                        {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"}{" "}
-                        km²
+                        {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
                         {locked && until ? (
                           <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
                             Locked until {until}
@@ -985,10 +940,7 @@ export default function ServiceAreaEditor({
                         }}
                         disabled={loading || locked}
                         title={locked ? "Sponsored areas are locked" : "Edit"}
-                        className={[
-                          "btn",
-                          locked ? "opacity-40 cursor-not-allowed grayscale" : "",
-                        ].join(" ")}
+                        className={["btn", locked ? "opacity-40 cursor-not-allowed grayscale" : ""].join(" ")}
                       >
                         Edit
                       </button>
@@ -1021,9 +973,7 @@ export default function ServiceAreaEditor({
 
                     <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
-                        className={`btn ${
-                          disabled ? "opacity-50 cursor-not-allowed" : ""
-                        }`}
+                        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
                         onClick={(e) => {
                           e.stopPropagation();
                           onClick();
@@ -1034,20 +984,14 @@ export default function ServiceAreaEditor({
                         {label}
                       </button>
 
-                      {busy && (
-                        <div className="text-[10px] text-gray-500 mt-1">
-                          Checking availability…
-                        </div>
-                      )}
+                      {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
                     </div>
                   </li>
                 );
               })}
 
               {!serviceAreas.length && !loading && (
-                <li className="text-sm text-gray-500">
-                  No service areas yet. Click “New Area” to draw one.
-                </li>
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
               )}
             </ul>
           </div>
@@ -1058,47 +1002,22 @@ export default function ServiceAreaEditor({
               <span className="inline-flex items-center gap-1">
                 <i
                   className="inline-block w-4 h-4 rounded"
-                  style={{
-                    background: "rgba(34,197,94,0.45)",
-                    border: "2px solid #16a34a",
-                  }}
+                  style={{ background: "rgba(34,197,94,0.45)", border: "2px solid #16a34a" }}
                 />
                 Sponsored by you
               </span>
               <span className="inline-flex items-center gap-1">
                 <i
                   className="inline-block w-4 h-4 rounded"
-                  style={{
-                    background: "rgba(239,68,68,0.35)",
-                    border: "2px solid #dc2626",
-                  }}
+                  style={{ background: "rgba(239,68,68,0.35)", border: "2px solid #dc2626" }}
                 />
                 Sponsored by others
               </span>
               <span className="inline-flex items-center gap-1">
-                <i
-                  className="inline-block w-4 h-4 rounded"
-                  style={{
-                    background: "transparent",
-                    border: "2px solid #555",
-                  }}
-                />
+                <i className="inline-block w-4 h-4 rounded" style={{ background: "transparent", border: "2px solid #555" }} />
                 outline
               </span>
             </div>
-
-            <div className="font-semibold mb-1">Tips</div>
-            <ul className="list-disc pl-5 space-y-1">
-              <li>
-                Click “New Area”, then click around the map to draw a polygon.
-                Double-click to finish.
-              </li>
-              <li>
-                Drag the white handles to adjust vertices. Use “Clear Polygons”
-                to redraw before saving.
-              </li>
-              <li>Each saved Service Area may include multiple polygons.</li>
-            </ul>
           </div>
         </div>
 
@@ -1125,53 +1044,51 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* ✅ Service area outlines (always visible) */}
+              {/* Outlines (always visible when not editing) */}
               {activeAreaId === null &&
-                sortedServiceAreas.map((a) => {
-                  const gj = a.gj;
-                  if (!gj || gj.type !== "MultiPolygon") return null;
+                sortedServiceAreas.flatMap((a) => {
+                  const gj = maybeParseGeo(a.gj);
+                  if (!gj) return [];
 
-                  return (gj.coordinates as number[][][][]).map((poly, i) => {
-                    const paths = poly.map((ring) =>
-                      ring.map(([lng, lat]) => ({ lat, lng }))
-                    );
-
-                    return (
-                      <Polygon
-                        key={`outline-${a.id}-${i}`}
-                        paths={paths}
-                        options={{
-                          strokeWeight: 2,
-                          strokeOpacity: 0.95,
-                          strokeColor: "#555",
-                          fillOpacity: 0,
-                          clickable: false,
-                          editable: false,
-                          draggable: false,
-                          zIndex: 10,
-                        }}
-                      />
-                    );
-                  });
+                  const outlinePaths = geoToPaths(gj);
+                  return outlinePaths.map((p, i) => (
+                    <Polygon
+                      key={`outline-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeWeight: 2,
+                        strokeOpacity: 0.95,
+                        strokeColor: "#555",
+                        fillOpacity: 0,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 10,
+                      }}
+                    />
+                  ));
                 })}
 
-              {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
+              {/* Sponsored fills (purchased portion; fallback to full area if missing) */}
               {activeAreaId === null &&
-                sortedServiceAreas.map((a) => {
+                sortedServiceAreas.flatMap((a) => {
                   const slot = sponsorship[a.id]?.slot;
-                  if (!slot || !slot.taken || !isBlockingStatus(slot.status))
-                    return null;
-
-                  const sponsored = slot.sponsored_geojson ?? null;
-                  if (!sponsored) return null;
+                  if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
 
                   const isMine = slot.owner_business_id === myBusinessId;
-                  const fill = isMine
-                    ? "rgba(34, 197, 94, 0.45)"
-                    : "rgba(239, 68, 68, 0.30)";
+                  const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
                   const stroke = isMine ? "#16a34a" : "#dc2626";
 
-                  const sponsoredPaths = geoToPaths(sponsored);
+                  // ✅ try purchased geojson first, then fallback to full service area geometry
+                  const sponsoredOrFallback =
+                    slot.sponsored_geojson ??
+                    sponsorship[a.id]?.sponsored_geojson ??
+                    null;
+
+                  const geoToPaint = sponsoredOrFallback ? sponsoredOrFallback : a.gj;
+
+                  const sponsoredPaths = geoToPaths(geoToPaint);
+                  if (!sponsoredPaths.length) return [];
 
                   return sponsoredPaths.map((p, i) => (
                     <Polygon
@@ -1192,7 +1109,7 @@ export default function ServiceAreaEditor({
                   ));
                 })}
 
-              {/* Preview overlay (available region) */}
+              {/* Preview overlay */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -1245,7 +1162,7 @@ export default function ServiceAreaEditor({
         />
       )}
 
-      {/* ✅ Copy to Industry Modal */}
+      {/* Copy modal (unchanged) */}
       {copyOpen && copyArea && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
@@ -1340,6 +1257,7 @@ export default function ServiceAreaEditor({
 
 /**
  * IMPORTANT BACKEND NOTE:
- * This file expects /.netlify/functions/area-sponsorship to return "sponsored_geojson"
- * for each area slot (GeoJSON of the purchased portion). Without it, only outlines will show.
+ * For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
+ * slot.sponsored_geojson (GeoJSON of the purchased area). If it is missing, this UI falls back to
+ * coloring the entire service area so you still see *something*.
  */
