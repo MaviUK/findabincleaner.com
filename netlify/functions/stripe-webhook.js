@@ -1,12 +1,10 @@
 // netlify/functions/stripe-webhook.js
 console.log(
-  "LOADED stripe-webhook v2026-01-10-SPONSOR-REMAINING-GEOM-FIX+EMAIL-GATE+UUID-SAFETY+CHECKOUT-META+ASSERTIONS+ACTIVE_ONLY+ACTIVATE_ON_INVOICE_PAID+INVOICE_RETRIEVE+NO_DOWNGRADE"
+  "LOADED stripe-webhook v2026-01-11-ACTIVATE+COPY-LOCK-GEOJSON"
 );
 
-// CommonJS (Netlify functions)
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
-// kept import (email/invoicing), but activation does NOT depend on it
 const { createInvoiceAndEmailByStripeInvoiceId } = require("./_lib/createInvoiceCore");
 
 // ---- env helpers ----
@@ -88,7 +86,6 @@ function isOverlapDbError(err) {
   const code = err?.code || err?.cause?.code;
   const msg = String(err?.message || err?.cause?.message || "").toLowerCase();
 
-  // ✅ Do NOT treat all 23505 as overlap
   return (
     code === "P0001" ||
     msg.includes("area overlaps an existing sponsored area") ||
@@ -117,7 +114,6 @@ async function safeCancelSubscription(subId, why) {
   try {
     console.warn("[webhook] canceling subscription:", subId, why);
 
-    // Compatibility across Stripe SDK versions:
     if (stripe.subscriptions?.cancel) {
       await stripe.subscriptions.cancel(subId);
     } else if (stripe.subscriptions?.del) {
@@ -147,12 +143,10 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
-  // slot
   const slotRaw = metaGet(meta, "slot");
   const slotNum = numOrNull(slotRaw);
   const slot = slotNum && slotNum > 0 ? Math.floor(slotNum) : 1;
 
-  // price
   const item = subscription?.items?.data?.[0] || null;
   const unitAmount = item?.price?.unit_amount ?? item?.plan?.amount ?? null;
 
@@ -169,14 +163,13 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     100;
 
   const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
-
   const currency = (item?.price?.currency || subscription?.currency || "gbp").toLowerCase();
 
   const current_period_end = subscription?.current_period_end
     ? new Date(subscription.current_period_end * 1000).toISOString()
     : null;
 
-  // sponsored geom from metadata (EWKT string)
+  // keep old sponsored_geom behavior if you need it
   const geomFromMeta = metaGet(
     meta,
     "sponsored_geom",
@@ -185,8 +178,6 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     "geometry",
     "sponsored_geometry"
   );
-
-  // only set geom when Stripe says active (but we still won't *set* active here)
   const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
 
   // ✅ VERY IMPORTANT: never mark active here; activate on invoice.paid
@@ -219,7 +210,6 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
   const slotNum = numOrNull(slotRaw);
   const slot = slotNum && slotNum > 0 ? Math.floor(slotNum) : 1;
 
-  // amount_total usually in cents; your DB expects integer pennies/cents
   const amountTotal = numOrNull(session?.amount_total);
   const price_monthly_pennies = amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
 
@@ -268,10 +258,10 @@ async function fetchExistingBySubId(sb, stripe_subscription_id) {
 }
 
 function preserveActive(existing, incoming) {
-  // If existing is active, NEVER downgrade
   if (existing?.status === "active") {
     incoming.status = "active";
-    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
+    if (!incoming.current_period_end)
+      incoming.current_period_end = existing.current_period_end || null;
   }
   return incoming;
 }
@@ -283,7 +273,6 @@ exports.handler = async (event) => {
     const webhookSecret = requireEnv("STRIPE_WEBHOOK_SECRET");
 
     const stripeEvent = stripe.webhooks.constructEvent(event.body, sig, webhookSecret);
-
     const sb = getSupabaseAdmin();
 
     const type = stripeEvent.type;
@@ -300,14 +289,13 @@ exports.handler = async (event) => {
       console.log("[webhook]", type, "id=" + stripeEvent.id);
     }
 
-    // 1) checkout.session.completed → store metadata early (incomplete) BUT NEVER DOWNGRADE ACTIVE
+    // 1) checkout.session.completed → store metadata early (incomplete)
     if (type === "checkout.session.completed") {
       const session = obj;
       const draft = normalizeSponsoredRowFromCheckoutSession(session);
 
       if (!draft.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
 
-      // UUID assertions (helps catch "f")
       assertUuidOrNull("business_id", draft.business_id);
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
@@ -334,7 +322,7 @@ exports.handler = async (event) => {
       });
     }
 
-    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here (and NEVER DOWNGRADE ACTIVE)
+    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here
     if (type.startsWith("customer.subscription.")) {
       const sub = obj;
 
@@ -358,7 +346,6 @@ exports.handler = async (event) => {
       if (error) {
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
 
-        // Only cancel on REAL overlap/sold-out errors
         if (isOverlapDbError(error)) {
           await safeCancelSubscription(sub.id, "Overlap/Sold-out violation");
           return ok(200, { ok: true, canceled: true });
@@ -370,7 +357,7 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wrote: true, id: data?.id || null, status: data?.status || null });
     }
 
-    // 3) invoice.paid → retrieve invoice from Stripe, extract subscription, activate row
+    // 3) invoice.paid → activate row + copy lock geojson into sponsored_geojson
     if (type === "invoice.paid") {
       const inv = obj;
 
@@ -412,13 +399,12 @@ exports.handler = async (event) => {
           updated_at: new Date().toISOString(),
         })
         .eq("stripe_subscription_id", subscriptionId)
-        .select("id, status, business_id, area_id, slot, category_id")
+        .select("id, status")
         .maybeSingle();
 
       if (error) {
         console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
 
-        // If activation failed due to overlap/sold-out, cancel subscription to unwind
         if (isOverlapDbError(error)) {
           await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
           return ok(200, { ok: true, canceled: true });
@@ -432,11 +418,37 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "no matching row to activate" });
       }
 
-      console.log("[webhook] activated subscription", subscriptionId, data);
+      // ✅ Copy lock geojson -> sponsored_geojson
+      try {
+        const sub = await stripe.subscriptions.retrieve(subscriptionId);
+        const lockId =
+          sub?.metadata?.lock_id || sub?.metadata?.lockId || null;
+
+        if (lockId) {
+          const { data: lockRow, error: lockErr } = await sb
+            .from("sponsored_locks")
+            .select("geojson")
+            .eq("id", lockId)
+            .maybeSingle();
+
+          if (!lockErr && lockRow?.geojson) {
+            await sb
+              .from("sponsored_subscriptions")
+              .update({ sponsored_geojson: lockRow.geojson })
+              .eq("stripe_subscription_id", subscriptionId);
+
+            await sb.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
+          }
+        }
+      } catch (e) {
+        console.warn("[webhook] lock geojson copy failed:", e?.message || e);
+        // do not fail webhook; activation already succeeded
+      }
+
+      console.log("[webhook] activated subscription", subscriptionId);
       return ok(200, { ok: true, activated: true, subscriptionId });
     }
 
-    // ignore everything else
     return ok(200, { ok: true });
   } catch (err) {
     console.error("[webhook] handler error:", err);
