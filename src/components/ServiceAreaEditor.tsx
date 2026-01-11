@@ -45,7 +45,6 @@ type SponsorshipState = {
   paint?: { tier: 0 | 1 | 2 | 3; fill: string; stroke: string };
 };
 
-
 type SponsorshipMap = Record<string, SponsorshipState | undefined>;
 type Libraries = ("drawing" | "geometry")[];
 
@@ -281,8 +280,6 @@ export default function ServiceAreaEditor({
     []
   );
   const previewPolys = useMemo(() => geoToPaths(previewGeo), [previewGeo]);
-  const previewActiveForArea =
-    sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
 
   // ✅ Copy-to-industry state
   const [categories, setCategories] = useState<CategoryRow[]>([]);
@@ -389,73 +386,72 @@ export default function ServiceAreaEditor({
   }
 
   const fetchSponsorship = useCallback(
-  async (areaIds: string[]) => {
-    if (!areaIds.length || !myBusinessId) return;
+    async (areaIds: string[]) => {
+      if (!areaIds.length || !myBusinessId) return;
 
-    try {
-      const res = await fetch("/.netlify/functions/area-sponsorship", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          areaIds,
-          categoryId, // ✅ isolate by industry
-        }),
-      });
+      try {
+        const res = await fetch("/.netlify/functions/area-sponsorship", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            areaIds,
+            categoryId, // ✅ isolate by industry
+          }),
+        });
 
-      if (!res.ok) throw new Error(`sponsorship ${res.status}`);
+        if (!res.ok) throw new Error(`sponsorship ${res.status}`);
 
-      const raw: { areas: Array<any> } = await res.json();
+        const raw: { areas: Array<any> } = await res.json();
 
-      const map: SponsorshipMap = {};
+        const map: SponsorshipMap = {};
 
-      for (const a of raw.areas || []) {
-        let slot: SingleSlotState | null = null;
+        for (const a of raw.areas || []) {
+          let slot: SingleSlotState | null = null;
 
-        if (Array.isArray(a.slots)) {
-          const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
-          if (s1) {
+          if (Array.isArray(a.slots)) {
+            const s1 = a.slots.find((s: any) => Number(s?.slot) === 1);
+            if (s1) {
+              slot = {
+                taken: Boolean(s1.taken),
+                status: s1.status ?? null,
+                owner_business_id:
+                  s1.owner_business_id ??
+                  s1.by_business_id ??
+                  s1.business_id ??
+                  null,
+                sponsored_geojson: s1.sponsored_geojson ?? null,
+              };
+            }
+          }
+
+          if (!slot) {
             slot = {
-              taken: Boolean(s1.taken),
-              status: s1.status ?? null,
-              owner_business_id:
-                s1.owner_business_id ??
-                s1.by_business_id ??
-                s1.business_id ??
-                null,
-              sponsored_geojson: s1.sponsored_geojson ?? null, // ✅ NEW
+              taken: Boolean(a.taken),
+              status: a.status ?? null,
+              owner_business_id: a.owner_business_id ?? a.business_id ?? null,
+              sponsored_geojson: a.sponsored_geojson ?? null,
             };
           }
-        }
 
-        if (!slot) {
-          slot = {
-            taken: Boolean(a.taken),
-            status: a.status ?? null,
-            owner_business_id: a.owner_business_id ?? a.business_id ?? null,
-            sponsored_geojson: a.sponsored_geojson ?? null, // ✅ NEW
+          const paint = ownedPaintFor(slot, myBusinessId);
+          const sponsored_geojson = slot?.sponsored_geojson ?? null;
+
+          map[a.area_id] = {
+            area_id: a.area_id,
+            slot,
+            sponsored_geojson,
+            paint,
           };
         }
 
-        const paint = ownedPaintFor(slot, myBusinessId);
-        const sponsored_geojson = slot?.sponsored_geojson ?? null;
-
-        map[a.area_id] = {
-          area_id: a.area_id,
-          slot,
-          sponsored_geojson, // optional top-level copy
-          paint,
-        };
+        setSponsorship(map);
+      } catch (e) {
+        console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
+        setSponsorship({});
       }
-
-      setSponsorship(map);
-    } catch (e) {
-      console.warn("[ServiceAreaEditor] area-sponsorship fetch failed:", e);
-      setSponsorship({});
-    }
-  },
-  [myBusinessId, categoryId]
-);
-
+    },
+    [myBusinessId, categoryId]
+  );
 
   useEffect(() => {
     const ids = serviceAreas.map((a) => a.id);
@@ -477,7 +473,7 @@ export default function ServiceAreaEditor({
             cleanerId: myBusinessId,
             areaId,
             slot: 1,
-            categoryId, // ✅ per-industry sold-out
+            categoryId,
           }),
         });
 
@@ -538,7 +534,7 @@ export default function ServiceAreaEditor({
       });
 
       if (!bounds.isEmpty()) {
-        mapRef.current.fitBounds(bounds, 60); // padding
+        mapRef.current.fitBounds(bounds, 60);
       }
     },
     [isLoaded]
@@ -579,8 +575,7 @@ export default function ServiceAreaEditor({
 
       const newPolys: google.maps.Polygon[] = [];
       (gj.coordinates as number[][][][]).forEach((poly) => {
-        const rings = poly;
-        const paths = rings.map((ring) =>
+        const paths = poly.map((ring) =>
           ring.map(([lng, lat]) => ({ lat, lng }))
         );
         const gpoly = new google.maps.Polygon({
@@ -626,7 +621,7 @@ export default function ServiceAreaEditor({
           p_area_id: activeAreaId,
           p_gj: multi,
           p_name: draftName || "Untitled Area",
-          p_category_id: categoryId, // ✅ keep industry
+          p_category_id: categoryId,
         });
         if (error) throw error;
       } else {
@@ -634,7 +629,7 @@ export default function ServiceAreaEditor({
           p_cleaner_id: myBusinessId,
           p_gj: multi,
           p_name: draftName || "Untitled Area",
-          p_category_id: categoryId, // ✅ keep industry
+          p_category_id: categoryId,
         });
         if (error) throw error;
       }
@@ -670,7 +665,7 @@ export default function ServiceAreaEditor({
         if (error) throw error;
 
         if (activeAreaId === area.id) resetDraft();
-        setServiceAreas((prev) => prev.filter((a) => a.id !== area.id));
+        setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
         await fetchAreas();
       } catch (e: any) {
         setError(e.message || "Failed to delete area");
@@ -714,11 +709,9 @@ export default function ServiceAreaEditor({
   }
 
   function isAreaLocked(area: ServiceAreaRow): boolean {
-    // Prefer DB truth if present
     if (typeof area.is_sponsored_locked === "boolean")
       return area.is_sponsored_locked;
 
-    // Fallback: if sponsorship map says YOU own an active/past_due/trialing slot, lock it
     const s = getAreaSlotState(area.id);
     const mine =
       !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
@@ -733,10 +726,6 @@ export default function ServiceAreaEditor({
     } catch {
       return null;
     }
-  }
-
-  function areaPaint(areaId: string) {
-    return sponsorship[areaId]?.paint;
   }
 
   const sortedServiceAreas = useMemo(() => {
@@ -880,11 +869,7 @@ export default function ServiceAreaEditor({
                   <button className="btn" onClick={saveDraft} disabled={loading}>
                     {activeAreaId ? "Save Changes" : "Save Area"}
                   </button>
-                  <button
-                    className="btn"
-                    onClick={cancelDraft}
-                    disabled={loading}
-                  >
+                  <button className="btn" onClick={cancelDraft} disabled={loading}>
                     Cancel
                   </button>
                   <button
@@ -918,7 +903,7 @@ export default function ServiceAreaEditor({
                   isBlockingStatus(s.status) &&
                   s.owner_business_id !== myBusinessId;
 
-                const hasGeo = avail[a.id] ?? true; // optimistic until computed
+                const hasGeo = avail[a.id] ?? true;
                 const busy = availLoading[a.id];
 
                 const disabled =
@@ -962,14 +947,12 @@ export default function ServiceAreaEditor({
                 return (
                   <li
                     key={a.id}
-                    className={`border rounded-lg p-3 transition-colors
-                      ${
-                        mine
-                          ? "border-amber-300 bg-amber-50"
-                          : "border-gray-200 bg-white"
-                      }`}
+                    className={`border rounded-lg p-3 transition-colors ${
+                      mine
+                        ? "border-amber-300 bg-amber-50"
+                        : "border-gray-200 bg-white"
+                    }`}
                   >
-                    {/* Row 1: Title + Meta (click to zoom) */}
                     <button
                       type="button"
                       onClick={() => zoomToArea(a)}
@@ -992,7 +975,6 @@ export default function ServiceAreaEditor({
                       </div>
                     </button>
 
-                    {/* Row 2: Edit / Delete / Copy (below title) */}
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
@@ -1037,7 +1019,6 @@ export default function ServiceAreaEditor({
                       </button>
                     </div>
 
-                    {/* Row 3: Sponsor/Manage */}
                     <div className="mt-2 flex flex-wrap gap-2 items-center">
                       <button
                         className={`btn ${
@@ -1102,7 +1083,7 @@ export default function ServiceAreaEditor({
                     border: "2px solid #555",
                   }}
                 />
-                Service area outline
+                outline
               </span>
             </div>
 
@@ -1144,40 +1125,72 @@ export default function ServiceAreaEditor({
                 }}
               />
 
+              {/* ✅ Service area outlines (always visible) */}
+              {activeAreaId === null &&
+                sortedServiceAreas.map((a) => {
+                  const gj = a.gj;
+                  if (!gj || gj.type !== "MultiPolygon") return null;
+
+                  return (gj.coordinates as number[][][][]).map((poly, i) => {
+                    const paths = poly.map((ring) =>
+                      ring.map(([lng, lat]) => ({ lat, lng }))
+                    );
+
+                    return (
+                      <Polygon
+                        key={`outline-${a.id}-${i}`}
+                        paths={paths}
+                        options={{
+                          strokeWeight: 2,
+                          strokeOpacity: 0.95,
+                          strokeColor: "#555",
+                          fillOpacity: 0,
+                          clickable: false,
+                          editable: false,
+                          draggable: false,
+                          zIndex: 10,
+                        }}
+                      />
+                    );
+                  });
+                })}
+
               {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
-{activeAreaId === null &&
-  sortedServiceAreas.map((a) => {
-    const slot = sponsorship[a.id]?.slot;
-    if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return null;
+              {activeAreaId === null &&
+                sortedServiceAreas.map((a) => {
+                  const slot = sponsorship[a.id]?.slot;
+                  if (!slot || !slot.taken || !isBlockingStatus(slot.status))
+                    return null;
 
-    const sponsored = slot.sponsored_geojson ?? null;
-    if (!sponsored) return null;
+                  const sponsored = slot.sponsored_geojson ?? null;
+                  if (!sponsored) return null;
 
-    const isMine = slot.owner_business_id === myBusinessId;
-    const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
-    const stroke = isMine ? "#16a34a" : "#dc2626";
+                  const isMine = slot.owner_business_id === myBusinessId;
+                  const fill = isMine
+                    ? "rgba(34, 197, 94, 0.45)"
+                    : "rgba(239, 68, 68, 0.30)";
+                  const stroke = isMine ? "#16a34a" : "#dc2626";
 
-    const sponsoredPaths = geoToPaths(sponsored);
+                  const sponsoredPaths = geoToPaths(sponsored);
 
-    return sponsoredPaths.map((p, i) => (
-      <Polygon
-        key={`sponsored-${a.id}-${i}`}
-        paths={p.paths}
-        options={{
-          strokeWeight: 2,
-          strokeOpacity: 1,
-          strokeColor: stroke,
-          fillColor: fill,
-          fillOpacity: 0.35,
-          clickable: false,
-          editable: false,
-          draggable: false,
-          zIndex: 50,
-        }}
-      />
-    ));
-  })}
-
+                  return sponsoredPaths.map((p, i) => (
+                    <Polygon
+                      key={`sponsored-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeWeight: 2,
+                        strokeOpacity: 1,
+                        strokeColor: stroke,
+                        fillColor: fill,
+                        fillOpacity: 0.35,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 50,
+                      }}
+                    />
+                  ));
+                })}
 
               {/* Preview overlay (available region) */}
               {previewPolys.map((p, i) => (
@@ -1213,7 +1226,7 @@ export default function ServiceAreaEditor({
             clearPreview();
           }}
           businessId={myBusinessId}
-          categoryId={categoryId} // ✅ pass through
+          categoryId={categoryId}
           areaId={sponsorAreaId}
           areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
           onPreviewGeoJSON={(multi) => drawPreview(multi)}
@@ -1238,9 +1251,7 @@ export default function ServiceAreaEditor({
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
-                <div className="font-semibold">
-                  Copy area to another industry
-                </div>
+                <div className="font-semibold">Copy area to another industry</div>
                 <div className="text-xs text-gray-500">
                   Copying: <span className="font-medium">{copyArea.name}</span>
                 </div>
@@ -1275,7 +1286,7 @@ export default function ServiceAreaEditor({
                 >
                   <option value="">Select…</option>
                   {categories
-                    .filter((c) => c.id !== (categoryId ?? "")) // don’t default to same
+                    .filter((c) => c.id !== (categoryId ?? ""))
                     .map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
@@ -1288,9 +1299,7 @@ export default function ServiceAreaEditor({
               </div>
 
               <div className="space-y-1">
-                <div className="text-sm font-medium">
-                  New area name (optional)
-                </div>
+                <div className="text-sm font-medium">New area name (optional)</div>
                 <input
                   className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={copyName}
