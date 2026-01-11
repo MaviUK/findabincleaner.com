@@ -1084,8 +1084,9 @@ export default function ServiceAreaEditor({
     if (!sponsoredPaths.length) return [];
 
     const isMine = slot.owner_business_id === myBusinessId;
-    const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
-    const stroke = isMine ? "#16a34a" : "#dc2626";
+    const fill = isMine ? "rgba(245, 158, 11, 0.28)" : "rgba(239, 68, 68, 0.30)";  // amber
+const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enable stroke)
+
 
     return sponsoredPaths.map((p, i) => (
       <Polygon
