@@ -1069,45 +1069,42 @@ export default function ServiceAreaEditor({
                   ));
                 })}
 
-              {/* Sponsored fills (purchased portion; fallback to full area if missing) */}
-              {activeAreaId === null &&
-                sortedServiceAreas.flatMap((a) => {
-                  const slot = sponsorship[a.id]?.slot;
-                  if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
+              /* Sponsored fills: ONLY the purchased portion */
+{activeAreaId === null &&
+  sortedServiceAreas.flatMap((a) => {
+    const slot = sponsorship[a.id]?.slot;
+    if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
 
-                  const isMine = slot.owner_business_id === myBusinessId;
-                  const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
-                  const stroke = isMine ? "#16a34a" : "#dc2626";
+    // ✅ ONLY use sponsored_geojson (no fallback)
+    const sponsored =
+      slot.sponsored_geojson ?? sponsorship[a.id]?.sponsored_geojson ?? null;
 
-                  // ✅ try purchased geojson first, then fallback to full service area geometry
-                  const sponsoredOrFallback =
-                    slot.sponsored_geojson ??
-                    sponsorship[a.id]?.sponsored_geojson ??
-                    null;
+    const sponsoredPaths = geoToPaths(sponsored);
+    if (!sponsoredPaths.length) return [];
 
-                  const geoToPaint = sponsoredOrFallback ? sponsoredOrFallback : a.gj;
+    const isMine = slot.owner_business_id === myBusinessId;
+    const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
+    const stroke = isMine ? "#16a34a" : "#dc2626";
 
-                  const sponsoredPaths = geoToPaths(geoToPaint);
-                  if (!sponsoredPaths.length) return [];
+    return sponsoredPaths.map((p, i) => (
+      <Polygon
+        key={`sponsored-${a.id}-${i}`}
+        paths={p.paths}
+        options={{
+          strokeWeight: 2,
+          strokeOpacity: 1,
+          strokeColor: stroke,
+          fillColor: fill,
+          fillOpacity: 0.35,
+          clickable: false,
+          editable: false,
+          draggable: false,
+          zIndex: 50,
+        }}
+      />
+    ));
+  })}
 
-                  return sponsoredPaths.map((p, i) => (
-                    <Polygon
-                      key={`sponsored-${a.id}-${i}`}
-                      paths={p.paths}
-                      options={{
-                        strokeWeight: 2,
-                        strokeOpacity: 1,
-                        strokeColor: stroke,
-                        fillColor: fill,
-                        fillOpacity: 0.35,
-                        clickable: false,
-                        editable: false,
-                        draggable: false,
-                        zIndex: 50,
-                      }}
-                    />
-                  ));
-                })}
 
               {/* Preview overlay */}
               {previewPolys.map((p, i) => (
