@@ -1,7 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-11-SPONSORED_GEOJSON-RETURN");
+console.log("LOADED area-sponsorship v2026-01-11-SPONSORED_GEOJSON-PREFER");
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -16,9 +16,12 @@ function getSupabaseAdmin() {
     process.env.SUPABASE_SERVICE_ROLE ||
     process.env.SUPABASE_SERVICE_KEY;
 
-  if (!key) throw new Error("Missing SUPABASE_SERVICE_ROLE_KEY / SUPABASE_SERVICE_ROLE");
+  if (!key) throw new Error("Missing Supabase service role key env var");
+
   return createClient(url, key, { auth: { persistSession: false } });
 }
+
+const supabase = getSupabaseAdmin();
 
 const corsHeaders = {
   "content-type": "application/json",
@@ -28,53 +31,68 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: corsHeaders });
+  new Response(JSON.stringify(body), {
+    status,
+    headers: corsHeaders,
+  });
 
-// Only real blocking statuses
-const BLOCKING = new Set(["active", "trialing", "past_due"]);
+// statuses that should block purchase (treated as "taken")
+const BLOCKING = new Set([
+  "active",
+  "trialing",
+  "past_due",
+  "unpaid",
+  "incomplete",
+  "incomplete_expired",
+  "paused",
+]);
+
+// default to SINGLE SLOT (Featured)
 const DEFAULT_SLOTS = [1];
 
 export default async (req) => {
+  if (req.method === "OPTIONS") return json({ ok: true }, 200);
+  if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+
+  let body;
   try {
-    if (req.method === "OPTIONS") return json({ ok: true }, 200);
-    if (req.method !== "POST") return json({ error: "Method not allowed" }, 405);
+    body = await req.json();
+  } catch {
+    return json({ error: "Invalid JSON" }, 400);
+  }
 
-    let body;
-    try {
-      body = await req.json();
-    } catch {
-      return json({ error: "Invalid JSON" }, 400);
-    }
+  const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  const cleaner_id =
+    body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
 
-    const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
+  const slots =
+    Array.isArray(body?.slots) && body.slots.length
+      ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
+      : DEFAULT_SLOTS;
 
-    // optional - used only for taken_by_me (UI doesn't currently use it, but keep)
-    const cleaner_id =
-      body?.cleaner_id ||
-      body?.business_id ||
-      body?.cleanerId ||
-      body?.businessId ||
-      null;
+  if (!areaIds.length) return json({ areas: [] });
 
-    const slots =
-      Array.isArray(body?.slots) && body.slots.length
-        ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
-        : DEFAULT_SLOTS;
-
-    if (!areaIds.length) return json({ areas: [] });
-
-    const supabase = getSupabaseAdmin();
-
-    // ✅ pull sponsored_geojson directly
+  try {
+    // ✅ IMPORTANT: pull the correct column
     const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, created_at, sponsored_geojson")
+      .select(
+        [
+          "area_id",
+          "slot",
+          "status",
+          "business_id",
+          "created_at",
+          "sponsored_geojson",
+          "final_geojson",
+        ].join(",")
+      )
       .in("area_id", areaIds)
       .in("slot", slots);
 
     if (error) throw error;
 
-    // group rows by area:slot
+    // Group by area:slot
     const byAreaSlot = new Map();
     for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
@@ -83,6 +101,7 @@ export default async (req) => {
     }
 
     const areasOut = [];
+
     for (const area_id of areaIds) {
       const areaObj = { area_id, slots: [] };
 
@@ -93,17 +112,24 @@ export default async (req) => {
         // newest first
         arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
-        // prefer most recent blocking row
-        const blockingRow = arr.find((r) => BLOCKING.has(String(r.status || "").toLowerCase()));
+        // prefer most recent BLOCKING row if any
+        const blockingRow = arr.find((r) =>
+          BLOCKING.has(String(r.status || "").toLowerCase())
+        );
         const chosen = blockingRow ?? arr[0] ?? null;
 
         const status = chosen?.status ?? null;
         const owner_business_id = chosen?.business_id ?? null;
+
         const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
         const taken_by_me =
           Boolean(cleaner_id) &&
           Boolean(owner_business_id) &&
           String(owner_business_id) === String(cleaner_id);
+
+        // ✅ prefer sponsored_geojson, fallback to final_geojson
+        const sponsored_geojson =
+          chosen?.sponsored_geojson ?? chosen?.final_geojson ?? null;
 
         areaObj.slots.push({
           slot,
@@ -111,15 +137,14 @@ export default async (req) => {
           taken_by_me,
           status,
           owner_business_id,
-          // ✅ THIS is what the map needs
-          sponsored_geojson: chosen?.sponsored_geojson ?? null,
+          sponsored_geojson,
         });
       }
 
       areasOut.push(areaObj);
     }
 
-    return json({ areas: areasOut }, 200);
+    return json({ areas: areasOut });
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
