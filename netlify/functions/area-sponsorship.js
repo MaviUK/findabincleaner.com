@@ -1,12 +1,25 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-11-SINGLE-SLOT+SPONSORED_GEOJSON");
+console.log("LOADED area-sponsorship v2026-01-11-SINGLE-SLOT+SPONSORED_GEOJSON_FIX");
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE
-);
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env var: ${name}`);
+  return v;
+}
+
+function getServiceRoleKey() {
+  return (
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY
+  );
+}
+
+const supabase = createClient(requireEnv("SUPABASE_URL"), getServiceRoleKey(), {
+  auth: { persistSession: false },
+});
 
 const corsHeaders = {
   "content-type": "application/json",
@@ -16,10 +29,7 @@ const corsHeaders = {
 };
 
 const json = (body, status = 200) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: corsHeaders,
-  });
+  new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
 // statuses that should block purchase (treated as "taken")
 const BLOCKING = new Set([
@@ -61,11 +71,10 @@ export default async (req) => {
   if (!areaIds.length) return json({ areas: [] });
 
   try {
-    // Pull all rows for these areas/slots
-    // ✅ include final_geojson so UI can draw just the sponsored sub-geometry
+    // ✅ IMPORTANT: select sponsored_geojson (the purchased sub-geometry)
     const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, created_at, final_geojson")
+      .select("area_id, slot, status, business_id, created_at, sponsored_geojson")
       .in("area_id", areaIds)
       .in("slot", slots);
 
@@ -78,53 +87,3 @@ export default async (req) => {
       if (!byAreaSlot.has(k)) byAreaSlot.set(k, []);
       byAreaSlot.get(k).push(r);
     }
-
-    // Build response
-    const areasOut = [];
-    for (const area_id of areaIds) {
-      const areaObj = { area_id, slots: [] };
-
-      for (const slot of slots) {
-        const k = `${area_id}:${slot}`;
-        const arr = byAreaSlot.get(k) || [];
-
-        // newest first
-        arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-        // prefer most recent BLOCKING row if any
-        const blockingRow = arr.find((r) =>
-          BLOCKING.has(String(r.status || "").toLowerCase())
-        );
-        const chosen = blockingRow ?? arr[0] ?? null;
-
-        const status = chosen?.status ?? null;
-        const owner_business_id = chosen?.business_id ?? null;
-
-        const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
-        const taken_by_me =
-          Boolean(cleaner_id) &&
-          Boolean(owner_business_id) &&
-          String(owner_business_id) === String(cleaner_id);
-
-        // ✅ the purchased/sponsored sub-geometry (GeoJSON) for this slot
-        const sponsored_geojson = chosen?.final_geojson ?? null;
-
-        areaObj.slots.push({
-          slot,
-          taken,
-          taken_by_me,
-          status,
-          owner_business_id,
-          sponsored_geojson,
-        });
-      }
-
-      areasOut.push(areaObj);
-    }
-
-    return json({ areas: areasOut });
-  } catch (err) {
-    console.error("area-sponsorship fatal error:", err);
-    return json({ error: "Internal Server Error" }, 500);
-  }
-};
