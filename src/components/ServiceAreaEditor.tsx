@@ -1055,16 +1055,17 @@ export default function ServiceAreaEditor({
                     <Polygon
                       key={`outline-${a.id}-${i}`}
                       paths={p.paths}
-                      options={{
-                        strokeWeight: 2,
-                        strokeOpacity: 0.95,
-                        strokeColor: "#555",
-                        fillOpacity: 0,
-                        clickable: false,
-                        editable: false,
-                        draggable: false,
-                        zIndex: 10,
-                      }}
+                     options={{
+  strokeWeight: 2,
+  strokeOpacity: 1,
+  strokeColor: "#000", // ✅ true black
+  fillOpacity: 0,
+  clickable: false,
+  editable: false,
+  draggable: false,
+  zIndex: 200, // ✅ outline always on top
+}}
+
                     />
                   ));
                 })}
@@ -1091,16 +1092,20 @@ export default function ServiceAreaEditor({
         key={`sponsored-${a.id}-${i}`}
         paths={p.paths}
         options={{
-          strokeWeight: 2,
-          strokeOpacity: 1,
-          strokeColor: stroke,
-          fillColor: fill,
-          fillOpacity: 0.35,
-          clickable: false,
-          editable: false,
-          draggable: false,
-          zIndex: 50,
-        }}
+  // ✅ fill only, no border (so black outline remains the only border)
+  strokeOpacity: 0,
+  strokeWeight: 0,
+
+  fillColor: fill,
+  fillOpacity: 0.35,
+
+  clickable: false,
+  editable: false,
+  draggable: false,
+
+  zIndex: 50, // fill under outline
+}}
+
       />
     ));
   })}
