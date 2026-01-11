@@ -32,6 +32,10 @@ type SingleSlotState = {
   taken: boolean;
   status: string | null;
   owner_business_id: string | null;
+
+  // ✅ NEW: actual sponsored geometry (ONLY the purchased portion)
+  // Expected to be GeoJSON (Polygon/MultiPolygon/Feature/FeatureCollection).
+  sponsored_geojson?: any | null;
 };
 
 type SponsorshipState = {
@@ -270,7 +274,10 @@ export default function ServiceAreaEditor({
   // ---- PREVIEW OVERLAY ----
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
-  const drawPreview = useCallback((multi: any) => setPreviewGeo(multi ?? null), []);
+  const drawPreview = useCallback(
+    (multi: any) => setPreviewGeo(multi ?? null),
+    []
+  );
   const previewPolys = useMemo(() => geoToPaths(previewGeo), [previewGeo]);
   const previewActiveForArea =
     sponsorOpen && !!previewPolys.length && !!sponsorAreaId;
@@ -284,26 +291,25 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-// ✅ Fetch ONLY active industries for this cleaner
-useEffect(() => {
-  if (!myBusinessId) return;
+  // ✅ Fetch ONLY active industries for this cleaner
+  useEffect(() => {
+    if (!myBusinessId) return;
 
-  (async () => {
-    const { data, error } = await supabase.rpc(
-      "list_active_categories_for_cleaner",
-      { p_cleaner_id: myBusinessId }
-    );
+    (async () => {
+      const { data, error } = await supabase.rpc(
+        "list_active_categories_for_cleaner",
+        { p_cleaner_id: myBusinessId }
+      );
 
-    if (error) {
-      console.warn("active categories fetch error:", error);
-      setCategories([]);
-      return;
-    }
+      if (error) {
+        console.warn("active categories fetch error:", error);
+        setCategories([]);
+        return;
+      }
 
-    setCategories((data as any) || []);
-  })();
-}, [myBusinessId]);
-
+      setCategories((data as any) || []);
+    })();
+  }, [myBusinessId]);
 
   // ✅ When switching industry tabs, clear cached per-area state so UI doesn't bleed across tabs
   useEffect(() => {
@@ -412,6 +418,7 @@ useEffect(() => {
                   s1.by_business_id ??
                   s1.business_id ??
                   null,
+                sponsored_geojson: s1.sponsored_geojson ?? null, // ✅ NEW
               };
             }
           }
@@ -421,6 +428,7 @@ useEffect(() => {
               taken: Boolean(a.taken),
               status: a.status ?? null,
               owner_business_id: a.owner_business_id ?? a.business_id ?? null,
+              sponsored_geojson: a.sponsored_geojson ?? null, // ✅ NEW
             };
           }
 
@@ -738,65 +746,65 @@ useEffect(() => {
   }, [isLoaded, serviceAreas, sponsorship]);
 
   // ✅ COPY ACTION
- const openCopyModal = useCallback(
-  (area: ServiceAreaRow) => {
+  const openCopyModal = useCallback(
+    (area: ServiceAreaRow) => {
+      setCopyErr(null);
+
+      if (!categories.length) {
+        setCopyErr(
+          "Industries couldn't load. Fix Supabase RLS on the categories table."
+        );
+        setCopyOpen(true);
+        setCopyArea(area);
+        setCopyTargetCategoryId("");
+        setCopyName(area.name ? `${area.name} (copy)` : "");
+        return;
+      }
+
+      setCopyArea(area);
+      setCopyOpen(true);
+
+      const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
+      setCopyTargetCategoryId(firstOther?.id || "");
+      setCopyName(area.name ? `${area.name} (copy)` : "");
+    },
+    [categories, categoryId]
+  );
+
+  const doCopyToIndustry = useCallback(async () => {
+    if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
+
+    setCopyBusy(true);
     setCopyErr(null);
 
-    if (!categories.length) {
-      setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
-      setCopyOpen(true);
-      setCopyArea(area);
+    try {
+      const { error } = await supabase.rpc("clone_service_area_to_category", {
+        p_area_id: copyArea.id,
+        p_cleaner_id: myBusinessId,
+        p_target_category_id: copyTargetCategoryId,
+        p_new_name: copyName?.trim() || null,
+      });
+      if (error) throw error;
+
+      setCopyOpen(false);
+      setCopyArea(null);
       setCopyTargetCategoryId("");
-      setCopyName(area.name ? `${area.name} (copy)` : "");
-      return;
+      setCopyName("");
+      await fetchAreas();
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+
+      if (msg.includes("uix_service_areas_cleaner_category_name")) {
+        setCopyErr(
+          "This area already exists in the selected industry. Try using a different name."
+        );
+      } else {
+        setCopyErr("Failed to copy area. Please try again.");
+      }
+    } finally {
+      setCopyBusy(false);
     }
-
-    setCopyArea(area);
-    setCopyOpen(true);
-
-    const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
-    setCopyTargetCategoryId(firstOther?.id || "");
-    setCopyName(area.name ? `${area.name} (copy)` : "");
-  },
-  [categories, categoryId]
-);
-
-
-const doCopyToIndustry = useCallback(async () => {
-  if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
-
-  setCopyBusy(true);
-  setCopyErr(null);
-
-  try {
-    const { error } = await supabase.rpc("clone_service_area_to_category", {
-      p_area_id: copyArea.id,
-      p_cleaner_id: myBusinessId,
-      p_target_category_id: copyTargetCategoryId,
-      p_new_name: copyName?.trim() || null,
-    });
-    if (error) throw error;
-
-    setCopyOpen(false);
-    setCopyArea(null);
-    setCopyTargetCategoryId("");
-    setCopyName("");
-    await fetchAreas();
-  } catch (e: any) {
-    const msg = String(e?.message || "");
-
-    if (msg.includes("uix_service_areas_cleaner_category_name")) {
-      setCopyErr(
-        "This area already exists in the selected industry. Try using a different name."
-      );
-    } else {
-      setCopyErr("Failed to copy area. Please try again.");
-    }
-  } finally {
-    setCopyBusy(false);
-  }
-}, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
-
+  }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
 
   if (loadError) {
     return (
@@ -852,14 +860,19 @@ const doCopyToIndustry = useCallback(async () => {
                 )}
 
                 <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
+                  Polygons: {draftPolys.length} • Coverage:{" "}
+                  {fmtArea(totalDraftArea)}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button className="btn" onClick={saveDraft} disabled={loading}>
                     {activeAreaId ? "Save Changes" : "Save Area"}
                   </button>
-                  <button className="btn" onClick={cancelDraft} disabled={loading}>
+                  <button
+                    className="btn"
+                    onClick={cancelDraft}
+                    disabled={loading}
+                  >
                     Cancel
                   </button>
                   <button
@@ -934,103 +947,108 @@ const doCopyToIndustry = useCallback(async () => {
                   setSponsorOpen(true);
                 };
 
-               return (
-  <li
-  key={a.id}
-  className={`border rounded-lg p-3 transition-colors
-    ${mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"}`}
->
-  {/* Row 1: Title + Meta (click to zoom) */}
-  <button
-    type="button"
-    onClick={() => zoomToArea(a)}
-    className="text-left w-full group"
-    title="Click to zoom to this area"
-  >
-    <div className="font-medium truncate group-hover:underline">
-      {a.name}
-    </div>
+                return (
+                  <li
+                    key={a.id}
+                    className={`border rounded-lg p-3 transition-colors
+                      ${
+                        mine
+                          ? "border-amber-300 bg-amber-50"
+                          : "border-gray-200 bg-white"
+                      }`}
+                  >
+                    {/* Row 1: Title + Meta (click to zoom) */}
+                    <button
+                      type="button"
+                      onClick={() => zoomToArea(a)}
+                      className="text-left w-full group"
+                      title="Click to zoom to this area"
+                    >
+                      <div className="font-medium truncate group-hover:underline">
+                        {a.name}
+                      </div>
 
-    <div className="text-xs text-gray-500 mt-1">
-      {new Date(a.created_at).toLocaleString()} •{" "}
-      {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"} km²
-      {locked && until ? (
-        <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
-          Locked until {until}
-        </span>
-      ) : null}
-    </div>
-  </button>
+                      <div className="text-xs text-gray-500 mt-1">
+                        {new Date(a.created_at).toLocaleString()} •{" "}
+                        {isLoaded ? geoMultiPolygonAreaKm2(a.gj).toFixed(2) : "—"}{" "}
+                        km²
+                        {locked && until ? (
+                          <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+                            Locked until {until}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
 
-  {/* Row 2: Edit / Delete / Copy (below title) */}
-  <div className="mt-2 flex items-center gap-2">
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        if (locked) return;
-        editArea(a);
-      }}
-      disabled={loading || locked}
-      title={locked ? "Sponsored areas are locked" : "Edit"}
-      className={[
-        "btn",
-        locked ? "opacity-40 cursor-not-allowed grayscale" : "",
-      ].join(" ")}
-    >
-      Edit
-    </button>
+                    {/* Row 2: Edit / Delete / Copy (below title) */}
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (locked) return;
+                          editArea(a);
+                        }}
+                        disabled={loading || locked}
+                        title={locked ? "Sponsored areas are locked" : "Edit"}
+                        className={[
+                          "btn",
+                          locked ? "opacity-40 cursor-not-allowed grayscale" : "",
+                        ].join(" ")}
+                      >
+                        Edit
+                      </button>
 
-    <button
-      type="button"
-      className="btn"
-      onClick={(e) => {
-        e.stopPropagation();
-        deleteArea(a);
-      }}
-      disabled={loading}
-    >
-      Delete
-    </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteArea(a);
+                        }}
+                        disabled={loading}
+                      >
+                        Delete
+                      </button>
 
-    <button
-      type="button"
-      className="btn"
-      onClick={(e) => {
-        e.stopPropagation();
-        openCopyModal(a);
-      }}
-      disabled={loading}
-      title="Copy this exact area to another industry"
-    >
-      Copy
-    </button>
-  </div>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCopyModal(a);
+                        }}
+                        disabled={loading}
+                        title="Copy this exact area to another industry"
+                      >
+                        Copy
+                      </button>
+                    </div>
 
-  {/* Row 3: Sponsor/Manage (unchanged) */}
-  <div className="mt-2 flex flex-wrap gap-2 items-center">
-    <button
-      className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      disabled={disabled}
-      title={title}
-    >
-      {label}
-    </button>
+                    {/* Row 3: Sponsor/Manage */}
+                    <div className="mt-2 flex flex-wrap gap-2 items-center">
+                      <button
+                        className={`btn ${
+                          disabled ? "opacity-50 cursor-not-allowed" : ""
+                        }`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onClick();
+                        }}
+                        disabled={disabled}
+                        title={title}
+                      >
+                        {label}
+                      </button>
 
-    {busy && (
-      <div className="text-[10px] text-gray-500 mt-1">
-        Checking availability…
-      </div>
-    )}
-  </div>
-</li>
-
-);
-
+                      {busy && (
+                        <div className="text-[10px] text-gray-500 mt-1">
+                          Checking availability…
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                );
               })}
 
               {!serviceAreas.length && !loading && (
@@ -1052,7 +1070,7 @@ const doCopyToIndustry = useCallback(async () => {
                     border: "2px solid #16a34a",
                   }}
                 />
-                Owned by you
+                Sponsored by you
               </span>
               <span className="inline-flex items-center gap-1">
                 <i
@@ -1062,7 +1080,17 @@ const doCopyToIndustry = useCallback(async () => {
                     border: "2px solid #dc2626",
                   }}
                 />
-                Owned by others
+                Sponsored by others
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{
+                    background: "transparent",
+                    border: "2px solid #555",
+                  }}
+                />
+                Service area outline
               </span>
             </div>
 
@@ -1104,7 +1132,7 @@ const doCopyToIndustry = useCallback(async () => {
                 }}
               />
 
-              {/* non-editable painted overlays */}
+              {/* ✅ Base outlines: ALWAYS draw full service area shape (no fill) */}
               {activeAreaId === null &&
                 sortedServiceAreas.map((a) => {
                   const gj = a.gj;
@@ -1112,30 +1140,74 @@ const doCopyToIndustry = useCallback(async () => {
 
                   const previewIsForThisArea =
                     previewActiveForArea && sponsorAreaId === a.id;
-                  if (previewIsForThisArea) return null;
 
-                  const paint = areaPaint(a.id);
-                  const style: google.maps.PolygonOptions = {
+                  // keep outlines visible even during preview (nice context)
+                  const outlineStyle: google.maps.PolygonOptions = {
                     ...polyStyle,
                     editable: false,
                     draggable: false,
-                    fillOpacity: 0.35,
+                    fillOpacity: 0,
                     strokeOpacity: 0.9,
-                    fillColor: paint?.fill ?? "rgba(0,0,0,0.0)",
-                    strokeColor: paint?.stroke ?? "#555",
+                    strokeColor: "#555",
+                    zIndex: 10,
+                    clickable: false,
                   };
+
+                  // If you want to hide outlines for the area being previewed, uncomment:
+                  // if (previewIsForThisArea) return null;
+                  void previewIsForThisArea;
 
                   return (gj.coordinates as number[][][][]).map((poly, i) => {
                     const paths = poly.map((ring) =>
                       ring.map(([lng, lat]) => ({ lat, lng }))
                     );
                     return (
-                      <Polygon key={`${a.id}-${i}`} paths={paths} options={style} />
+                      <Polygon
+                        key={`outline-${a.id}-${i}`}
+                        paths={paths}
+                        options={outlineStyle}
+                      />
                     );
                   });
                 })}
 
-              {/* Preview overlay */}
+              {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
+              {activeAreaId === null &&
+                !sponsorOpen && // optional: hide sponsored fills while preview modal open
+                sortedServiceAreas.map((a) => {
+                  const s = getAreaSlotState(a.id);
+                  if (!s || !s.taken || !isBlockingStatus(s.status)) return null;
+                  if (!s.sponsored_geojson) return null;
+
+                  const isMine = s.owner_business_id === myBusinessId;
+
+                  const fill = isMine
+                    ? "rgba(34, 197, 94, 0.45)"
+                    : "rgba(239, 68, 68, 0.30)";
+                  const stroke = isMine ? "#16a34a" : "#dc2626";
+
+                  const sponsoredPaths = geoToPaths(s.sponsored_geojson);
+
+                  return sponsoredPaths.map((p, i) => (
+                    <Polygon
+                      key={`sponsored-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeWeight: 2,
+                        strokeOpacity: 1,
+                        strokeColor: stroke,
+                        fillColor: fill,
+                        fillOpacity: 0.35,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 50,
+                      }}
+                    />
+                  ));
+                })}
+
+              {/* Preview overlay (available region) */}
               {previewPolys.map((p, i) => (
                 <Polygon
                   key={`preview-${i}`}
@@ -1193,9 +1265,10 @@ const doCopyToIndustry = useCallback(async () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-
               <div>
-                <div className="font-semibold">Copy area to another industry</div>
+                <div className="font-semibold">
+                  Copy area to another industry
+                </div>
                 <div className="text-xs text-gray-500">
                   Copying: <span className="font-medium">{copyArea.name}</span>
                 </div>
@@ -1243,7 +1316,9 @@ const doCopyToIndustry = useCallback(async () => {
               </div>
 
               <div className="space-y-1">
-                <div className="text-sm font-medium">New area name (optional)</div>
+                <div className="text-sm font-medium">
+                  New area name (optional)
+                </div>
                 <input
                   className="w-full rounded-lg border px-3 py-2 text-sm"
                   value={copyName}
@@ -1281,3 +1356,9 @@ const doCopyToIndustry = useCallback(async () => {
     </>
   );
 }
+
+/**
+ * IMPORTANT BACKEND NOTE:
+ * This file expects /.netlify/functions/area-sponsorship to return "sponsored_geojson"
+ * for each area slot (GeoJSON of the purchased portion). Without it, only outlines will show.
+ */
