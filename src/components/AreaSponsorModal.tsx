@@ -1,13 +1,14 @@
+// src/components/AreaSponsorModal.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-type Slot = 1;
+type Slot = 1; // keep as 1 unless you really use multiple tiers
 
 type Props = {
   open: boolean;
   onClose: () => void;
 
   businessId: string;
-  categoryId?: string | null; // ✅ REQUIRED for per-industry sponsorship
+  categoryId: string; // ✅ REQUIRED (per-industry sponsorship)
   areaId: string;
   slot?: Slot;
 
@@ -20,22 +21,25 @@ type Props = {
 type PreviewState = {
   loading: boolean;
   error: string | null;
-  soldOut: boolean;
+
   totalKm2: number | null;
   availableKm2: number | null;
-  priceCents: number | null;
+  soldOut: boolean;
+
   ratePerKm2: number | null;
+  priceCents: number | null;
+
   geojson: any | null;
   reason?: string;
 };
+
+const EPS = 1e-6;
 
 const GBP = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `£${n.toFixed(2)}` : "—";
 
 const fmtKm2 = (n: number | null | undefined) =>
   typeof n === "number" && Number.isFinite(n) ? `${n.toFixed(3)} km²` : "—";
-
-const EPS = 1e-6;
 
 export default function AreaSponsorModal({
   open,
@@ -51,11 +55,11 @@ export default function AreaSponsorModal({
   const [pv, setPv] = useState<PreviewState>({
     loading: false,
     error: null,
-    soldOut: false,
     totalKm2: null,
     availableKm2: null,
-    priceCents: null,
+    soldOut: false,
     ratePerKm2: null,
+    priceCents: null,
     geojson: null,
   });
 
@@ -65,86 +69,41 @@ export default function AreaSponsorModal({
   }, [pv.priceCents]);
 
   // -------------------------
-  // ✅ Draggable (no deps)
+  // Simple draggable modal (no deps)
   // -------------------------
-  const modalRef = useRef<HTMLDivElement | null>(null);
-  const draggingRef = useRef(false);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-  const posStartRef = useRef({ x: 0, y: 0 });
-
-  // initial position: centered-ish
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-  const [posReady, setPosReady] = useState(false);
+  const draggingRef = useRef(false);
+  const startRef = useRef<{ mx: number; my: number; x: number; y: number } | null>(null);
 
-  // Set initial position once when opened
   useEffect(() => {
     if (!open) return;
-    // reset to a nice default each open (optional)
+    // reset position each time it opens (centered-ish)
     setPos({ x: 0, y: 0 });
-    setPosReady(true);
   }, [open]);
 
-  const clampToViewport = (x: number, y: number) => {
-    const el = modalRef.current;
-    if (!el) return { x, y };
-
-    const rect = el.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    // Keep at least 12px visible margin
-    const margin = 12;
-
-    // rect is current size; x/y are translate offsets from the centered base
-    // We'll clamp based on intended top-left after translate:
-    // Base anchor is centered container, so easiest: clamp by limiting translate
-    // relative to viewport bounds with element size.
-    const maxLeftShift = (vw / 2) - margin; // how far left we can move center anchor
-    const maxRightShift = (vw / 2) - margin;
-    const maxUpShift = (vh / 5) - margin; // base top is 18% (approx), close enough
-    const maxDownShift = vh - rect.height - margin;
-
-    // practical clamps that work well in-app
-    const cx = Math.max(-maxLeftShift, Math.min(x, maxRightShift));
-    const cy = Math.max(-maxUpShift, Math.min(y, maxDownShift));
-    return { x: cx, y: cy };
-  };
-
-  const getPoint = (e: React.PointerEvent) => ({ x: e.clientX, y: e.clientY });
-
-  const onPointerDown = (e: React.PointerEvent) => {
-    // only left click / primary touch
-    if (e.pointerType === "mouse" && e.button !== 0) return;
-
+  const onDragStart = (e: React.PointerEvent) => {
     draggingRef.current = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-
-    const p = getPoint(e);
-    dragStartRef.current = p;
-    posStartRef.current = { ...pos };
+    startRef.current = { mx: e.clientX, my: e.clientY, x: pos.x, y: pos.y };
   };
 
-  const onPointerMove = (e: React.PointerEvent) => {
-    if (!draggingRef.current) return;
-
-    const p = getPoint(e);
-    const dx = p.x - dragStartRef.current.x;
-    const dy = p.y - dragStartRef.current.y;
-
-    const next = clampToViewport(posStartRef.current.x + dx, posStartRef.current.y + dy);
-    setPos(next);
+  const onDragMove = (e: React.PointerEvent) => {
+    if (!draggingRef.current || !startRef.current) return;
+    const dx = e.clientX - startRef.current.mx;
+    const dy = e.clientY - startRef.current.my;
+    setPos({ x: startRef.current.x + dx, y: startRef.current.y + dy });
   };
 
-  const onPointerUp = (e: React.PointerEvent) => {
-    if (!draggingRef.current) return;
+  const onDragEnd = (e: React.PointerEvent) => {
     draggingRef.current = false;
+    startRef.current = null;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {}
   };
 
   // -------------------------
-  // ✅ Preview (per industry)
+  // Preview call (per industry)
   // -------------------------
   useEffect(() => {
     let cancelled = false;
@@ -152,11 +111,15 @@ export default function AreaSponsorModal({
     const run = async () => {
       if (!open) return;
 
-      if (!categoryId) {
+      // clear any previous overlay
+      onClearPreview?.();
+      onPreviewGeoJSON?.(null);
+
+      if (!businessId || !areaId || !categoryId) {
         setPv((s) => ({
           ...s,
           loading: false,
-          error: "Missing categoryId",
+          error: "Missing businessId / areaId / categoryId",
           soldOut: false,
           totalKm2: null,
           availableKm2: null,
@@ -164,7 +127,6 @@ export default function AreaSponsorModal({
           ratePerKm2: null,
           geojson: null,
         }));
-        onPreviewGeoJSON?.(null);
         return;
       }
 
@@ -187,7 +149,9 @@ export default function AreaSponsorModal({
         const availableKm2 = typeof j.available_km2 === "number" ? j.available_km2 : 0;
 
         const soldOut =
-          Boolean(j.sold_out) || availableKm2 <= EPS || j.reason === "no_remaining";
+          Boolean(j.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
+
+        const geojson = soldOut ? null : (j.geojson ?? null);
 
         if (!cancelled) {
           setPv({
@@ -196,14 +160,15 @@ export default function AreaSponsorModal({
             soldOut,
             totalKm2,
             availableKm2,
-            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
             ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            geojson: j.geojson ?? null,
+            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
+            geojson,
             reason: j.reason,
           });
-        }
 
-        onPreviewGeoJSON?.(j.geojson ?? null);
+          // ✅ IMPORTANT: only ever preview the REMAINING geojson (never fall back to area geom)
+          onPreviewGeoJSON?.(geojson);
+        }
       } catch (e: any) {
         if (!cancelled) {
           setPv({
@@ -212,12 +177,12 @@ export default function AreaSponsorModal({
             soldOut: false,
             totalKm2: null,
             availableKm2: null,
-            priceCents: null,
             ratePerKm2: null,
+            priceCents: null,
             geojson: null,
           });
+          onPreviewGeoJSON?.(null);
         }
-        onPreviewGeoJSON?.(null);
       }
     };
 
@@ -225,10 +190,12 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
+    // intentionally not depending on onPreviewGeoJSON
   }, [open, businessId, areaId, slot, categoryId]);
 
   const handleClose = () => {
     onClearPreview?.();
+    onPreviewGeoJSON?.(null);
     onClose();
   };
 
@@ -236,28 +203,15 @@ export default function AreaSponsorModal({
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
   const hasArea = (pv.availableKm2 ?? 0) > EPS;
-  const canBuy = open && hasArea && !checkingOut && !!categoryId && !pv.soldOut;
+  const canBuy = open && hasArea && !checkingOut && !pv.loading && !pv.soldOut;
 
   const startCheckout = async () => {
     if (!canBuy) return;
-
-    if (!categoryId) {
-      setCheckoutErr("Missing categoryId");
-      return;
-    }
-
-    if (!hasArea || pv.soldOut) {
-      setCheckoutErr("No purchasable area left for this industry in this polygon.");
-      setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
-      return;
-    }
 
     setCheckingOut(true);
     setCheckoutErr(null);
 
     try {
-      console.log("[sponsored-checkout] sending", { businessId, areaId, slot, categoryId });
-
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -277,7 +231,8 @@ export default function AreaSponsorModal({
         setCheckoutErr(message);
 
         if (res.status === 409) {
-          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0 }));
+          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0, geojson: null }));
+          onPreviewGeoJSON?.(null);
         }
 
         setCheckingOut(false);
@@ -301,33 +256,25 @@ export default function AreaSponsorModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[10000]">
-      {/* Overlay: dims only; DOES NOT block map clicks */}
-      <div className="absolute inset-0 bg-black/40" style={{ pointerEvents: "none" }} />
-
-      {/* Draggable modal wrapper */}
+    <div className="fixed inset-0 z-[10000] bg-black/40">
       <div
-        ref={modalRef}
-        className="absolute left-1/2 top-[18%] -translate-x-1/2"
+        className="absolute left-1/2 top-1/2"
         style={{
-          transform: `translate(-50%, 0) translate(${pos.x}px, ${pos.y}px)`,
-          pointerEvents: "auto",
+          transform: `translate(-50%, -50%) translate(${pos.x}px, ${pos.y}px)`,
         }}
       >
-        <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl">
-          {/* Drag handle */}
+        <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl overflow-hidden">
+          {/* DRAG BAR */}
           <div
-            className="flex items-center justify-between px-4 py-3 border-b cursor-move select-none touch-none"
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
+            className="flex items-start justify-between px-4 py-3 border-b cursor-move select-none"
+            onPointerDown={onDragStart}
+            onPointerMove={onDragMove}
+            onPointerUp={onDragEnd}
+            onPointerCancel={onDragEnd}
           >
-            <div className="font-semibold">
-              Sponsor — {areaName || "Area"}
-              <div className="text-[11px] text-gray-400 font-normal">
-                Drag this bar to move the window
-              </div>
+            <div>
+              <div className="font-semibold">Sponsor — {areaName || "Area"}</div>
+              <div className="text-xs text-gray-500">Drag this bar to move the window</div>
             </div>
 
             <button className="btn" onClick={handleClose}>
@@ -338,17 +285,17 @@ export default function AreaSponsorModal({
           <div className="p-4 space-y-3">
             <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
               Featured sponsorship makes you first in local search results. Preview highlights the
-              purchasable sub-region.
+              purchasable sub-region (for this industry only).
             </div>
 
-            {/* tiny debug line (remove later) */}
+            {/* tiny debug line */}
             <div className="text-[11px] text-gray-500">
-              Debug: areaId={areaId} • categoryId={categoryId || "null"}
+              Debug: areaId={areaId} • categoryId={categoryId}
             </div>
 
-            {!categoryId && (
-              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                Missing categoryId
+            {pv.loading && (
+              <div className="rounded-md border border-gray-200 bg-gray-50 text-gray-700 text-sm p-2">
+                Computing preview…
               </div>
             )}
 
