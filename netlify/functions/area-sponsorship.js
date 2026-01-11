@@ -1,27 +1,7 @@
 // netlify/functions/area-sponsorship.js
 import { createClient } from "@supabase/supabase-js";
 
-console.log("LOADED area-sponsorship v2026-01-11-SINGLE-SLOT+SAFE_SELECT_RETRY");
-
-function requireEnv(name) {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing required env var: ${name}`);
-  return v;
-}
-
-function getServiceRoleKey() {
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY;
-
-  if (!key) throw new Error("Missing Supabase service role key env var");
-  return key;
-}
-
-const supabase = createClient(requireEnv("SUPABASE_URL"), getServiceRoleKey(), {
-  auth: { persistSession: false },
-});
+console.log("LOADED area-sponsorship v2026-01-11-SPONSORED_GEOJSON-FIRST");
 
 const corsHeaders = {
   "content-type": "application/json",
@@ -33,31 +13,27 @@ const corsHeaders = {
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
-const BLOCKING = new Set([
-  "active",
-  "trialing",
-  "past_due",
-  "unpaid",
-  "incomplete",
-  "incomplete_expired",
-  "paused",
-]);
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env var: ${name}`);
+  return v;
+}
 
+function getServiceRoleKey() {
+  return (
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY
+  );
+}
+
+const supabase = createClient(requireEnv("SUPABASE_URL"), getServiceRoleKey(), {
+  auth: { persistSession: false },
+});
+
+// statuses that should block purchase (treated as "taken")
+const BLOCKING = new Set(["active", "trialing", "past_due"]);
 const DEFAULT_SLOTS = [1];
-
-async function selectSubs(areaIds, slots, selectCols) {
-  return supabase
-    .from("sponsored_subscriptions")
-    .select(selectCols)
-    .in("area_id", areaIds)
-    .in("slot", slots);
-}
-
-function isMissingColumnError(err) {
-  const msg = String(err?.message || err || "").toLowerCase();
-  // PostgREST errors vary, but usually include "column" + "does not exist"
-  return msg.includes("column") && msg.includes("does not exist");
-}
 
 export default async (req) => {
   if (req.method === "OPTIONS") return json({ ok: true }, 200);
@@ -71,46 +47,30 @@ export default async (req) => {
   }
 
   const areaIds = Array.isArray(body?.areaIds) ? body.areaIds.filter(Boolean) : [];
-  const cleaner_id =
-    body?.cleaner_id || body?.business_id || body?.cleanerId || body?.businessId || null;
-
   const slots =
     Array.isArray(body?.slots) && body.slots.length
       ? body.slots.map((n) => Number(n)).filter((n) => Number.isFinite(n))
       : DEFAULT_SLOTS;
 
-  if (!areaIds.length) return json({ areas: [] });
+  if (!areaIds.length) return json({ areas: [] }, 200);
 
   try {
-    // 1) Prefer sponsored_geojson
-    let rows;
-    let used = "sponsored_geojson";
+    // ✅ IMPORTANT: select sponsored_geojson (real GeoJSON) and status/owner
+    const { data: rows, error } = await supabase
+      .from("sponsored_subscriptions")
+      .select("area_id, slot, status, business_id, created_at, sponsored_geojson")
+      .in("area_id", areaIds)
+      .in("slot", slots)
+      .order("created_at", { ascending: false });
 
-    let resp = await selectSubs(
-      areaIds,
-      slots,
-      "area_id, slot, status, business_id, created_at, sponsored_geojson"
-    );
+    if (error) throw error;
 
-    if (resp.error && isMissingColumnError(resp.error)) {
-      // 2) Fallback to final_geojson if sponsored_geojson doesn't exist
-      used = "final_geojson";
-      resp = await selectSubs(
-        areaIds,
-        slots,
-        "area_id, slot, status, business_id, created_at, final_geojson"
-      );
-    }
-
-    if (resp.error) throw resp.error;
-    rows = resp.data || [];
-
-    // Group by area:slot
-    const byAreaSlot = new Map();
-    for (const r of rows) {
+    // Group rows by area:slot (already sorted newest-first)
+    const byKey = new Map();
+    for (const r of rows || []) {
       const k = `${r.area_id}:${r.slot}`;
-      if (!byAreaSlot.has(k)) byAreaSlot.set(k, []);
-      byAreaSlot.get(k).push(r);
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(r);
     }
 
     const areasOut = [];
@@ -119,10 +79,9 @@ export default async (req) => {
 
       for (const slot of slots) {
         const k = `${area_id}:${slot}`;
-        const arr = byAreaSlot.get(k) || [];
+        const arr = byKey.get(k) || [];
 
-        arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
+        // Prefer newest BLOCKING row; else newest row
         const blockingRow = arr.find((r) =>
           BLOCKING.has(String(r.status || "").toLowerCase())
         );
@@ -130,23 +89,13 @@ export default async (req) => {
 
         const status = chosen?.status ?? null;
         const owner_business_id = chosen?.business_id ?? null;
-
         const taken = !!chosen && BLOCKING.has(String(status || "").toLowerCase());
-        const taken_by_me =
-          Boolean(cleaner_id) &&
-          Boolean(owner_business_id) &&
-          String(owner_business_id) === String(cleaner_id);
 
-        // Always return sponsored_geojson to the frontend, regardless of DB column name
-        const sponsored_geojson =
-          used === "sponsored_geojson"
-            ? chosen?.sponsored_geojson ?? null
-            : chosen?.final_geojson ?? null;
+        const sponsored_geojson = chosen?.sponsored_geojson ?? null;
 
         areaObj.slots.push({
           slot,
           taken,
-          taken_by_me,
           status,
           owner_business_id,
           sponsored_geojson,
@@ -156,7 +105,7 @@ export default async (req) => {
       areasOut.push(areaObj);
     }
 
-    return json({ areas: areasOut });
+    return json({ areas: areasOut }, 200);
   } catch (err) {
     console.error("area-sponsorship fatal error:", err);
     return json({ error: "Internal Server Error" }, 500);
