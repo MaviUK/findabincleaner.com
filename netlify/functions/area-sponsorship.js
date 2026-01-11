@@ -81,7 +81,7 @@ export default async (req) => {
 
     const { data: rows, error } = await supabase
       .from("sponsored_subscriptions")
-      .select("area_id, slot, status, business_id, created_at")
+      .select("area_id, slot, status, business_id, created_at, final_geojson")
       .in("area_id", areaIds)
       .in("slot", slots);
 
@@ -102,6 +102,9 @@ export default async (req) => {
       for (const slot of slots) {
         const k = `${area_id}:${slot}`;
         const arr = byAreaSlot.get(k) || [];
+
+        const sponsored_geojson = chosen?.final_geojson ?? null;
+
 
         // newest first
         arr.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
