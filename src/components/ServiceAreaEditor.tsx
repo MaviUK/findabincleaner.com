@@ -657,27 +657,77 @@ export default function ServiceAreaEditor({
   ]);
 
   const deleteArea = useCallback(
-    async (area: ServiceAreaRow) => {
-      if (!confirm(`Delete “${area.name}”?`)) return;
-      setLoading(true);
-      setError(null);
-      try {
-        const { error } = await supabase.rpc("delete_service_area", {
-          p_area_id: area.id,
-        });
-        if (error) throw error;
+  async (area: ServiceAreaRow) => {
+    // is this area sponsored by ME right now?
+    const slot = sponsorship[area.id]?.slot ?? null;
+    const isMineSponsored =
+      !!slot &&
+      slot.taken &&
+      isBlockingStatus(slot.status) &&
+      String(slot.owner_business_id || "") === String(myBusinessId);
 
+    const msg = isMineSponsored
+      ? `Delete “${area.name}”?\n\n⚠️ This area is currently sponsored.\nDeleting it will IMMEDIATELY cancel your Stripe subscription and remove the area.`
+      : `Delete “${area.name}”?`;
+
+    if (!confirm(msg)) return;
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      // ✅ if sponsored by me, cancel subscription AND delete polygon in one backend call
+      if (isMineSponsored) {
+        const session = (await supabase.auth.getSession())?.data?.session;
+        const token = session?.access_token;
+
+        if (!token) throw new Error("You must be logged in to cancel sponsorship.");
+
+        const res = await fetch("/.netlify/functions/cancel-sponsored-area", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            areaId: area.id,
+            cleanerId: myBusinessId,
+            slot: 1,
+          }),
+        });
+
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok || !j?.ok) {
+          throw new Error(j?.error || `Cancel/delete failed (${res.status})`);
+        }
+
+        // Remove locally
         if (activeAreaId === area.id) resetDraft();
         setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
+
+        // Refresh sponsorship state
         await fetchAreas();
-      } catch (e: any) {
-        setError(e.message || "Failed to delete area");
-      } finally {
-        setLoading(false);
+        return;
       }
-    },
-    [activeAreaId, fetchAreas, resetDraft]
-  );
+
+      // Normal delete (non-sponsored)
+      const { error } = await supabase.rpc("delete_service_area", {
+        p_area_id: area.id,
+      });
+      if (error) throw error;
+
+      if (activeAreaId === area.id) resetDraft();
+      setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
+      await fetchAreas();
+    } catch (e: any) {
+      setError(e.message || "Failed to delete area");
+    } finally {
+      setLoading(false);
+    }
+  },
+  [activeAreaId, fetchAreas, resetDraft, sponsorship, myBusinessId]
+);
+
 
   const cancelDraft = useCallback(() => {
     resetDraft();
