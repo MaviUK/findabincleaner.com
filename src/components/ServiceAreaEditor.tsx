@@ -435,8 +435,15 @@ export default function ServiceAreaEditor({
           }
 
           const paint = ownedPaintFor(slot, myBusinessId);
-          map[a.area_id] = { area_id: a.area_id, slot, paint };
-        }
+          const sponsored_geojson = slot?.sponsored_geojson ?? null;
+
+map[a.area_id] = {
+  area_id: a.area_id,
+  slot,
+  sponsored_geojson, // ✅ store at top-level too (optional, but handy)
+  paint,
+};
+
 
         setSponsorship(map);
       } catch (e) {
@@ -1134,44 +1141,40 @@ export default function ServiceAreaEditor({
                 }}
               />
 
-              {/* ✅ Base outlines: ALWAYS draw full service area shape (no fill) */}
-              {activeAreaId === null &&
-                sortedServiceAreas.map((a) => {
-                  const gj = a.gj;
-                  if (!gj || gj.type !== "MultiPolygon") return null;
+              {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
+{activeAreaId === null &&
+  sortedServiceAreas.map((a) => {
+    const slot = sponsorship[a.id]?.slot;
+    if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return null;
 
-                  const previewIsForThisArea =
-                    previewActiveForArea && sponsorAreaId === a.id;
+    const sponsored = slot.sponsored_geojson ?? null;
+    if (!sponsored) return null;
 
-                  // keep outlines visible even during preview (nice context)
-                  const outlineStyle: google.maps.PolygonOptions = {
-                    ...polyStyle,
-                    editable: false,
-                    draggable: false,
-                    fillOpacity: 0,
-                    strokeOpacity: 0.9,
-                    strokeColor: "#555",
-                    zIndex: 10,
-                    clickable: false,
-                  };
+    const isMine = slot.owner_business_id === myBusinessId;
+    const fill = isMine ? "rgba(34, 197, 94, 0.45)" : "rgba(239, 68, 68, 0.30)";
+    const stroke = isMine ? "#16a34a" : "#dc2626";
 
-                  // If you want to hide outlines for the area being previewed, uncomment:
-                  // if (previewIsForThisArea) return null;
-                  void previewIsForThisArea;
+    const sponsoredPaths = geoToPaths(sponsored);
 
-                  return (gj.coordinates as number[][][][]).map((poly, i) => {
-                    const paths = poly.map((ring) =>
-                      ring.map(([lng, lat]) => ({ lat, lng }))
-                    );
-                    return (
-                      <Polygon
-                        key={`outline-${a.id}-${i}`}
-                        paths={paths}
-                        options={outlineStyle}
-                      />
-                    );
-                  });
-                })}
+    return sponsoredPaths.map((p, i) => (
+      <Polygon
+        key={`sponsored-${a.id}-${i}`}
+        paths={p.paths}
+        options={{
+          strokeWeight: 2,
+          strokeOpacity: 1,
+          strokeColor: stroke,
+          fillColor: fill,
+          fillOpacity: 0.35,
+          clickable: false,
+          editable: false,
+          draggable: false,
+          zIndex: 50,
+        }}
+      />
+    ));
+  })}
+
 
               {/* ✅ Sponsored fills: ONLY the purchased portion is colored */}
               {activeAreaId === null &&
