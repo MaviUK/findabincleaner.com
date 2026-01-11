@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-06-FIXED-CLEAN");
+console.log("LOADED sponsored-checkout v2026-01-11-LOCK-GEOJSON");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, {
   apiVersion: "2024-06-20",
@@ -35,11 +35,10 @@ function requireEnv(name) {
 function getSupabaseAdmin() {
   const url = process.env.SUPABASE_URL;
 
-  // support both naming styles you’ve used elsewhere
   const key =
     process.env.SUPABASE_SERVICE_ROLE_KEY ||
     process.env.SUPABASE_SERVICE_ROLE ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY?.trim();
+    process.env.SUPABASE_SERVICE_KEY;
 
   if (!url || !key) {
     throw new Error(
@@ -47,7 +46,12 @@ function getSupabaseAdmin() {
     );
   }
 
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+function firstNonNull(...vals) {
+  for (const v of vals) if (v != null) return v;
+  return null;
 }
 
 export default async (req) => {
@@ -73,7 +77,8 @@ export default async (req) => {
   // category required for availability/pricing logic
   const categoryId = String(body.categoryId || body.category_id || "").trim();
 
-  const lockId = String(body.lockId || body.lock_id || "").trim() || null;
+  // caller may pass lockId, but we will ensure one exists
+  const incomingLockId = String(body.lockId || body.lock_id || "").trim() || null;
   const allowTopUp = Boolean(body.allowTopUp);
 
   if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
@@ -167,6 +172,44 @@ export default async (req) => {
       );
     }
 
+    // ✅ 2b) ENSURE we have a lock with the purchasable geometry stored
+    let ensuredLockId = incomingLockId;
+
+    if (!ensuredLockId) {
+      // Try common field names returned by your RPC
+      const lockGeo = firstNonNull(
+        row?.sponsored_geojson,
+        row?.final_geojson,
+        row?.gj,       // common: geojson multipolygon
+        row?.geojson,
+        row?.geometry,
+        row?.geom
+      );
+
+      if (!lockGeo) {
+        return json(
+          { ok: false, error: "Preview did not return geometry (expected row.gj/geojson)" },
+          500
+        );
+      }
+
+      const { data: lockRow, error: lockErr } = await sb
+        .from("sponsored_locks")
+        .insert({
+          area_id: areaId,
+          slot,
+          business_id: cleanerId,
+          category_id: categoryId,
+          is_active: true,
+          geojson: lockGeo, // ✅ this is the exact portion we will paint later
+        })
+        .select("id")
+        .maybeSingle();
+
+      if (lockErr) throw lockErr;
+      ensuredLockId = lockRow?.id || null;
+    }
+
     // 3) Price
     const ratePerKm2 =
       Number(
@@ -219,45 +262,6 @@ export default async (req) => {
       if (upErr) throw upErr;
     }
 
-    // metadata used by webhook
+    // ✅ metadata used by webhook/postverify (includes lock_id)
     const meta = {
       cleaner_id: cleaner.id,
-      business_id: cleaner.id, // back-compat
-      area_id: areaId,
-      slot: String(slot),
-      category_id: categoryId,
-      lock_id: lockId || "",
-    };
-
-    // 5) Create Stripe checkout session
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      metadata: meta,
-      subscription_data: { metadata: meta },
-
-      line_items: [
-        {
-          price_data: {
-            currency: "gbp",
-            product_data: {
-              name: "Featured service area",
-              description: "Be shown first in local search for this area.",
-            },
-            unit_amount: amountCents,
-            recurring: { interval: "month" },
-          },
-          quantity: 1,
-        },
-      ],
-
-      success_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=success`,
-      cancel_url: `${process.env.PUBLIC_SITE_URL}/#dashboard?checkout=cancel`,
-    });
-
-    return json({ ok: true, url: session.url }, 200);
-  } catch (e) {
-    console.error("[sponsored-checkout] error:", e);
-    return json({ ok: false, error: e?.message || "Server error" }, 500);
-  }
-};
