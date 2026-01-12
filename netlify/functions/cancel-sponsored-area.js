@@ -121,13 +121,14 @@ export default async (req) => {
 
     // 2) Update DB row so UI reacts instantly (webhook will also update)
     await sb
-      .from("sponsored_subscriptions")
-      .update({
-        status: "canceled",
-        cancel_at_period_end: false,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", row.id);
+  .from("sponsored_subscriptions")
+  .update({
+    cancel_at_period_end: true,
+    // keep status active until webhook updates it at end-of-period
+    updated_at: new Date().toISOString(),
+  })
+  .eq("id", row.id);
+
 
     // 3) Delete the service area polygon
     // Use your existing RPC so all your constraints remain respected.
