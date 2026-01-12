@@ -117,7 +117,7 @@ export default async (req) => {
     }
 
     // 1) Cancel at Stripe immediately
-    await cancelStripeSub(row.stripe_subscription_id);
+    await cancelAtPeriodEnd(row.stripe_subscription_id);
 
     // 2) Update DB row so UI reacts instantly (webhook will also update)
     await sb
