@@ -9,6 +9,8 @@ import {
 import { supabase } from "../lib/supabase";
 import AreaSponsorModal from "./AreaSponsorModal";
 import AreaManageModal from "./AreaManageModal";
+import DeleteAreaModal from "./DeleteAreaModal";
+
 
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
@@ -658,13 +660,20 @@ export default function ServiceAreaEditor({
 
   const deleteArea = useCallback(
   async (area: ServiceAreaRow) => {
-    // is this area sponsored by ME right now?
     const slot = sponsorship[area.id]?.slot ?? null;
     const isMineSponsored =
       !!slot &&
       slot.taken &&
       isBlockingStatus(slot.status) &&
       String(slot.owner_business_id || "") === String(myBusinessId);
+
+    setDeleteAreaId(area.id);
+    setDeleteAreaName(area.name || "");
+    setDeleteIsSponsoredByMe(isMineSponsored);
+    setDeleteOpen(true);
+  },
+  [sponsorship, myBusinessId]
+);
 
     const msg = isMineSponsored
       ? `Delete “${area.name}”?\n\n⚠️ This area is currently sponsored.\nDeleting it will IMMEDIATELY cancel your Stripe subscription and remove the area.`
@@ -782,6 +791,12 @@ export default function ServiceAreaEditor({
       return sizeKm2(b) - sizeKm2(a);
     });
   }, [isLoaded, serviceAreas, sponsorship]);
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+const [deleteAreaId, setDeleteAreaId] = useState<string | null>(null);
+const [deleteAreaName, setDeleteAreaName] = useState<string>("");
+const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(false);
+
 
   const openCopyModal = useCallback(
     (area: ServiceAreaRow) => {
