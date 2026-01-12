@@ -296,6 +296,11 @@ export default function ServiceAreaEditor({
 
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+const [deleteAreaId, setDeleteAreaId] = useState<string | null>(null);
+const [deleteAreaName, setDeleteAreaName] = useState<string>("");
+const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(false);
+
 
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
@@ -659,8 +664,9 @@ export default function ServiceAreaEditor({
   ]);
 
   const deleteArea = useCallback(
-  async (area: ServiceAreaRow) => {
+  (area: ServiceAreaRow) => {
     const slot = sponsorship[area.id]?.slot ?? null;
+
     const isMineSponsored =
       !!slot &&
       slot.taken &&
@@ -674,6 +680,7 @@ export default function ServiceAreaEditor({
   },
   [sponsorship, myBusinessId]
 );
+
 
     const msg = isMineSponsored
       ? `Delete “${area.name}”?\n\n⚠️ This area is currently sponsored.\nDeleting it will IMMEDIATELY cancel your Stripe subscription and remove the area.`
@@ -791,12 +798,6 @@ export default function ServiceAreaEditor({
       return sizeKm2(b) - sizeKm2(a);
     });
   }, [isLoaded, serviceAreas, sponsorship]);
-
-  const [deleteOpen, setDeleteOpen] = useState(false);
-const [deleteAreaId, setDeleteAreaId] = useState<string | null>(null);
-const [deleteAreaName, setDeleteAreaName] = useState<string>("");
-const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(false);
-
 
   const openCopyModal = useCallback(
     (area: ServiceAreaRow) => {
@@ -1322,6 +1323,7 @@ const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enab
     </>
   );
 }
+{/* Delete modal */}
 {deleteOpen && deleteAreaId && (
   <DeleteAreaModal
     open={deleteOpen}
