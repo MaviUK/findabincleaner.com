@@ -682,6 +682,7 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
 );
 
 
+
     const msg = isMineSponsored
       ? `Delete “${area.name}”?\n\n⚠️ This area is currently sponsored.\nDeleting it will IMMEDIATELY cancel your Stripe subscription and remove the area.`
       : `Delete “${area.name}”?`;
@@ -726,22 +727,22 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
         return;
       }
 
-      // Normal delete (non-sponsored)
-      const { error } = await supabase.rpc("delete_service_area", {
-        p_area_id: area.id,
-      });
-      if (error) throw error;
+    // Normal delete (non-sponsored)
+const { error } = await supabase.rpc("delete_service_area", {
+  p_area_id: area.id,
+});
+if (error) throw error;
 
-      if (activeAreaId === area.id) resetDraft();
-      setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
-      await fetchAreas();
-    } catch (e: any) {
-      setError(e.message || "Failed to delete area");
-    } finally {
-      setLoading(false);
-    }
-  },
-  [activeAreaId, fetchAreas, resetDraft, sponsorship, myBusinessId]
+if (activeAreaId === area.id) resetDraft();
+setServiceAreas((prev) => prev.filter((x) => x.id !== area.id));
+await fetchAreas();
+} catch (e: any) {
+  setError(e.message || "Failed to delete area");
+} finally {
+  setLoading(false);
+}
+},
+[activeAreaId, fetchAreas, resetDraft, sponsorship, myBusinessId]
 );
 
 
