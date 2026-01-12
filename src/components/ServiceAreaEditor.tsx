@@ -1255,7 +1255,6 @@ const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enab
             </div>
           </div>
         </div>
-      )}
           )}
 
       {/* Delete modal */}
