@@ -1256,25 +1256,27 @@ const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enab
           </div>
         </div>
       )}
+          )}
+
+      {/* Delete modal */}
+      {deleteOpen && deleteAreaId && (
+        <DeleteAreaModal
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          areaId={deleteAreaId}
+          areaName={deleteAreaName}
+          cleanerId={myBusinessId}
+          isSponsoredByMe={deleteIsSponsoredByMe}
+          onDeleted={async () => {
+            if (activeAreaId === deleteAreaId) resetDraft();
+            setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
+            await fetchAreas();
+          }}
+        />
+      )}
     </>
   );
 }
-{/* Delete modal */}
-{deleteOpen && deleteAreaId && (
-  <DeleteAreaModal
-    open={deleteOpen}
-    onClose={() => setDeleteOpen(false)}
-    areaId={deleteAreaId}
-    areaName={deleteAreaName}
-    cleanerId={myBusinessId}
-    isSponsoredByMe={deleteIsSponsoredByMe}
-    onDeleted={async () => {
-      if (activeAreaId === deleteAreaId) resetDraft();
-      setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
-      await fetchAreas();
-    }}
-  />
-)}
 
 
 /**
