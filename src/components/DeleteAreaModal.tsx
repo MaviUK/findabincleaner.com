@@ -31,22 +31,30 @@ export default function DeleteAreaModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
-        <div className="px-4 py-3 border-b flex items-center justify-between">
-          <div className="font-semibold">Delete Area</div>
-          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose} disabled={busy}>
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
+        <div className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl">
+          <div className="font-semibold text-amber-900">Delete Area</div>
+          <button
+            className="text-sm opacity-70 hover:opacity-100"
+            onClick={() => {
+              if (busy) return;
+              setTyped("");
+              setErr(null);
+              onClose();
+            }}
+            disabled={busy}
+          >
             Close
           </button>
         </div>
 
         <div className="px-4 py-4 space-y-3">
           <div className="text-sm">
-            You are about to delete:{" "}
-            <span className="font-semibold">{areaName}</span>
+            You are about to delete: <span className="font-semibold">{areaName}</span>
           </div>
 
           {isSponsoredByMe ? (
-            <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded p-3">
+            <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
               <div className="font-semibold mb-1">This area is sponsored.</div>
               <div>
                 Deleting it will also{" "}
@@ -55,7 +63,7 @@ export default function DeleteAreaModal({
               </div>
             </div>
           ) : (
-            <div className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded p-3">
+            <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3">
               This will permanently delete the polygon.
             </div>
           )}
@@ -81,7 +89,16 @@ export default function DeleteAreaModal({
         </div>
 
         <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
-          <button className="btn" onClick={onClose} disabled={busy}>
+          <button
+            className="btn"
+            onClick={() => {
+              if (busy) return;
+              setTyped("");
+              setErr(null);
+              onClose();
+            }}
+            disabled={busy}
+          >
             Cancel
           </button>
 
@@ -91,6 +108,7 @@ export default function DeleteAreaModal({
             onClick={async () => {
               setBusy(true);
               setErr(null);
+
               try {
                 if (isSponsoredByMe) {
                   const session = (await supabase.auth.getSession())?.data?.session;
@@ -107,18 +125,29 @@ export default function DeleteAreaModal({
                       areaId,
                       cleanerId,
                       slot: 1,
-                      mode: "cancel_at_period_end", // optional flag
+                      mode: "cancel_at_period_end", // remove this if your function doesn't support it
                     }),
                   });
 
                   const j = await res.json().catch(() => ({}));
                   if (!res.ok || !j?.ok) throw new Error(j?.error || `Failed (${res.status})`);
+
+                  // ✅ ensure polygon is deleted (even if the function only cancels)
+                  const del = await supabase.rpc("delete_service_area", { p_area_id: areaId });
+                  if (del.error) {
+                    // ignore "already deleted" / "not found" style errors
+                    const msg = String(del.error.message || "");
+                    if (!msg.toLowerCase().includes("not") && !msg.toLowerCase().includes("found")) {
+                      throw del.error;
+                    }
+                  }
                 } else {
                   const { error } = await supabase.rpc("delete_service_area", { p_area_id: areaId });
                   if (error) throw error;
                 }
 
                 await onDeleted();
+                setTyped("");
                 onClose();
               } catch (e: any) {
                 setErr(e?.message || "Delete failed");
