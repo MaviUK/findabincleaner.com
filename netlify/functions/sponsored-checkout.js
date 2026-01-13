@@ -306,38 +306,43 @@ export default async (req) => {
     const successUrl = `${publicSite}/#/dashboard?checkout=success`;
     const cancelUrl = `${publicSite}/#/dashboard?checkout=cancel`;
 
-    const lineItem = sponsoredPriceId
-      ? {
-          price: sponsoredPriceId,
-          quantity: 1,
-        }
-      : {
-          price_data: {
-            currency: "gbp",
-            unit_amount: amountCents,
-            recurring: { interval: "month" },
-            product_data: {
-              name: "Featured Sponsorship",
-              description: `Area sponsorship (slot ${slot})`,
-            },
+    
+
+const session = await stripe.checkout.sessions.create({
+  mode: "subscription",
+  customer: stripeCustomerId,
+
+  line_items: [
+    {
+      price_data: {
+        currency: "gbp",
+        recurring: { interval: "month" },
+        product_data: {
+          name: `Featured Sponsorship`,
+          // Optional: helps you identify it in Stripe
+          metadata: {
+            area_id: areaId,
+            category_id: categoryId,
+            slot: String(slot),
           },
-          quantity: 1,
-        };
-
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: stripeCustomerId,
-      line_items: [lineItem],
-      allow_promotion_codes: true,
-      success_url: successUrl,
-      cancel_url: cancelUrl,
-
-      // Store info on both Checkout + Subscription (handy for webhook)
-      metadata: meta,
-      subscription_data: {
-        metadata: meta,
+        },
+        unit_amount: amountCents, // ✅ computed from availableKm2 * rate * 100 (min 100)
       },
-    });
+      quantity: 1,
+    },
+  ],
+
+  allow_promotion_codes: true,
+  success_url: successUrl,
+  cancel_url: cancelUrl,
+
+  // Store info on both Checkout + Subscription (handy for webhook)
+  metadata: meta,
+  subscription_data: {
+    metadata: meta,
+  },
+});
+
 
     return json({
       ok: true,
