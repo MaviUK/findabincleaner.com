@@ -2,7 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-12-DYNAMIC-PRICE+LOCK-GEOJSON");
+console.log("LOADED sponsored-checkout v2026-01-13-UPSERT-LOCK+DYNAMIC-PRICE");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
   apiVersion: "2024-06-20",
@@ -12,7 +12,8 @@ const corsHeaders = {
   "content-type": "application/json",
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST,OPTIONS",
-  "access-control-allow-headers": "content-type",
+  // include authorization so you can add auth later without CORS pain
+  "access-control-allow-headers": "content-type,authorization",
 };
 
 const json = (body, status = 200) =>
@@ -65,8 +66,7 @@ function safeString(v) {
 export default async (req) => {
   try {
     if (req.method === "OPTIONS") return json({ ok: true }, 200);
-    if (req.method !== "POST")
-      return json({ ok: false, error: "Method not allowed" }, 405);
+    if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
 
     let body;
     try {
@@ -77,11 +77,7 @@ export default async (req) => {
 
     // Accept old/new naming
     const cleanerId = String(
-      body.cleanerId ||
-        body.cleaner_id ||
-        body.businessId ||
-        body.business_id ||
-        ""
+      body.cleanerId || body.cleaner_id || body.businessId || body.business_id || ""
     ).trim();
 
     const areaId = String(body.areaId || body.area_id || "").trim();
@@ -90,18 +86,15 @@ export default async (req) => {
     // category required for availability/pricing logic
     const categoryId = String(body.categoryId || body.category_id || "").trim();
 
-    // caller may pass lockId, but we will ensure one exists
-    const incomingLockId =
-      String(body.lockId || body.lock_id || "").trim() || null;
+    // caller may pass lockId, but we will ensure one exists / belongs to area+slot
+    const incomingLockId = String(body.lockId || body.lock_id || "").trim() || null;
 
     const allowTopUp = Boolean(body.allowTopUp);
 
     if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
     if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-    if (!categoryId)
-      return json({ ok: false, error: "Missing categoryId" }, 400);
-    if (!Number.isFinite(slot) || slot < 1)
-      return json({ ok: false, error: "Invalid slot" }, 400);
+    if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
+    if (!Number.isFinite(slot) || slot < 1) return json({ ok: false, error: "Invalid slot" }, 400);
     if (slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
 
     // Ensure required env exists (so you DON'T get mystery 502s)
@@ -121,12 +114,9 @@ export default async (req) => {
     if (takenErr) throw takenErr;
 
     const latestBlocking =
-      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) ||
-      null;
+      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) || null;
 
-    const ownerBusinessId = latestBlocking?.business_id
-      ? String(latestBlocking.business_id)
-      : null;
+    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
 
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
@@ -157,14 +147,11 @@ export default async (req) => {
     }
 
     // 2) Remaining area preview (category-aware)
-    const { data: previewData, error: prevErr } = await sb.rpc(
-      "area_remaining_preview",
-      {
-        p_area_id: areaId,
-        p_category_id: categoryId,
-        p_slot: slot,
-      }
-    );
+    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
+      p_area_id: areaId,
+      p_category_id: categoryId,
+      p_slot: slot,
+    });
 
     if (prevErr) throw prevErr;
 
@@ -186,59 +173,86 @@ export default async (req) => {
       );
     }
 
-    // ✅ 2b) ENSURE we have a lock with the purchasable geometry stored
+    // ✅ geometry to store in lock (the purchasable remaining portion)
+    const lockGeo = firstNonNull(
+      row?.sponsored_geojson,
+      row?.final_geojson,
+      row?.gj,
+      row?.geojson,
+      row?.geometry,
+      row?.geom
+    );
+
+    if (!lockGeo) {
+      return json(
+        {
+          ok: false,
+          error:
+            "Preview did not return geometry (expected row.gj/geojson/sponsored_geojson).",
+        },
+        500
+      );
+    }
+
+    // 2b) Ensure / reuse lock
     let ensuredLockId = incomingLockId;
 
-    if (!ensuredLockId) {
-      // Try common field names returned by your RPC
-      const lockGeo = firstNonNull(
-        row?.sponsored_geojson,
-        row?.final_geojson,
-        row?.gj,
-        row?.geojson,
-        row?.geometry,
-        row?.geom
-      );
+    // If a lockId is passed, verify it exists and matches area+slot (avoid using random ids)
+    if (ensuredLockId) {
+      const { data: existing, error: exErr } = await sb
+        .from("sponsored_locks")
+        .select("id, area_id, slot")
+        .eq("id", ensuredLockId)
+        .maybeSingle();
 
-      if (!lockGeo) {
-        return json(
-          {
-            ok: false,
-            error:
-              "Preview did not return geometry (expected row.gj/geojson/sponsored_geojson).",
-          },
-          500
-        );
+      if (exErr) throw exErr;
+
+      if (!existing || String(existing.area_id) !== String(areaId) || Number(existing.slot) !== slot) {
+        ensuredLockId = null; // ignore bad lock id
       }
+    }
 
+    // If no verified lock id, upsert by (area_id,slot) to avoid duplicate key errors
+    if (!ensuredLockId) {
       const { data: lockRow, error: lockErr } = await sb
         .from("sponsored_locks")
-        .insert({
-          area_id: areaId,
-          slot,
-          business_id: cleanerId,
-          category_id: categoryId,
-          is_active: true,
-          geojson: lockGeo, // ✅ exact portion to paint later
-        })
+        .upsert(
+          {
+            area_id: areaId,
+            slot,
+            business_id: cleanerId,
+            category_id: categoryId,
+            is_active: true,
+            geojson: lockGeo,
+          },
+          { onConflict: "area_id,slot" }
+        )
         .select("id")
-        .maybeSingle();
+        .single();
 
       if (lockErr) throw lockErr;
       ensuredLockId = lockRow?.id || null;
+    } else {
+      // lock exists; refresh geojson + ownership so UI always paints the correct piece
+      const { error: updErr } = await sb
+        .from("sponsored_locks")
+        .update({
+          business_id: cleanerId,
+          category_id: categoryId,
+          is_active: true,
+          geojson: lockGeo,
+        })
+        .eq("id", ensuredLockId);
+
+      if (updErr) throw updErr;
     }
 
-    if (!ensuredLockId) {
-      return json({ ok: false, error: "Failed to create lock" }, 500);
-    }
+    if (!ensuredLockId) return json({ ok: false, error: "Failed to create lock" }, 500);
 
-    // 3) Price (category-aware rate if you want later; for now keep your env rate)
+    // 3) Price
     const ratePerKm2 =
-      Number(
-        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
-          process.env.RATE_PER_KM2_PER_MONTH ??
-          0
-      ) || 0;
+      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) ||
+      0;
 
     if (!ratePerKm2 || ratePerKm2 <= 0) {
       return json(
@@ -271,7 +285,7 @@ export default async (req) => {
       const created = await stripe.customers.create({
         name: cleaner.business_name || "Cleaner",
         email: cleaner.contact_email || undefined,
-        metadata: { cleaner_id: cleaner.id },
+        metadata: { cleaner_id: String(cleaner.id) },
       });
 
       stripeCustomerId = created.id;
@@ -286,63 +300,55 @@ export default async (req) => {
 
     // ✅ metadata used by webhook/postverify (includes lock_id)
     const meta = {
-      cleaner_id: String(cleaner.id),
-      business_id: String(cleaner.id),
-      area_id: String(areaId),
-      category_id: String(categoryId),
-      slot: String(slot),
-      lock_id: String(ensuredLockId),
-      available_km2: String(availableKm2),
-      rate_per_km2: String(ratePerKm2),
-      amount_cents: String(amountCents),
+      cleaner_id: safeString(cleaner.id),
+      business_id: safeString(cleaner.id),
+      area_id: safeString(areaId),
+      category_id: safeString(categoryId),
+      slot: safeString(slot),
+      lock_id: safeString(ensuredLockId),
+      available_km2: safeString(availableKm2),
+      rate_per_km2: safeString(ratePerKm2),
+      amount_cents: safeString(amountCents),
     };
 
-    // 5) Checkout session (subscription)
-    // ✅ If you DO have SPONSORED_PRICE_ID, we’ll use it.
-    // ✅ If you DON’T, we create a recurring inline price_data so you can charge the computed amount.
-    const sponsoredPriceId = (process.env.SPONSORED_PRICE_ID || "").trim();
-
-    const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
+    const publicSite = String(process.env.PUBLIC_SITE_URL || "").replace(/\/$/, "");
     const successUrl = `${publicSite}/#/dashboard?checkout=success`;
     const cancelUrl = `${publicSite}/#/dashboard?checkout=cancel`;
 
-    
+    // 5) Checkout session (subscription) — dynamic recurring price_data (no product/price id needed)
+    const session = await stripe.checkout.sessions.create({
+      mode: "subscription",
+      customer: stripeCustomerId,
 
-const session = await stripe.checkout.sessions.create({
-  mode: "subscription",
-  customer: stripeCustomerId,
-
-  line_items: [
-    {
-      price_data: {
-        currency: "gbp",
-        recurring: { interval: "month" },
-        product_data: {
-          name: `Featured Sponsorship`,
-          // Optional: helps you identify it in Stripe
-          metadata: {
-            area_id: areaId,
-            category_id: categoryId,
-            slot: String(slot),
+      line_items: [
+        {
+          price_data: {
+            currency: "gbp",
+            recurring: { interval: "month" },
+            product_data: {
+              name: "Featured Sponsorship",
+              description: `Area sponsorship (slot ${slot})`,
+              // Optional: helps you identify it in Stripe UI
+              metadata: {
+                area_id: safeString(areaId),
+                category_id: safeString(categoryId),
+                slot: safeString(slot),
+              },
+            },
+            unit_amount: amountCents,
           },
+          quantity: 1,
         },
-        unit_amount: amountCents, // ✅ computed from availableKm2 * rate * 100 (min 100)
-      },
-      quantity: 1,
-    },
-  ],
+      ],
 
-  allow_promotion_codes: true,
-  success_url: successUrl,
-  cancel_url: cancelUrl,
+      allow_promotion_codes: true,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
 
-  // Store info on both Checkout + Subscription (handy for webhook)
-  metadata: meta,
-  subscription_data: {
-    metadata: meta,
-  },
-});
-
+      // Store info on both Checkout + Subscription (handy for webhook)
+      metadata: meta,
+      subscription_data: { metadata: meta },
+    });
 
     return json({
       ok: true,
@@ -350,17 +356,9 @@ const session = await stripe.checkout.sessions.create({
       lock_id: ensuredLockId,
       amount_cents: amountCents,
       available_km2: availableKm2,
-      used_price_id: Boolean(sponsoredPriceId),
     });
   } catch (e) {
-    // ✅ never crash to Netlify 502; always return JSON
     console.error("[sponsored-checkout] error:", e);
-    return json(
-      {
-        ok: false,
-        error: e?.message || "Server error",
-      },
-      500
-    );
+    return json({ ok: false, error: e?.message || "Server error" }, 500);
   }
 };
