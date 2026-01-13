@@ -314,6 +314,9 @@ export default async (req) => {
     const publicSite = String(process.env.PUBLIC_SITE_URL || "").replace(/\/$/, "");
     const successUrl = `${publicSite}/#/dashboard?checkout=success`;
     const cancelUrl = `${publicSite}/#/dashboard?checkout=cancel`;
+    console.log("[sponsored-checkout] successUrl:", successUrl);
+console.log("[sponsored-checkout] cancelUrl:", cancelUrl);
+
 
     // 5) Checkout session (subscription) — dynamic recurring price_data (no product/price id needed)
     const session = await stripe.checkout.sessions.create({
