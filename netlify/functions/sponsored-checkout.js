@@ -206,21 +206,24 @@ export default async (req) => {
       if (upErr) throw upErr;
     } else {
       // ✅ IMPORTANT: upsert on unique(area_id,slot) to avoid duplicate key crash
-      const { data: lockRow, error: lockErr } = await sb
-        .from("sponsored_locks")
-        .upsert(
-          {
-            area_id: areaId,
-            slot,
-            business_id: cleanerId,
-            category_id: categoryId,
-            is_active: true,
-            geojson: lockGeo,
-          },
-          { onConflict: "area_id,slot" }
-        )
-        .select("id")
-        .maybeSingle();
+      const payload = {
+  area_id: areaId,
+  slot,
+  business_id: cleanerId,
+  category_id: categoryId,
+  is_active: true,
+  geojson: lockGeo, // exact purchasable patch
+};
+
+const { data: lockRow, error: lockErr } = await sb
+  .from("sponsored_locks")
+  .upsert(payload, { onConflict: "area_id,slot" }) // <-- matches your unique constraint
+  .select("id")
+  .single();
+
+if (lockErr) throw lockErr;
+ensuredLockId = lockRow?.id || null;
+
 
       if (lockErr) throw lockErr;
       ensuredLockId = lockRow?.id || null;
