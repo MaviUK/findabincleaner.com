@@ -17,9 +17,9 @@ import Landing from "./pages/Landing";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Settings from "./pages/Settings";
-import Onboarding from "./pages/Onboarding"; // ✅ new
-import Analytics from "./pages/Analytics"; // ✅ NEW
-import Invoices from "./pages/Invoices"; // ✅ NEW
+import Onboarding from "./pages/Onboarding";
+import Analytics from "./pages/Analytics";
+import Invoices from "./pages/Invoices";
 
 // Bump when you change the legal text to force re-acceptance
 const TERMS_VERSION = "2025-09-29";
@@ -108,7 +108,29 @@ export default function App() {
   // undefined = still checking session, null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
+  // ✅ Stripe return bridge for HashRouter
+  // Stripe strips hashes, so it returns to "/?checkout=success".
+  // We convert that into "/#/dashboard?checkout=success&session_id=..."
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const checkout = params.get("checkout");
+
+    if (checkout === "success" || checkout === "cancel") {
+      const sessionId = params.get("session_id");
+
+      const next =
+        checkout === "success"
+          ? `/#/dashboard?checkout=success${
+              sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""
+            }`
+          : `/#/dashboard?checkout=cancel`;
+
+      window.location.replace(next);
+    }
+  }, []);
+
   // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
+  // Keep this AFTER Stripe bridge
   useEffect(() => {
     if (window.location.pathname !== "/") {
       window.history.replaceState(null, "", "/");
@@ -136,7 +158,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/onboarding" element={<Onboarding />} /> {/* ✅ */}
+          <Route path="/onboarding" element={<Onboarding />} />
 
           <Route
             path="/dashboard"
@@ -160,7 +182,6 @@ export default function App() {
             }
           />
 
-          {/* ✅ Analytics route (protected + terms-gated) */}
           <Route
             path="/analytics"
             element={
@@ -172,7 +193,6 @@ export default function App() {
             }
           />
 
-          {/* ✅ NEW: Invoices route (protected + terms-gated) */}
           <Route
             path="/invoices"
             element={
