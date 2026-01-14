@@ -239,8 +239,16 @@ export default function AreaSponsorModal({
         return;
       }
 
-      const url = j.url as string;
-      window.location.assign(url);
+      const url = j?.checkout_url as string | undefined;
+
+if (!url) {
+  console.error("Checkout response missing checkout_url", j);
+  throw new Error("Stripe did not return a checkout URL.");
+}
+
+// full page redirect to Stripe
+window.location.assign(url);
+
     } catch (e: any) {
       setCheckoutErr(e?.message || "Checkout failed");
       setCheckingOut(false);
