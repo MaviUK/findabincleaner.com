@@ -131,11 +131,7 @@ export default function App() {
 
   // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
   // Keep this AFTER Stripe bridge
-  useEffect(() => {
-    if (window.location.pathname !== "/") {
-      window.history.replaceState(null, "", "/");
-    }
-  }, []);
+ 
 
   useEffect(() => {
     // initial check
