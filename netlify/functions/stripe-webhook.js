@@ -1,7 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log(
-  "LOADED stripe-webhook v2026-01-11-ACTIVATE+COPY-LOCK-GEOJSON"
-);
+console.log("LOADED stripe-webhook v2026-01-14-ACTIVATE-USING-LOCK-GEOM");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -22,16 +20,12 @@ function getSupabaseAdmin() {
     process.env.SUPABASE_SERVICE_KEY;
 
   if (!key) throw new Error("Missing Supabase service role key env var");
-
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
 const stripe = new Stripe(requireEnv("STRIPE_SECRET_KEY"), {
   apiVersion: "2024-06-20",
 });
-
-// ✅ IMPORTANT: only ACTIVE is blocking / owns inventory
-const BLOCKING = new Set(["active"]);
 
 // ---- HTTP helper ----
 function ok(statusCode, body) {
@@ -46,46 +40,36 @@ function ok(statusCode, body) {
 function isUuid(s) {
   return (
     typeof s === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      s
-    )
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
   );
 }
 function uuidOrNull(v) {
   const s = (v ?? "").toString().trim();
   return isUuid(s) ? s : null;
 }
-
-// ✅ Fail-fast assertions (pinpoints bad UUIDs before hitting DB)
 function assertUuidOrNull(name, v) {
   if (v == null) return;
-  if (!isUuid(v)) {
-    throw new Error(`BAD UUID ${name}=${JSON.stringify(v)}`);
-  }
+  if (!isUuid(v)) throw new Error(`BAD UUID ${name}=${JSON.stringify(v)}`);
 }
 
 // ---- metadata helpers ----
 function metaGet(meta, ...keys) {
   if (!meta) return null;
   for (const k of keys) {
-    if (meta[k] != null && String(meta[k]).trim() !== "") {
-      return String(meta[k]).trim();
-    }
+    if (meta[k] != null && String(meta[k]).trim() !== "") return String(meta[k]).trim();
   }
   return null;
 }
-
 function numOrNull(v) {
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
 }
 
-// ---- Stripe / Supabase error classifiers ----
+// ---- Stripe/Supabase error classifiers ----
 function isOverlapDbError(err) {
   const code = err?.code || err?.cause?.code;
   const msg = String(err?.message || err?.cause?.message || "").toLowerCase();
-
   return (
     code === "P0001" ||
     msg.includes("area overlaps an existing sponsored area") ||
@@ -95,32 +79,14 @@ function isOverlapDbError(err) {
   );
 }
 
-// Helpers for monotonic status (never downgrade active)
-function statusRank(s) {
-  const v = String(s || "").toLowerCase();
-  if (v === "active") return 3;
-  if (v === "trialing" || v === "past_due" || v === "unpaid") return 2;
-  if (v === "incomplete" || v === "incomplete_expired") return 1;
-  if (v === "canceled" || v === "cancelled") return 0;
-  return 1;
-}
-function isActiveOrBetter(s) {
-  return statusRank(s) >= 3;
-}
-
 async function safeCancelSubscription(subId, why) {
   if (!subId) return { ok: false, reason: "no-sub-id" };
-
   try {
     console.warn("[webhook] canceling subscription:", subId, why);
 
-    if (stripe.subscriptions?.cancel) {
-      await stripe.subscriptions.cancel(subId);
-    } else if (stripe.subscriptions?.del) {
-      await stripe.subscriptions.del(subId);
-    } else {
-      await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
-    }
+    if (stripe.subscriptions?.cancel) await stripe.subscriptions.cancel(subId);
+    else if (stripe.subscriptions?.del) await stripe.subscriptions.del(subId);
+    else await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
 
     return { ok: true };
   } catch (e) {
@@ -134,7 +100,7 @@ async function safeCancelSubscription(subId, why) {
   }
 }
 
-// ---- Normalize helpers ----
+// ---- Normalize helpers (unchanged) ----
 function normalizeSponsoredRowFromSubscription(subscription) {
   const status = String(subscription?.status || "").toLowerCase();
   const meta = subscription?.metadata || {};
@@ -150,12 +116,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const item = subscription?.items?.data?.[0] || null;
   const unitAmount = item?.price?.unit_amount ?? item?.plan?.amount ?? null;
 
-  const metaAmount = metaGet(
-    meta,
-    "price_monthly_pennies",
-    "price_monthly_pence",
-    "amount_pennies"
-  );
+  const metaAmount = metaGet(meta, "price_monthly_pennies", "price_monthly_pence", "amount_pennies");
 
   const priceParsed =
     (typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : null) ??
@@ -170,17 +131,10 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     : null;
 
   // keep old sponsored_geom behavior if you need it
-  const geomFromMeta = metaGet(
-    meta,
-    "sponsored_geom",
-    "sponsoredGeom",
-    "geom",
-    "geometry",
-    "sponsored_geometry"
-  );
+  const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
   const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
 
-  // ✅ VERY IMPORTANT: never mark active here; activate on invoice.paid
+  // IMPORTANT: never mark active here; activate on invoice.paid
   const safeStatus = "incomplete";
 
   return {
@@ -215,8 +169,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
-  const stripe_subscription_id =
-    typeof session?.subscription === "string" ? session.subscription : null;
+  const stripe_subscription_id = typeof session?.subscription === "string" ? session.subscription : null;
 
   const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
   const sponsored_geom = geomFromMeta || null;
@@ -239,13 +192,11 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
 // ---- DB ops ----
 async function upsertByStripeSubscriptionId(sb, row) {
-  const { data, error } = await sb
+  return sb
     .from("sponsored_subscriptions")
     .upsert(row, { onConflict: "stripe_subscription_id" })
     .select("id, business_id, status, stripe_subscription_id, current_period_end")
     .maybeSingle();
-
-  return { data, error };
 }
 
 async function fetchExistingBySubId(sb, stripe_subscription_id) {
@@ -260,8 +211,7 @@ async function fetchExistingBySubId(sb, stripe_subscription_id) {
 function preserveActive(existing, incoming) {
   if (existing?.status === "active") {
     incoming.status = "active";
-    if (!incoming.current_period_end)
-      incoming.current_period_end = existing.current_period_end || null;
+    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
   }
   return incoming;
 }
@@ -280,9 +230,7 @@ exports.handler = async (event) => {
 
     if (
       type === "checkout.session.completed" ||
-      type === "customer.subscription.created" ||
-      type === "customer.subscription.updated" ||
-      type === "customer.subscription.deleted" ||
+      type.startsWith("customer.subscription.") ||
       type === "invoice.paid" ||
       type === "invoice.finalized"
     ) {
@@ -300,12 +248,7 @@ exports.handler = async (event) => {
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
 
-      const { data: existing, error: exErr } = await fetchExistingBySubId(
-        sb,
-        draft.stripe_subscription_id
-      );
-      if (exErr) console.error("[webhook] existing lookup failed (checkout):", exErr);
-
+      const { data: existing } = await fetchExistingBySubId(sb, draft.stripe_subscription_id);
       preserveActive(existing, draft);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, draft);
@@ -314,12 +257,7 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "DB write failed (draft)" });
       }
 
-      return ok(200, {
-        ok: true,
-        wroteDraft: true,
-        id: data?.id || null,
-        status: data?.status || null,
-      });
+      return ok(200, { ok: true, wroteDraft: true, id: data?.id || null, status: data?.status || null });
     }
 
     // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here
@@ -333,31 +271,23 @@ exports.handler = async (event) => {
       assertUuidOrNull("area_id", row.area_id);
       assertUuidOrNull("category_id", row.category_id);
 
-      const { data: existing, error: exErr } = await fetchExistingBySubId(
-        sb,
-        row.stripe_subscription_id
-      );
-      if (exErr) console.error("[webhook] existing lookup failed (sub):", exErr);
-
+      const { data: existing } = await fetchExistingBySubId(sb, row.stripe_subscription_id);
       preserveActive(existing, row);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, row);
-
       if (error) {
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
-
         if (isOverlapDbError(error)) {
           await safeCancelSubscription(sub.id, "Overlap/Sold-out violation");
           return ok(200, { ok: true, canceled: true });
         }
-
         return ok(200, { ok: false, error: "DB write failed" });
       }
 
       return ok(200, { ok: true, wrote: true, id: data?.id || null, status: data?.status || null });
     }
 
-    // 3) invoice.paid → activate row + copy lock geojson into sponsored_geojson
+    // 3) invoice.paid → ACTIVATE USING LOCK GEOMETRY (fixes false overlap)
     if (type === "invoice.paid") {
       const inv = obj;
 
@@ -379,9 +309,7 @@ exports.handler = async (event) => {
             null;
 
       if (!subscriptionId) {
-        console.warn("[webhook] invoice.paid still missing subscription id", {
-          invoice: fullInv.id,
-        });
+        console.warn("[webhook] invoice.paid still missing subscription id", { invoice: fullInv.id });
         return ok(200, { ok: true, skipped: "no-sub-id" });
       }
 
@@ -391,21 +319,40 @@ exports.handler = async (event) => {
           ? new Date(periodEndSec * 1000).toISOString()
           : null;
 
-      const { data, error } = await sb
-        .from("sponsored_subscriptions")
-        .update({
-          status: "active",
-          current_period_end,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("stripe_subscription_id", subscriptionId)
-        .select("id, status")
-        .maybeSingle();
+      // ✅ MUST retrieve subscription metadata to get lock_id
+      let sub;
+      try {
+        sub = await stripe.subscriptions.retrieve(subscriptionId);
+      } catch (e) {
+        console.error("[webhook] subscriptions.retrieve failed:", subscriptionId, e?.message || e);
+        return ok(200, { ok: false, error: "subscriptions.retrieve failed" });
+      }
 
-      if (error) {
-        console.error("[webhook] invoice.paid activate error:", error, { subscriptionId });
+      const lockId = uuidOrNull(sub?.metadata?.lock_id || sub?.metadata?.lockId || null);
+      if (!lockId) {
+        console.error("[webhook] invoice.paid missing lock_id on subscription metadata", {
+          subscriptionId,
+          metadata: sub?.metadata || {},
+        });
+        // If you want: cancel subscription because we can't safely activate inventory
+        await safeCancelSubscription(subscriptionId, "Missing lock_id metadata");
+        return ok(200, { ok: false, error: "missing lock_id" });
+      }
 
-        if (isOverlapDbError(error)) {
+      // ✅ Activate via RPC that copies lock geojson -> sponsored_geom BEFORE status becomes active
+      const { data: activated, error: actErr } = await sb.rpc(
+        "activate_sponsored_subscription_from_lock",
+        {
+          p_stripe_subscription_id: subscriptionId,
+          p_lock_id: lockId,
+          p_current_period_end: current_period_end,
+        }
+      );
+
+      if (actErr) {
+        console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
+
+        if (isOverlapDbError(actErr)) {
           await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
           return ok(200, { ok: true, canceled: true });
         }
@@ -413,39 +360,7 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "activate failed" });
       }
 
-      if (!data?.id) {
-        console.error("[webhook] invoice.paid activate: no matching row", { subscriptionId });
-        return ok(200, { ok: false, error: "no matching row to activate" });
-      }
-
-      // ✅ Copy lock geojson -> sponsored_geojson
-      try {
-        const sub = await stripe.subscriptions.retrieve(subscriptionId);
-        const lockId =
-          sub?.metadata?.lock_id || sub?.metadata?.lockId || null;
-
-        if (lockId) {
-          const { data: lockRow, error: lockErr } = await sb
-            .from("sponsored_locks")
-            .select("geojson")
-            .eq("id", lockId)
-            .maybeSingle();
-
-          if (!lockErr && lockRow?.geojson) {
-            await sb
-              .from("sponsored_subscriptions")
-              .update({ sponsored_geojson: lockRow.geojson })
-              .eq("stripe_subscription_id", subscriptionId);
-
-            await sb.from("sponsored_locks").update({ is_active: false }).eq("id", lockId);
-          }
-        }
-      } catch (e) {
-        console.warn("[webhook] lock geojson copy failed:", e?.message || e);
-        // do not fail webhook; activation already succeeded
-      }
-
-      console.log("[webhook] activated subscription", subscriptionId);
+      console.log("[webhook] activated subscription", subscriptionId, "row=", activated?.[0] || activated || null);
       return ok(200, { ok: true, activated: true, subscriptionId });
     }
 
