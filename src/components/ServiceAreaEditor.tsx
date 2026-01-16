@@ -383,13 +383,13 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
 
   const OWNED_BY_ME_PAINT = {
     tier: 3,
-    fill: "rgba(34, 197, 94, 0.45)",
+    fill: "rgba(81, 235, 115, 0.8)",
     stroke: "#16a34a",
   } as const;
 
   const OWNED_BY_OTHER_PAINT = {
     tier: 2,
-    fill: "rgba(239, 68, 68, 0.30)",
+    fill: "rgba(216, 22, 36, 0.84)",
     stroke: "#dc2626",
   } as const;
 
