@@ -11,7 +11,6 @@ import AreaSponsorModal from "./AreaSponsorModal";
 import AreaManageModal from "./AreaManageModal";
 import DeleteAreaModal from "./DeleteAreaModal";
 
-
 /** ServiceAreaEditor – draw/edit areas and show sponsor/manage CTAs (single Featured slot) */
 
 export interface ServiceAreaRow {
@@ -257,7 +256,6 @@ type Props = {
 
 type AvailMap = Record<string, boolean | undefined>;
 type AvailLoadingMap = Record<string, boolean>;
-
 type CategoryRow = { id: string; name: string; slug: string | null };
 
 export default function ServiceAreaEditor({
@@ -267,6 +265,7 @@ export default function ServiceAreaEditor({
   sponsorshipVersion = 0,
   onSlotAction,
 }: Props) {
+  // viewer business id (may be empty on public/other business pages)
   const myBusinessId = (businessId ?? cleanerId) || "";
 
   const libraries = useMemo<Libraries>(() => ["drawing", "geometry"], []);
@@ -296,11 +295,11 @@ export default function ServiceAreaEditor({
 
   const [manageOpen, setManageOpen] = useState(false);
   const [manageAreaId, setManageAreaId] = useState<string | null>(null);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-const [deleteAreaId, setDeleteAreaId] = useState<string | null>(null);
-const [deleteAreaName, setDeleteAreaName] = useState<string>("");
-const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(false);
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteAreaId, setDeleteAreaId] = useState<string | null>(null);
+  const [deleteAreaName, setDeleteAreaName] = useState<string>("");
+  const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(false);
 
   const [previewGeo, setPreviewGeo] = useState<any | null>(null);
   const clearPreview = useCallback(() => setPreviewGeo(null), []);
@@ -315,6 +314,7 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
+  // categories (only meaningful when logged in / myBusinessId known)
   useEffect(() => {
     if (!myBusinessId) return;
 
@@ -359,7 +359,10 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
   }, [draftPolys]);
 
   const fetchAreas = useCallback(async () => {
+    // NOTE: your original code required myBusinessId to list areas.
+    // If your public business page uses this component, it must pass businessId/cleanerId.
     if (!myBusinessId) return;
+
     setLoading(true);
     setError(null);
     try {
@@ -381,15 +384,16 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
     fetchAreas();
   }, [fetchAreas, myBusinessId]);
 
+  // paint tokens
   const OWNED_BY_ME_PAINT = {
     tier: 3,
-    fill: "rgba(34, 197, 94, 0.45)",
-    stroke: "#16a34a",
+    fill: "rgba(245, 158, 11, 0.28)", // amber (mine)
+    stroke: "#f59e0b",
   } as const;
 
   const OWNED_BY_OTHER_PAINT = {
     tier: 2,
-    fill: "rgba(239, 68, 68, 0.30)",
+    fill: "rgba(239, 68, 68, 0.30)", // red (others / owned)
     stroke: "#dc2626",
   } as const;
 
@@ -399,13 +403,19 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
 
   function ownedPaintFor(slot: SingleSlotState | null, bizId: string) {
     if (!isOwnedSlot(slot)) return undefined;
+
+    // If we don't know bizId (public/other business pages), treat as "other" => red.
+    if (!bizId) return OWNED_BY_OTHER_PAINT;
+
     const isMine = slot?.owner_business_id === bizId;
     return isMine ? OWNED_BY_ME_PAINT : OWNED_BY_OTHER_PAINT;
   }
 
+  // ✅ IMPORTANT FIX:
+  // Fetch sponsorship even when myBusinessId is empty, so other business pages can still show "owned" (red)
   const fetchSponsorship = useCallback(
     async (areaIds: string[]) => {
-      if (!areaIds.length || !myBusinessId) return;
+      if (!areaIds.length) return;
 
       try {
         const res = await fetch("/.netlify/functions/area-sponsorship", {
@@ -471,6 +481,7 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
+  // availability is only meaningful when user can actually purchase (needs myBusinessId)
   const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
@@ -664,22 +675,22 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
   ]);
 
   const deleteArea = useCallback(
-  (area: ServiceAreaRow) => {
-    const slot = sponsorship[area.id]?.slot ?? null;
+    (area: ServiceAreaRow) => {
+      const slot = sponsorship[area.id]?.slot ?? null;
 
-    const isMineSponsored =
-      !!slot &&
-      slot.taken &&
-      isBlockingStatus(slot.status) &&
-      String(slot.owner_business_id || "") === String(myBusinessId);
+      const isMineSponsored =
+        !!slot &&
+        slot.taken &&
+        isBlockingStatus(slot.status) &&
+        String(slot.owner_business_id || "") === String(myBusinessId);
 
-    setDeleteAreaId(area.id);
-    setDeleteAreaName(area.name || "");
-    setDeleteIsSponsoredByMe(isMineSponsored);
-    setDeleteOpen(true);
-  },
-  [sponsorship, myBusinessId]
-);
+      setDeleteAreaId(area.id);
+      setDeleteAreaName(area.name || "");
+      setDeleteIsSponsoredByMe(isMineSponsored);
+      setDeleteOpen(true);
+    },
+    [sponsorship, myBusinessId]
+  );
 
   const cancelDraft = useCallback(() => {
     resetDraft();
@@ -860,12 +871,21 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
             <ul className="space-y-2">
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
-                const mine = !!s && isBlockingStatus(s.status) && s.owner_business_id === myBusinessId;
+
+                const mine =
+                  !!s &&
+                  isBlockingStatus(s.status) &&
+                  !!myBusinessId &&
+                  s.owner_business_id === myBusinessId;
+
+                const taken =
+                  !!s && s.taken && isBlockingStatus(s.status);
+
+                const takenByOther =
+                  taken && (!myBusinessId || s.owner_business_id !== myBusinessId);
 
                 const locked = isAreaLocked(a);
                 const until = lockedUntilLabel(a);
-
-                const takenByOther = !!s && isBlockingStatus(s.status) && s.owner_business_id !== myBusinessId;
 
                 const hasGeo = avail[a.id] ?? true;
                 const busy = availLoading[a.id];
@@ -910,7 +930,11 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
                   <li
                     key={a.id}
                     className={`border rounded-lg p-3 transition-colors ${
-                      mine ? "border-amber-300 bg-amber-50" : "border-gray-200 bg-white"
+                      mine
+                        ? "border-amber-300 bg-amber-50"
+                        : takenByOther
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200 bg-white"
                     }`}
                   >
                     <button
@@ -1004,20 +1028,23 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
               <span className="inline-flex items-center gap-1">
                 <i
                   className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(34,197,94,0.45)", border: "2px solid #16a34a" }}
+                  style={{ background: "rgba(245,158,11,0.28)", border: "2px solid #f59e0b" }}
                 />
                 Sponsored by you
               </span>
               <span className="inline-flex items-center gap-1">
                 <i
                   className="inline-block w-4 h-4 rounded"
-                  style={{ background: "rgba(239,68,68,0.35)", border: "2px solid #dc2626" }}
+                  style={{ background: "rgba(239,68,68,0.30)", border: "2px solid #dc2626" }}
                 />
-                Sponsored by others
+                Owned / Taken
               </span>
               <span className="inline-flex items-center gap-1">
-                <i className="inline-block w-4 h-4 rounded" style={{ background: "transparent", border: "2px solid #555" }} />
-                outline
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "transparent", border: "2px solid #555" }}
+                />
+                Outline
               </span>
             </div>
           </div>
@@ -1057,62 +1084,58 @@ const [deleteIsSponsoredByMe, setDeleteIsSponsoredByMe] = useState<boolean>(fals
                     <Polygon
                       key={`outline-${a.id}-${i}`}
                       paths={p.paths}
-                     options={{
-  strokeWeight: 2,
-  strokeOpacity: 1,
-  strokeColor: "#000", // ✅ true black
-  fillOpacity: 0,
-  clickable: false,
-  editable: false,
-  draggable: false,
-  zIndex: 200, // ✅ outline always on top
-}}
-
+                      options={{
+                        strokeWeight: 2,
+                        strokeOpacity: 1,
+                        strokeColor: "#000",
+                        fillOpacity: 0,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 200,
+                      }}
                     />
                   ));
                 })}
 
-              /* Sponsored fills: ONLY the purchased portion */
-{activeAreaId === null &&
-  sortedServiceAreas.flatMap((a) => {
-    const slot = sponsorship[a.id]?.slot;
-    if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
+              {/* Sponsored fills: ONLY the purchased portion */}
+              {activeAreaId === null &&
+                sortedServiceAreas.flatMap((a) => {
+                  const slot = sponsorship[a.id]?.slot;
+                  if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
 
-    // ✅ ONLY use sponsored_geojson (no fallback)
-    const sponsored =
-      slot.sponsored_geojson ?? sponsorship[a.id]?.sponsored_geojson ?? null;
+                  // ✅ ONLY use sponsored_geojson (no fallback)
+                  const sponsored =
+                    slot.sponsored_geojson ?? sponsorship[a.id]?.sponsored_geojson ?? null;
 
-    const sponsoredPaths = geoToPaths(sponsored);
-    if (!sponsoredPaths.length) return [];
+                  const sponsoredPaths = geoToPaths(sponsored);
+                  if (!sponsoredPaths.length) return [];
 
-    const isMine = slot.owner_business_id === myBusinessId;
-    const fill = isMine ? "rgba(245, 158, 11, 0.28)" : "rgba(239, 68, 68, 0.30)";  // amber
-const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enable stroke)
+                  // ✅ on pages where myBusinessId is unknown => always red
+                  const isMine =
+                    !!myBusinessId && slot.owner_business_id === myBusinessId;
 
+                  const fill = isMine
+                    ? "rgba(245, 158, 11, 0.28)" // mine (amber)
+                    : "rgba(239, 68, 68, 0.30)"; // owned/taken (red)
 
-    return sponsoredPaths.map((p, i) => (
-      <Polygon
-        key={`sponsored-${a.id}-${i}`}
-        paths={p.paths}
-        options={{
-  // ✅ fill only, no border (so black outline remains the only border)
-  strokeOpacity: 0,
-  strokeWeight: 0,
-
-  fillColor: fill,
-  fillOpacity: 0.35,
-
-  clickable: false,
-  editable: false,
-  draggable: false,
-
-  zIndex: 50, // fill under outline
-}}
-
-      />
-    ));
-  })}
-
+                  return sponsoredPaths.map((p, i) => (
+                    <Polygon
+                      key={`sponsored-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeOpacity: 0,
+                        strokeWeight: 0,
+                        fillColor: fill,
+                        fillOpacity: 0.35,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 50,
+                      }}
+                    />
+                  ));
+                })}
 
               {/* Preview overlay */}
               {previewPolys.map((p, i) => (
@@ -1255,7 +1278,7 @@ const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enab
             </div>
           </div>
         </div>
-          )}
+      )}
 
       {/* Delete modal */}
       {deleteOpen && deleteAreaId && (
@@ -1276,7 +1299,6 @@ const stroke = isMine ? "#f59e0b" : "#dc2626"; // amber border (if you ever enab
     </>
   );
 }
-
 
 /**
  * IMPORTANT BACKEND NOTE:
