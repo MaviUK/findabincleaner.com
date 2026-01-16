@@ -311,14 +311,6 @@ exports.handler = async (event) => {
     if (type === "invoice.paid") {
       const inv = obj;
 
-      // optional: create invoice/email on paid as well (safe, non-blocking)
-      try {
-        await createInvoiceAndEmailByStripeInvoiceId(inv.id);
-        console.log("[webhook] invoice.paid -> created invoice/email", inv.id);
-      } catch (e) {
-        console.error("[webhook] invoice.paid -> createInvoiceAndEmail failed", inv.id, e?.message || e);
-        // continue; activation is more important than email
-      }
 
       let fullInv = inv;
       try {
