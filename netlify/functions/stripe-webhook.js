@@ -130,10 +130,6 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     ? new Date(subscription.current_period_end * 1000).toISOString()
     : null;
 
-  // keep old sponsored_geom behavior if you need it
-  const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
-  const sponsored_geom = status === "active" ? (geomFromMeta || null) : null;
-
   // IMPORTANT: never mark active here; activate on invoice.paid
   const safeStatus = "incomplete";
 
@@ -148,7 +144,6 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     currency,
     status: safeStatus,
     current_period_end,
-    sponsored_geom,
     updated_at: new Date().toISOString(),
   };
 }
@@ -169,10 +164,8 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
-  const stripe_subscription_id = typeof session?.subscription === "string" ? session.subscription : null;
-
-  const geomFromMeta = metaGet(meta, "sponsored_geom", "sponsoredGeom", "geom", "geometry");
-  const sponsored_geom = geomFromMeta || null;
+  const stripe_subscription_id =
+    typeof session?.subscription === "string" ? session.subscription : null;
 
   return {
     business_id,
@@ -185,7 +178,6 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
     currency,
     status: "incomplete",
     current_period_end: null,
-    sponsored_geom,
     updated_at: new Date().toISOString(),
   };
 }
@@ -287,7 +279,7 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wrote: true, id: data?.id || null, status: data?.status || null });
     }
 
-    // 3) invoice.paid → ACTIVATE USING LOCK GEOMETRY (fixes false overlap)
+    // 3) invoice.paid → ACTIVATE USING LOCK GEOMETRY
     if (type === "invoice.paid") {
       const inv = obj;
 
@@ -319,7 +311,7 @@ exports.handler = async (event) => {
           ? new Date(periodEndSec * 1000).toISOString()
           : null;
 
-      // ✅ MUST retrieve subscription metadata to get lock_id
+      // retrieve subscription metadata to get lock_id
       let sub;
       try {
         sub = await stripe.subscriptions.retrieve(subscriptionId);
@@ -334,23 +326,21 @@ exports.handler = async (event) => {
           subscriptionId,
           metadata: sub?.metadata || {},
         });
-        // If you want: cancel subscription because we can't safely activate inventory
         await safeCancelSubscription(subscriptionId, "Missing lock_id metadata");
         return ok(200, { ok: false, error: "missing lock_id" });
       }
 
-      // ✅ Activate via RPC that copies lock geojson -> sponsored_geom BEFORE status becomes active
-      const { data: activated, error: actErr } = await sb.rpc(
-        "activate_sponsored_subscription_from_lock",
-        {
-          p_stripe_subscription_id: subscriptionId,
-          p_lock_id: lockId,
-          p_current_period_end: current_period_end,
-        }
-      );
+      const { error: actErr } = await sb.rpc("activate_sponsored_subscription_from_lock", {
+        p_stripe_subscription_id: subscriptionId,
+        p_lock_id: lockId,
+        p_current_period_end: current_period_end,
+      });
 
       if (actErr) {
-        console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
+        console.error("[webhook] invoice.paid activate error:", actErr, {
+          subscriptionId,
+          lockId,
+        });
 
         if (isOverlapDbError(actErr)) {
           await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
@@ -360,7 +350,7 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "activate failed" });
       }
 
-      console.log("[webhook] activated subscription", subscriptionId, "row=", activated?.[0] || activated || null);
+      console.log("[webhook] activated subscription", subscriptionId, "lockId", lockId);
       return ok(200, { ok: true, activated: true, subscriptionId });
     }
 
