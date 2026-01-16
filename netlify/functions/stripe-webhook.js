@@ -130,8 +130,9 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     ? new Date(subscription.current_period_end * 1000).toISOString()
     : null;
 
-  // IMPORTANT: never mark active here; activate on invoice.paid
-  const safeStatus = "incomplete";
+// ✅ allow Stripe to be active, but still rely on invoice.paid for geometry/lock
+const safeStatus = status === "active" ? "active" : "incomplete";
+
 
   return {
     business_id,
