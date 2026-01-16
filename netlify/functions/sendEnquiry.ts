@@ -115,7 +115,7 @@ export const handler: Handler = async (event) => {
         "<br/>"
       )}</p>` +
       `<hr/>` +
-      `<p style="color:#6b7280;font-size:12px">Sent from Clean.ly</p>` +
+      `<p style="color:#6b7280;font-size:12px">Sent from Klean.ly</p>` +
       `</div>`;
 
     const r = await fetch("https://api.resend.com/emails", {
