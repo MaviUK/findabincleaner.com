@@ -126,9 +126,16 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
   const currency = (item?.price?.currency || subscription?.currency || "gbp").toLowerCase();
 
-  const current_period_end = subscription?.current_period_end
-    ? new Date(subscription.current_period_end * 1000).toISOString()
+  cconst periodEndFromInvoice = fullInv?.lines?.data?.[0]?.period?.end ?? null;
+const periodEndFromSub = sub?.current_period_end ?? null;
+
+const periodEndSec = periodEndFromInvoice ?? periodEndFromSub;
+
+const current_period_end =
+  typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
+    ? new Date(periodEndSec * 1000).toISOString()
     : null;
+
 
 // ✅ allow Stripe to be active, but still rely on invoice.paid for geometry/lock
 const safeStatus = status === "active" ? "active" : "incomplete";
