@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-14-ACTIVATE-USING-LOCK-GEOM");
+console.log("LOADED stripe-webhook v2026-01-16-ACTIVATE-USING-LOCK-GEOM+PARSE-FIX");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -75,7 +75,9 @@ function isOverlapDbError(err) {
     msg.includes("area overlaps an existing sponsored area") ||
     msg.includes("sponsorship exceeds available remaining area") ||
     msg.includes("overlaps") ||
-    msg.includes("remaining area")
+    msg.includes("remaining area") ||
+    msg.includes("sold out") ||
+    msg.includes("available remaining area")
   );
 }
 
@@ -100,7 +102,9 @@ async function safeCancelSubscription(subId, why) {
   }
 }
 
-// ---- Normalize helpers (unchanged) ----
+// ---- Normalize helpers ----
+// NOTE: subscription events should NOT try to use invoice-derived periods.
+// invoice.paid will pass the real current_period_end to the activation RPC.
 function normalizeSponsoredRowFromSubscription(subscription) {
   const status = String(subscription?.status || "").toLowerCase();
   const meta = subscription?.metadata || {};
@@ -126,20 +130,14 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
   const currency = (item?.price?.currency || subscription?.currency || "gbp").toLowerCase();
 
-  cconst periodEndFromInvoice = fullInv?.lines?.data?.[0]?.period?.end ?? null;
-const periodEndFromSub = sub?.current_period_end ?? null;
+  const periodEndFromSub = subscription?.current_period_end ?? null;
+  const current_period_end =
+    typeof periodEndFromSub === "number" && Number.isFinite(periodEndFromSub)
+      ? new Date(periodEndFromSub * 1000).toISOString()
+      : null;
 
-const periodEndSec = periodEndFromInvoice ?? periodEndFromSub;
-
-const current_period_end =
-  typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
-    ? new Date(periodEndSec * 1000).toISOString()
-    : null;
-
-
-// ✅ allow Stripe to be active, but still rely on invoice.paid for geometry/lock
-const safeStatus = status === "active" ? "active" : "incomplete";
-
+  // ✅ allow Stripe to be active, but still rely on invoice.paid for geometry/lock
+  const safeStatus = status === "active" ? "active" : "incomplete";
 
   return {
     business_id,
@@ -221,8 +219,16 @@ exports.handler = async (event) => {
   try {
     const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
     const webhookSecret = requireEnv("STRIPE_WEBHOOK_SECRET");
+    if (!sig) {
+      console.error("[webhook] missing stripe-signature header");
+      return ok(400, { ok: false, error: "missing stripe-signature" });
+    }
 
-    const stripeEvent = stripe.webhooks.constructEvent(event.body, sig, webhookSecret);
+    const rawBody = event.isBase64Encoded
+      ? Buffer.from(event.body || "", "base64").toString("utf8")
+      : (event.body || "");
+
+    const stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
     const sb = getSupabaseAdmin();
 
     const type = stripeEvent.type;
@@ -235,6 +241,20 @@ exports.handler = async (event) => {
       type === "invoice.finalized"
     ) {
       console.log("[webhook]", type, "id=" + stripeEvent.id);
+    }
+
+    // 0) invoice.finalized -> optional invoice email creation (non-blocking)
+    // (You can remove this if you only want to run it on invoice.paid)
+    if (type === "invoice.finalized") {
+      const inv = obj;
+      try {
+        await createInvoiceAndEmailByStripeInvoiceId(inv.id);
+        console.log("[webhook] invoice.finalized -> created invoice/email", inv.id);
+      } catch (e) {
+        console.error("[webhook] invoice.finalized -> createInvoiceAndEmail failed", inv.id, e?.message || e);
+        // don't fail the webhook
+      }
+      return ok(200, { ok: true, handled: "invoice.finalized" });
     }
 
     // 1) checkout.session.completed → store metadata early (incomplete)
@@ -291,6 +311,15 @@ exports.handler = async (event) => {
     if (type === "invoice.paid") {
       const inv = obj;
 
+      // optional: create invoice/email on paid as well (safe, non-blocking)
+      try {
+        await createInvoiceAndEmailByStripeInvoiceId(inv.id);
+        console.log("[webhook] invoice.paid -> created invoice/email", inv.id);
+      } catch (e) {
+        console.error("[webhook] invoice.paid -> createInvoiceAndEmail failed", inv.id, e?.message || e);
+        // continue; activation is more important than email
+      }
+
       let fullInv = inv;
       try {
         fullInv = await stripe.invoices.retrieve(inv.id, {
@@ -344,33 +373,46 @@ exports.handler = async (event) => {
         p_current_period_end: current_period_end,
       });
 
-    if (actErr) {
-  console.error("[webhook] invoice.paid activate error:", actErr, {
-    subscriptionId,
-    lockId,
-  });
+      if (actErr) {
+        console.error("[webhook] invoice.paid activate error:", actErr, {
+          subscriptionId,
+          lockId,
+        });
 
-  if (isOverlapDbError(actErr)) {
-    await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
-    return ok(200, { ok: true, canceled: true });
+        if (isOverlapDbError(actErr)) {
+          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+          return ok(200, { ok: true, canceled: true });
+        }
+
+        return ok(200, { ok: false, error: "activate failed" });
+      }
+
+      // optional debug (safe)
+      try {
+        const { data: chk, error: chkErr } = await sb
+          .from("sponsored_subscriptions")
+          .select("id,status,current_period_end")
+          .eq("stripe_subscription_id", subscriptionId)
+          .maybeSingle();
+
+        if (chkErr) console.error("[webhook] post-activate row check ERROR", chkErr);
+        else console.log("[webhook] post-activate row check", chk);
+      } catch (e) {
+        console.error("[webhook] post-activate check threw", e?.message || e);
+      }
+
+      console.log("[webhook] activated subscription", subscriptionId, "lockId", lockId);
+      return ok(200, { ok: true, activated: true, subscriptionId });
+    }
+
+    // default: ignore other event types
+    return ok(200, { ok: true, ignored: type });
+  } catch (err) {
+    console.error("[webhook] fatal error:", err);
+    // Stripe expects 2xx to stop retries ONLY if you're sure it's not recoverable.
+    // But signature/parse issues should be 400 so you notice.
+    const msg = String(err?.message || err || "");
+    const isSig = msg.toLowerCase().includes("no signatures found") || msg.toLowerCase().includes("signature");
+    return ok(isSig ? 400 : 500, { ok: false, error: msg });
   }
-
-  return ok(200, { ok: false, error: "activate failed" });
-}
-
-/* ✅ PUT IT HERE (RIGHT HERE) */
-const { data: chk, error: chkErr } = await sb
-  .from("sponsored_subscriptions")
-  .select("id,status,current_period_end")
-  .eq("stripe_subscription_id", subscriptionId)
-  .maybeSingle();
-
-if (chkErr) {
-  console.error("[webhook] post-activate row check ERROR", chkErr);
-} else {
-  console.log("[webhook] post-activate row check", chk);
-}
-/* ✅ END DEBUG BLOCK */
-
-console.log("[webhook] activated subscription", subscriptionId, "lockId", lockId);
-return ok(200, { ok: true, activated: true, subscriptionId });
+};
