@@ -344,29 +344,33 @@ exports.handler = async (event) => {
         p_current_period_end: current_period_end,
       });
 
-      if (actErr) {
-        console.error("[webhook] invoice.paid activate error:", actErr, {
-          subscriptionId,
-          lockId,
-        });
+    if (actErr) {
+  console.error("[webhook] invoice.paid activate error:", actErr, {
+    subscriptionId,
+    lockId,
+  });
 
-        if (isOverlapDbError(actErr)) {
-          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
-          return ok(200, { ok: true, canceled: true });
-        }
-
-        return ok(200, { ok: false, error: "activate failed" });
-      }
-
-      console.log("[webhook] activated subscription", subscriptionId, "lockId", lockId);
-      return ok(200, { ok: true, activated: true, subscriptionId });
-    }
-
-    return ok(200, { ok: true });
-  } catch (err) {
-    console.error("[webhook] handler error:", err);
-    const msg = String(err?.message || "");
-    const isSig = msg.includes("No signatures found") || msg.includes("signature");
-    return ok(isSig ? 400 : 200, { ok: false, error: msg });
+  if (isOverlapDbError(actErr)) {
+    await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+    return ok(200, { ok: true, canceled: true });
   }
-};
+
+  return ok(200, { ok: false, error: "activate failed" });
+}
+
+/* ✅ PUT IT HERE (RIGHT HERE) */
+const { data: chk, error: chkErr } = await sb
+  .from("sponsored_subscriptions")
+  .select("id,status,current_period_end")
+  .eq("stripe_subscription_id", subscriptionId)
+  .maybeSingle();
+
+if (chkErr) {
+  console.error("[webhook] post-activate row check ERROR", chkErr);
+} else {
+  console.log("[webhook] post-activate row check", chk);
+}
+/* ✅ END DEBUG BLOCK */
+
+console.log("[webhook] activated subscription", subscriptionId, "lockId", lockId);
+return ok(200, { ok: true, activated: true, subscriptionId });
