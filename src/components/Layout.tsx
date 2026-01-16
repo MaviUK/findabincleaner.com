@@ -41,7 +41,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
           <Link to="/" className="inline-flex items-center gap-3">
             <img
               src="/cleanlylogo.png"
-              alt="Clean.ly"
+              alt="Klean.ly"
               className="h-16 w-16 object-contain"
               draggable={false}
             />
@@ -71,7 +71,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         <div
           className={`${WRAP} py-6 flex flex-col sm:flex-row gap-2 sm:gap-0 items-center justify-between text-sm text-gray-500`}
         >
-          <span>© {new Date().getFullYear()} Clean.ly</span>
+          <span>© {new Date().getFullYear()} Klean.ly</span>
           <span>
             Built with <span className="text-rose-600">❤</span>
           </span>
@@ -82,4 +82,5 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
