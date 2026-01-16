@@ -279,6 +279,9 @@ export default function ServiceAreaEditor({
 
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaRow[]>([]);
   const [sponsorship, setSponsorship] = useState<SponsorshipMap>({});
+  // ✅ Category-wide sponsored polygons (other businesses)
+const [categorySponsored, setCategorySponsored] = useState<any[]>([]);
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -313,6 +316,8 @@ export default function ServiceAreaEditor({
   const [copyName, setCopyName] = useState<string>("");
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
+
+  
 
   // categories (only meaningful when logged in / myBusinessId known)
   useEffect(() => {
@@ -480,6 +485,33 @@ export default function ServiceAreaEditor({
     const ids = serviceAreas.map((a) => a.id);
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
+
+  // ✅ fetch ALL active sponsored polygons for this category (all businesses)
+useEffect(() => {
+  if (!categoryId) {
+    setCategorySponsored([]);
+    return;
+  }
+
+  (async () => {
+    try {
+      const res = await fetch("/.netlify/functions/category-sponsored-geo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ categoryId }),
+      });
+
+      if (!res.ok) throw new Error(`category-sponsored-geo ${res.status}`);
+
+      const j = await res.json();
+      setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+    } catch (e) {
+      console.warn("[ServiceAreaEditor] category-sponsored-geo failed:", e);
+      setCategorySponsored([]);
+    }
+  })();
+}, [categoryId, sponsorshipVersion]);
+
 
   // availability is only meaningful when user can actually purchase (needs myBusinessId)
   const computeAvailabilityForArea = useCallback(
@@ -1073,6 +1105,39 @@ export default function ServiceAreaEditor({
                 }}
               />
 
+{/* ✅ Category sponsored overlays (OTHER businesses too) */}
+{activeAreaId === null &&
+  categorySponsored.flatMap((feature, idx) => {
+    const ownerId = feature?.properties?.owner_business_id || null;
+
+    // amber if mine, red if others
+    const isMine =
+      !!myBusinessId && ownerId && String(ownerId) === String(myBusinessId);
+
+    const paths = geoToPaths(feature);
+    if (!paths.length) return [];
+
+    return paths.map((p, i) => (
+      <Polygon
+        key={`cat-sponsored-${idx}-${i}`}
+        paths={p.paths}
+        options={{
+          strokeOpacity: 0,
+          strokeWeight: 0,
+          fillColor: isMine
+            ? "rgba(245, 158, 11, 0.28)" // mine (amber)
+            : "rgba(239, 68, 68, 0.30)", // others (red)
+          fillOpacity: 0.35,
+          clickable: false,
+          editable: false,
+          draggable: false,
+          zIndex: 40, // ✅ under outline
+        }}
+      />
+    ));
+  })}
+
+              
               {/* Outlines (always visible when not editing) */}
               {activeAreaId === null &&
                 sortedServiceAreas.flatMap((a) => {
