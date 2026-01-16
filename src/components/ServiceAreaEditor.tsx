@@ -1055,7 +1055,7 @@ useEffect(() => {
           </div>
 
           <div className="card card-pad text-sm text-gray-600">
-            <div className="font-semibold mb-1">Legend</div>
+            <div className="font-semibold mb-1">Map Key</div>
             <div className="flex items-center gap-4 mb-3">
               <span className="inline-flex items-center gap-1">
                 <i
@@ -1079,6 +1079,34 @@ useEffect(() => {
                 Outline
               </span>
             </div>
+            <div className="border-t pt-3 mt-2 space-y-2 text-xs text-gray-600">
+  <div className="font-semibold text-sm text-gray-700">
+    How to use the map
+  </div>
+
+  <ul className="list-disc pl-5 space-y-1">
+    <li>
+      <strong>Zoom to an area:</strong> click a service area name in the list.
+    </li>
+    <li>
+      <strong>Draw a new area:</strong> click <strong>+ New Area</strong>, then click around the map. Double-click to finish.
+    </li>
+    <li>
+      <strong>Edit an area:</strong> click <strong>Edit</strong> (sponsored areas are locked).
+    </li>
+    <li>
+      <strong>Sponsor an area:</strong> click <strong>Sponsor (Featured)</strong> to preview what’s available.
+    </li>
+    <li>
+      <strong>Colours:</strong> amber = yours, red = already taken, black = boundary.
+    </li>
+  </ul>
+
+  <div className="text-[11px] text-gray-500">
+    Tip: Zoom in closely for more accurate drawing and previews.
+  </div>
+</div>
+
           </div>
         </div>
 
