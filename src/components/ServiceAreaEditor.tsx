@@ -1207,17 +1207,23 @@ useEffect(() => {
                 <Polygon
                   key={`preview-${i}`}
                   paths={p.paths}
-                  options={{
-                    strokeWeight: 3,
-                    strokeOpacity: 1,
-                    strokeColor: "#14b8a6",
-                    fillColor: "#14b8a6",
-                    fillOpacity: 0.22,
-                    clickable: false,
-                    editable: false,
-                    draggable: false,
-                    zIndex: 9999,
-                  }}
+                 options={{
+  // ✅ no preview border (prevents green outline)
+  strokeOpacity: 0,
+  strokeWeight: 0,
+
+  // ✅ preview fill only
+  fillColor: "#14b8a6",
+  fillOpacity: 0.22,
+
+  clickable: false,
+  editable: false,
+  draggable: false,
+
+  // ✅ keep it above base map but below your black outline if you want
+  zIndex: 150,
+}}
+
                 />
               ))}
             </GoogleMap>
