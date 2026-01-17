@@ -574,7 +574,8 @@ export default function CleanerCard({
                     <button
                       type="button"
                       disabled={!canSend}
-                      className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+                      className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+
                       onClick={() => {
                         logClick("click_message");
                         void sendViaWhatsApp();
