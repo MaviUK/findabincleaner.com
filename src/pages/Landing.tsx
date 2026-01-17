@@ -103,7 +103,10 @@ export default function Landing() {
         <div className="text-center">
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
-            <span className="text-emerald-700">Klean.ly</span>
+            <span className="bg-gradient-to-r from-cyan-500 via-emerald-600 to-lime-400 bg-clip-text text-transparent">
+  Klean.ly
+</span>
+
           </div>
 
           <p className="text-gray-600 mt-4 max-w-2xl mx-auto">
