@@ -91,8 +91,11 @@ export default function CleanerCard({
   const [enqError, setEnqError] = useState<string | null>(null);
   const [enqSending, setEnqSending] = useState(false);
 
-  // ✅ NEW: success confirmation state
+  // ✅ success confirmation state
   const [enqSent, setEnqSent] = useState(false);
+
+  // ✅ NEW: must acknowledge info before sending
+  const [enqAccepted, setEnqAccepted] = useState(false);
 
   // Google Places loaded?
   const hasPlaces =
@@ -135,6 +138,7 @@ export default function CleanerCard({
     enqPhone.trim().length > 0 &&
     isValidEmail(enqEmail) &&
     enqMessage.trim().length > 0 &&
+    enqAccepted && // ✅ must confirm read/understood
     !enqSending;
 
   async function sendEnquiryEmail() {
@@ -147,6 +151,8 @@ export default function CleanerCard({
     if (!isValidEmail(enqEmail))
       return setEnqError("Please enter a valid email address.");
     if (!enqMessage.trim()) return setEnqError("Please enter your message.");
+    if (!enqAccepted)
+      return setEnqError("Please confirm you have read and understood the information.");
 
     setEnqSending(true);
 
@@ -191,8 +197,9 @@ export default function CleanerCard({
     setEnqError(null);
     setEnqSending(false);
     setEnqSent(false);
+    setEnqAccepted(false);
 
-    // keep values? up to you. I’ll clear them on close to match your previous behaviour:
+    // clear on close
     setEnqName("");
     setEnqAddress("");
     setEnqPhone("");
@@ -204,6 +211,7 @@ export default function CleanerCard({
     setShowEnquiry(true);
     setEnqError(null);
     setEnqSent(false);
+    setEnqAccepted(false);
   }
 
   // Featured logo: bigger than button stack, no border
@@ -212,9 +220,7 @@ export default function CleanerCard({
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
   // Keep logo crisp, no cropping
-  const logoImgClass = featured
-    ? "h-full w-full object-contain"
-    : "h-full w-full object-cover";
+  const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
 
   const whatsappPrefill = useMemo(() => {
     const text =
@@ -299,8 +305,7 @@ export default function CleanerCard({
                   className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_website");
-                    if (websiteUrl)
-                      window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                    if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
                   }}
                   disabled={!websiteUrl}
                   title="Website"
@@ -341,8 +346,7 @@ export default function CleanerCard({
                 className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50 disabled:opacity-50"
                 onClick={() => {
                   logClick("click_website");
-                  if (websiteUrl)
-                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  if (websiteUrl) window.open(websiteUrl, "_blank", "noopener,noreferrer");
                 }}
                 disabled={!websiteUrl}
               >
@@ -386,7 +390,7 @@ export default function CleanerCard({
               {/* Body */}
               <div
                 className="px-5 py-4 space-y-4 overflow-y-auto"
-                style={{ maxHeight: "calc(100vh - 210px)" }}
+                style={{ maxHeight: "calc(100vh - 240px)" }}
               >
                 {/* ✅ Confirmation */}
                 {enqSent && (
@@ -451,9 +455,7 @@ export default function CleanerCard({
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">
-                    Pick from suggestions for best results.
-                  </p>
+                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -522,12 +524,32 @@ export default function CleanerCard({
                     </a>
                   ) : null}
 
+                  {/* ✅ Must read/acknowledge */}
+                  <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-gray-300"
+                      checked={enqAccepted}
+                      onChange={(e) => setEnqAccepted(e.target.checked)}
+                    />
+                    <span>
+                      I have read and understand that my details and message will be shared with the business I am
+                      contacting so they can respond. We also store this information securely in Kleanly’s database for
+                      up to 24 months for record-keeping, support and service improvement. I may be contacted for
+                      feedback about my experience. No marketing.
+                    </span>
+                  </label>
+
                   <button
                     type="button"
                     onClick={sendEnquiryEmail}
                     disabled={!canSend}
                     className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={!canSend ? "Fill in name, address, phone, email and message" : "Send enquiry"}
+                    title={
+                      !canSend
+                        ? "Please complete all fields and confirm you have read and understood the information above"
+                        : "Send enquiry"
+                    }
                   >
                     {enqSending ? "Sending…" : enqSent ? "Sent ✓" : "Send Enquiry"}
                   </button>
@@ -546,7 +568,8 @@ export default function CleanerCard({
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  Your enquiry won’t send until all required fields are completed.
+                  Your enquiry won’t send until all required fields are completed and you confirm you have read the
+                  information above.
                 </p>
               </div>
             </div>
