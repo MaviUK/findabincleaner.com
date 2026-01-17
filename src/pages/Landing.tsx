@@ -39,11 +39,11 @@ type ServiceCategory = {
 };
 
 export default function Landing() {
-  const [ers, seters] = useState<er[] | null>(null);
+  const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
   const [locality, setLocality] = useState<string>("");
 
-  const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-er");
+  const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-cleaner");
 
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
@@ -54,6 +54,9 @@ export default function Landing() {
   // ✅ NEW: current search “context” ids passed down for analytics attribution
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
+
+  const hasResults = Array.isArray(cleaners);
+
 
   useEffect(() => {
     let cancelled = false;
@@ -94,7 +97,7 @@ export default function Landing() {
     [serviceSlug]
   );
 
-  const hasResults = Array.isArray(ers);
+  const hasResults = Array.isArray(cleaners);
 
   return (
     <main className="w-full">
