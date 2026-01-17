@@ -39,11 +39,11 @@ type ServiceCategory = {
 };
 
 export default function Landing() {
-  const [cleaners, setCleaners] = useState<Cleaner[] | null>(null);
+  const [ers, seters] = useState<er[] | null>(null);
   const [postcode, setPostcode] = useState<string>("");
   const [locality, setLocality] = useState<string>("");
 
-  const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-cleaner");
+  const [serviceSlug, setServiceSlug] = useState<ServiceSlug>("bin-er");
 
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
@@ -94,7 +94,7 @@ export default function Landing() {
     [serviceSlug]
   );
 
-  const hasResults = Array.isArray(cleaners);
+  const hasResults = Array.isArray(ers);
 
   return (
     <main className="w-full">
@@ -103,7 +103,7 @@ export default function Landing() {
         <div className="text-center">
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
-            <span className="text-emerald-700">CLEAN</span>
+            <span className="text-emerald-700">KLEAN</span>
             <span className="text-sky-600 font-normal normal-case">ly</span>
           </div>
 
