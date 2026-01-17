@@ -1,5 +1,5 @@
 // src/components/CleanerCard.tsx
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
@@ -18,7 +18,6 @@ type Cleaner = {
 
   is_covering_sponsor?: boolean;
 
-  // ✅ NEW (passed through from ResultsList)
   google_rating?: number | null;
   google_reviews_count?: number | null;
 };
@@ -79,26 +78,25 @@ export default function CleanerCard({
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // ✅ modal state
+  // modal state
   const [showEnquiry, setShowEnquiry] = useState(false);
 
-  // ✅ enquiry form state
+  // enquiry form state
   const [enqName, setEnqName] = useState("");
   const [enqAddress, setEnqAddress] = useState("");
   const [enqPhone, setEnqPhone] = useState("");
   const [enqEmail, setEnqEmail] = useState("");
   const [enqMessage, setEnqMessage] = useState("");
+
   const [enqError, setEnqError] = useState<string | null>(null);
   const [enqSending, setEnqSending] = useState(false);
-
-  // ✅ success confirmation state
   const [enqSent, setEnqSent] = useState(false);
 
-  // ✅ must acknowledge info before sending (email OR WhatsApp)
+  // must acknowledge info before sending
   const [enqAccepted, setEnqAccepted] = useState(false);
 
-  // Used to tailor success message
-  const [enqLastChannel, setEnqLastChannel] = useState<"email" | "whatsapp" | null>(null);
+  // track last action so we can show correct message
+  const [lastChannel, setLastChannel] = useState<"email" | "whatsapp" | null>(null);
 
   // Google Places loaded?
   const hasPlaces =
@@ -125,7 +123,7 @@ export default function CleanerCard({
     }
   }
 
-  // ✅ KEEP: important — unchanged
+  // keep: unchanged
   function openWhatsAppOrCall() {
     if (whatsapp) {
       const wa = whatsapp.replace(/[^\d+]/g, "");
@@ -144,48 +142,82 @@ export default function CleanerCard({
     enqAccepted &&
     !enqSending;
 
-  async function sendEnquiryEmail() {
-    setEnqError(null);
+  const whatsappPrefill = useMemo(() => {
+    const text =
+      `Enquiry for ${name}\n\n` +
+      `Name: ${enqName || "-"}\n` +
+      `Address: ${enqAddress || "-"}\n` +
+      `Phone: ${enqPhone || "-"}\n` +
+      `Email: ${enqEmail || "-"}\n\n` +
+      `${enqMessage || ""}`;
+    return text;
+  }, [name, enqName, enqAddress, enqPhone, enqEmail, enqMessage]);
 
-    // Hard validation
-    if (!enqName.trim()) return setEnqError("Please enter your name.");
-    if (!enqAddress.trim()) return setEnqError("Please select your address.");
-    if (!enqPhone.trim()) return setEnqError("Please enter your phone number.");
-    if (!isValidEmail(enqEmail)) return setEnqError("Please enter a valid email address.");
-    if (!enqMessage.trim()) return setEnqError("Please enter your message.");
-    if (!enqAccepted) return setEnqError("Please confirm you have read and understood the information.");
+  function validateOrSetError(): boolean {
+    if (!enqName.trim()) {
+      setEnqError("Please enter your name.");
+      return false;
+    }
+    if (!enqAddress.trim()) {
+      setEnqError("Please select your address.");
+      return false;
+    }
+    if (!enqPhone.trim()) {
+      setEnqError("Please enter your phone number.");
+      return false;
+    }
+    if (!isValidEmail(enqEmail)) {
+      setEnqError("Please enter a valid email address.");
+      return false;
+    }
+    if (!enqMessage.trim()) {
+      setEnqError("Please enter your message.");
+      return false;
+    }
+    if (!enqAccepted) {
+      setEnqError("Please confirm you have read and understood the information.");
+      return false;
+    }
+    setEnqError(null);
+    return true;
+  }
+
+  async function postEnquiry(channel: "email" | "whatsapp") {
+    const payload = {
+      cleanerId: cleaner.cleaner_id,
+      cleanerName: cleaner.business_name ?? "",
+      name: enqName,
+      address: enqAddress,
+      phone: enqPhone,
+      email: enqEmail,
+      message: enqMessage,
+      acknowledged: enqAccepted,
+      channel,
+    };
+
+    const res = await fetch("/.netlify/functions/sendEnquiry", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await res.json().catch(() => ({} as any));
+    if (!res.ok || !data?.ok) {
+      throw new Error(data?.error || "Failed to send enquiry");
+    }
+  }
+
+  async function sendEnquiryEmail() {
+    setEnqSent(false);
+    setLastChannel(null);
+
+    if (!validateOrSetError()) return;
 
     setEnqSending(true);
-
     try {
-      const payload = {
-        cleanerId: cleaner.cleaner_id,
-        cleanerName: cleaner.business_name ?? "",
-        name: enqName,
-        address: enqAddress,
-        phone: enqPhone,
-        email: enqEmail,
-        message: enqMessage,
-        acknowledged: enqAccepted, // ✅ tie to checkbox
-        channel: "email" as const,
-      };
-
-      const res = await fetch("/.netlify/functions/sendEnquiry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => ({} as any));
-
-      if (!res.ok || !data?.ok) {
-        setEnqError(data?.error || "Failed to send enquiry");
-        return;
-      }
-
-      setEnqLastChannel("email");
+      await postEnquiry("email");
+      setLastChannel("email");
       setEnqSent(true);
-      setEnqError(null);
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
     } finally {
@@ -193,54 +225,24 @@ export default function CleanerCard({
     }
   }
 
-  // ✅ WhatsApp path: must ALSO fill everything + acknowledge, AND store to DB first
-  async function storeEnquiryAndOpenWhatsApp() {
-    setEnqError(null);
+  async function sendViaWhatsApp() {
+    setEnqSent(false);
+    setLastChannel(null);
 
-    // Hard validation (same as email)
-    if (!enqName.trim()) return setEnqError("Please enter your name.");
-    if (!enqAddress.trim()) return setEnqError("Please select your address.");
-    if (!enqPhone.trim()) return setEnqError("Please enter your phone number.");
-    if (!isValidEmail(enqEmail)) return setEnqError("Please enter a valid email address.");
-    if (!enqMessage.trim()) return setEnqError("Please enter your message.");
-    if (!enqAccepted) return setEnqError("Please confirm you have read and understood the information.");
-    if (!whatsapp) return setEnqError("WhatsApp is not available for this business.");
+    if (!validateOrSetError()) return;
+    if (!whatsapp) {
+      setEnqError("WhatsApp is not available for this business.");
+      return;
+    }
 
     setEnqSending(true);
-
     try {
-      // Store to DB (via the same function). This will also email unless your server
-      // later chooses to skip email when channel === "whatsapp".
-      const payload = {
-        cleanerId: cleaner.cleaner_id,
-        cleanerName: cleaner.business_name ?? "",
-        name: enqName,
-        address: enqAddress,
-        phone: enqPhone,
-        email: enqEmail,
-        message: enqMessage,
-        acknowledged: enqAccepted,
-        channel: "whatsapp" as const,
-      };
+      // 1) Store in DB (via same endpoint)
+      await postEnquiry("whatsapp");
 
-      const res = await fetch("/.netlify/functions/sendEnquiry", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-
-      const data = await res.json().catch(() => ({} as any));
-
-      if (!res.ok || !data?.ok) {
-        setEnqError(data?.error || "Failed to send enquiry");
-        return;
-      }
-
-      setEnqLastChannel("whatsapp");
+      // 2) Open WhatsApp
+      setLastChannel("whatsapp");
       setEnqSent(true);
-      setEnqError(null);
-
-      // Now open WhatsApp with the prefilled message
       window.open(buildWhatsAppUrl(whatsapp, whatsappPrefill), "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong.");
@@ -255,9 +257,8 @@ export default function CleanerCard({
     setEnqSending(false);
     setEnqSent(false);
     setEnqAccepted(false);
-    setEnqLastChannel(null);
+    setLastChannel(null);
 
-    // clear on close
     setEnqName("");
     setEnqAddress("");
     setEnqPhone("");
@@ -270,27 +271,14 @@ export default function CleanerCard({
     setEnqError(null);
     setEnqSent(false);
     setEnqAccepted(false);
-    setEnqLastChannel(null);
+    setLastChannel(null);
   }
 
-  // Featured logo: bigger than button stack, no border
   const logoBoxClass = featured
     ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-  // Keep logo crisp, no cropping
   const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
-
-  const whatsappPrefill = useMemo(() => {
-    const text =
-      `Enquiry for ${name}\n\n` +
-      `Name: ${enqName || "-"}\n` +
-      `Address: ${enqAddress || "-"}\n` +
-      `Phone: ${enqPhone || "-"}\n` +
-      `Email: ${enqEmail || "-"}\n\n` +
-      `${enqMessage || ""}`;
-    return text;
-  }, [name, enqName, enqAddress, enqPhone, enqEmail, enqMessage]);
 
   return (
     <>
@@ -312,7 +300,7 @@ export default function CleanerCard({
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
               <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
-              {/* ✅ GOOGLE RATING (from RPC) */}
+              {/* Google rating */}
               {typeof (cleaner as any).google_rating === "number" && (
                 <div className="text-xs text-gray-600 mt-1">
                   ⭐ {(cleaner as any).google_rating.toFixed(1)}{" "}
@@ -330,7 +318,6 @@ export default function CleanerCard({
 
               {/* MOBILE ICON ACTIONS */}
               <div className="flex gap-3 mt-3 sm:hidden">
-                {/* Message */}
                 <button
                   type="button"
                   className="h-10 w-10 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 disabled:opacity-40"
@@ -344,7 +331,6 @@ export default function CleanerCard({
                   💬
                 </button>
 
-                {/* Phone */}
                 <button
                   type="button"
                   className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
@@ -358,7 +344,6 @@ export default function CleanerCard({
                   📞
                 </button>
 
-                {/* Website */}
                 <button
                   type="button"
                   className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50 disabled:opacity-40"
@@ -416,13 +401,11 @@ export default function CleanerCard({
         </div>
       </div>
 
-      {/* ✅ Enquiry modal */}
+      {/* Enquiry modal */}
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
-          {/* backdrop */}
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
-          {/* modal */}
           <div className="absolute inset-0 flex items-center justify-center p-3 sm:p-6">
             <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden max-h-[calc(100vh-2rem)]">
               {/* Header */}
@@ -430,7 +413,9 @@ export default function CleanerCard({
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
-                    <p className="text-sm text-gray-600 mt-1">Address, phone and email are required.</p>
+                    <p className="text-sm text-gray-600 mt-1">
+                      Address, phone and email are required.
+                    </p>
                   </div>
 
                   <button
@@ -449,12 +434,11 @@ export default function CleanerCard({
                 className="px-5 py-4 space-y-4 overflow-y-auto"
                 style={{ maxHeight: "calc(100vh - 240px)" }}
               >
-                {/* ✅ Confirmation */}
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
-                    ✅ Enquiry saved!
-                    {enqLastChannel === "email" ? " A copy has been emailed to you." : null}
-                    {enqLastChannel === "whatsapp" ? " Opening WhatsApp…" : null}
+                    ✅ Enquiry saved.
+                    {lastChannel === "email" ? " A copy has been emailed to you." : null}
+                    {lastChannel === "whatsapp" ? " WhatsApp opened in a new tab." : null}
                   </div>
                 )}
 
@@ -536,8 +520,6 @@ export default function CleanerCard({
                     className="h-11 w-full rounded-xl border border-black/10 px-3 outline-none focus:ring-2 focus:ring-blue-500/25"
                     value={enqEmail}
                     onChange={(e) => {
-                     `
-
                       setEnqEmail(e.target.value);
                       setEnqSent(false);
                     }}
@@ -573,7 +555,6 @@ export default function CleanerCard({
               {/* Footer */}
               <div className="px-5 py-4 border-t border-black/5 bg-white">
                 <div className="flex flex-col gap-2">
-                  {/* ✅ Must read/acknowledge */}
                   <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
                     <input
                       type="checkbox"
@@ -589,7 +570,6 @@ export default function CleanerCard({
                     </span>
                   </label>
 
-                  {/* ✅ WhatsApp: requires ALL fields + acknowledgement + stores to DB first */}
                   {whatsapp ? (
                     <button
                       type="button"
@@ -597,7 +577,7 @@ export default function CleanerCard({
                       className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
                       onClick={() => {
                         logClick("click_message");
-                        void storeEnquiryAndOpenWhatsApp();
+                        void sendViaWhatsApp();
                       }}
                       title={
                         !canSend
@@ -605,14 +585,16 @@ export default function CleanerCard({
                           : "Send via WhatsApp"
                       }
                     >
-                      {enqSending && enqLastChannel === "whatsapp" ? "Saving…" : "Send via WhatsApp"}
+                      {enqSending && lastChannel === "whatsapp" ? "Saving…" : "Send via WhatsApp"}
                     </button>
                   ) : null}
 
-                  {/* ✅ Email: requires ALL fields + acknowledgement */}
                   <button
                     type="button"
-                    onClick={sendEnquiryEmail}
+                    onClick={() => {
+                      setLastChannel("email");
+                      void sendEnquiryEmail();
+                    }}
                     disabled={!canSend}
                     className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
                     title={
@@ -621,16 +603,14 @@ export default function CleanerCard({
                         : "Send enquiry"
                     }
                   >
-                    {enqSending && enqLastChannel !== "whatsapp" ? "Sending…" : enqSent && enqLastChannel === "email" ? "Sent ✓" : "Send Enquiry"}
+                    {enqSending && lastChannel !== "whatsapp" ? "Sending…" : enqSent && lastChannel === "email" ? "Sent ✓" : "Send Enquiry"}
                   </button>
 
                   {!whatsapp && phone ? (
                     <button
                       type="button"
                       className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-                      onClick={() => {
-                        openWhatsAppOrCall();
-                      }}
+                      onClick={openWhatsAppOrCall}
                     >
                       Call Instead
                     </button>
