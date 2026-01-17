@@ -71,15 +71,20 @@ export const handler: Handler = async (event) => {
       return json(400, { error: "Missing cleanerId or cleanerName." });
     }
     if (!payload.name?.trim()) return json(400, { error: "Missing name." });
-    if (!payload.address?.trim()) return json(400, { error: "Missing address." });
+    if (!payload.address?.trim())
+      return json(400, { error: "Missing address." });
     if (!payload.phone?.trim()) return json(400, { error: "Missing phone." });
     if (!payload.email?.trim() || !isValidEmail(payload.email)) {
       return json(400, { error: "Missing or invalid email." });
     }
-    if (!payload.message?.trim()) return json(400, { error: "Missing message." });
+    if (!payload.message?.trim())
+      return json(400, { error: "Missing message." });
 
     // Resolve business email from cleaners.contact_email
-    const businessEmail = await resolveCleanerContactEmail(supabase, payload.cleanerId);
+    const businessEmail = await resolveCleanerContactEmail(
+      supabase,
+      payload.cleanerId
+    );
 
     // If no business email, fallback to ENQUIRY_INBOX_TO (admin)
     const primaryRecipient = businessEmail || ENQUIRY_INBOX_TO || "";
@@ -125,8 +130,8 @@ export const handler: Handler = async (event) => {
 
     // Optional admin BCC (only if not already included)
     const bcc =
-      ENQUIRY_INBOX_TO && !to.includes(ENQUIRY_INBOX_TO.toLowerCase())
-        ? [ENQUIRY_INBOX_TO]
+      ENQUIRY_INBOX_TO && !to.includes(ENQUIRY_INBOX_TO.trim().toLowerCase())
+        ? [ENQUIRY_INBOX_TO.trim().toLowerCase()]
         : undefined;
 
     const subject = `New enquiry for ${payload.cleanerName}`;
@@ -162,7 +167,7 @@ export const handler: Handler = async (event) => {
         subject,
         html,
         // ✅ When business replies, it goes to the user
-        reply_to: payload.email,
+        replyTo: payload.email,
       }),
     });
 
