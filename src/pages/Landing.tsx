@@ -103,10 +103,9 @@ export default function Landing() {
         <div className="text-center">
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
-      <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-cyan-300 via-emerald-400 to-yellow-300">
+    <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-cyan-300 via-emerald-400 to-yellow-300 bg-[length:200%_200%] animate-klean-gradient">
   Klean.ly
 </span>
-
 
           </div>
 
