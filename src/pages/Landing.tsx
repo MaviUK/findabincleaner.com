@@ -55,9 +55,6 @@ export default function Landing() {
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
 
-  const hasResults = Array.isArray(cleaners);
-
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -106,7 +103,7 @@ export default function Landing() {
         <div className="text-center">
           <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
-            <span className="text-emerald-700">KLEAN</span>
+            <span className="text-emerald-700">CLEAN</span>
             <span className="text-sky-600 font-normal normal-case">ly</span>
           </div>
 
