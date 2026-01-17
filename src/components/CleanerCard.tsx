@@ -165,7 +165,10 @@ export default function CleanerCard({
         phone: enqPhone,
         email: enqEmail,
         message: enqMessage,
+        acknowledged: true,
+
       };
+      
 
       const res = await fetch("/.netlify/functions/sendEnquiry", {
         method: "POST",
