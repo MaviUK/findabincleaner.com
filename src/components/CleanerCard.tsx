@@ -94,7 +94,7 @@ export default function CleanerCard({
   // ✅ success confirmation state
   const [enqSent, setEnqSent] = useState(false);
 
-  // ✅ NEW: must acknowledge info before sending
+  // ✅ NEW: must  info before sending
   const [enqAccepted, setEnqAccepted] = useState(false);
 
   // Google Places loaded?
@@ -165,7 +165,7 @@ export default function CleanerCard({
         phone: enqPhone,
         email: enqEmail,
         message: enqMessage,
-        acknowledged: true,
+        acknowledged: enqAccepted,
 
       };
       
@@ -516,16 +516,21 @@ export default function CleanerCard({
               <div className="px-5 py-4 border-t border-black/5 bg-white">
                 <div className="flex flex-col gap-2">
                   {whatsapp ? (
-                    <a
-                      className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59]"
-                      href={buildWhatsAppUrl(whatsapp, whatsappPrefill)}
-                      target="_blank"
-                      rel="noreferrer"
-                      onMouseDown={() => logClick("click_message")}
-                    >
-                      Send via WhatsApp
-                    </a>
-                  ) : null}
+  <button
+    type="button"
+    className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+    disabled={!enqAccepted}
+    onClick={() => {
+      logClick("click_message");
+      if (!enqAccepted) return;
+      window.open(buildWhatsAppUrl(whatsapp, whatsappPrefill), "_blank", "noopener,noreferrer");
+    }}
+    title={!enqAccepted ? "Please confirm you have read the information below" : "Send via WhatsApp"}
+  >
+    Send via WhatsApp
+  </button>
+) : null}
+
 
                   {/* ✅ Must read/acknowledge */}
                   <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
