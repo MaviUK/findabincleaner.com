@@ -12,17 +12,13 @@ import { createClient } from "@supabase/supabase-js";
  *  - ENQUIRY_INBOX_TO     (admin BCC + fallback recipient if business email missing)
  *
  * Behaviour:
+ *  - Stores enquiry in public.enquiries
  *  - Sends to business (cleaners.contact_email)
  *  - Sends a copy to the user (payload.email)
  *  - Optional BCC to ENQUIRY_INBOX_TO
  *  - Returns { ok: true } so UI can show "Sent!"
  */
 const allowOrigin = "*";
-
-const supabase = createClient(
-  process.env.SUPABASE_URL || "",
-  process.env.SUPABASE_SERVICE_ROLE || ""
-);
 
 export const handler: Handler = async (event) => {
   if (event.httpMethod === "OPTIONS") {
@@ -55,6 +51,11 @@ export const handler: Handler = async (event) => {
       });
     }
 
+    // ✅ Create Supabase client at runtime (env vars guaranteed)
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
+      auth: { persistSession: false },
+    });
+
     const payload = JSON.parse(event.body || "{}") as {
       cleanerId: string;
       cleanerName: string;
@@ -78,7 +79,7 @@ export const handler: Handler = async (event) => {
     if (!payload.message?.trim()) return json(400, { error: "Missing message." });
 
     // Resolve business email from cleaners.contact_email
-    const businessEmail = await resolveCleanerContactEmail(payload.cleanerId);
+    const businessEmail = await resolveCleanerContactEmail(supabase, payload.cleanerId);
 
     // If no business email, fallback to ENQUIRY_INBOX_TO (admin)
     const primaryRecipient = businessEmail || ENQUIRY_INBOX_TO || "";
@@ -89,12 +90,42 @@ export const handler: Handler = async (event) => {
       });
     }
 
+    // ✅ Capture IP + user agent for abuse prevention / audit
+    const ipRaw =
+      event.headers["x-nf-client-connection-ip"] ||
+      event.headers["x-forwarded-for"] ||
+      event.headers["client-ip"] ||
+      "";
+    const ip =
+      typeof ipRaw === "string" && ipRaw.trim()
+        ? ipRaw.split(",")[0].trim()
+        : null;
+
+    const userAgent = (event.headers["user-agent"] || "").trim() || null;
+
+    // ✅ Store enquiry in DB (NO marketing; enquiry only)
+    const { error: insErr } = await supabase.from("enquiries").insert({
+      cleaner_id: payload.cleanerId,
+      user_name: payload.name.trim(),
+      user_address: payload.address.trim(),
+      user_phone: payload.phone.trim(),
+      user_email: payload.email.trim().toLowerCase(),
+      message: payload.message.trim(),
+      ip,
+      user_agent: userAgent,
+    });
+
+    if (insErr) {
+      console.error("[sendEnquiry] failed to store enquiry:", insErr);
+      return json(500, { error: "Failed to store enquiry." });
+    }
+
     // ✅ Send to business + send copy to user
     const to = uniqueEmails([primaryRecipient, payload.email]);
 
     // Optional admin BCC (only if not already included)
     const bcc =
-      ENQUIRY_INBOX_TO && !to.includes(ENQUIRY_INBOX_TO)
+      ENQUIRY_INBOX_TO && !to.includes(ENQUIRY_INBOX_TO.toLowerCase())
         ? [ENQUIRY_INBOX_TO]
         : undefined;
 
@@ -143,6 +174,7 @@ export const handler: Handler = async (event) => {
     // UI uses this to show confirmation
     return json(200, {
       ok: true,
+      stored: true,
       sent_to_business: !!businessEmail,
       recipients: to,
     });
@@ -151,7 +183,10 @@ export const handler: Handler = async (event) => {
   }
 };
 
-async function resolveCleanerContactEmail(cleanerId: string): Promise<string | null> {
+async function resolveCleanerContactEmail(
+  supabase: ReturnType<typeof createClient>,
+  cleanerId: string
+): Promise<string | null> {
   const { data, error } = await supabase
     .from("cleaners")
     .select("contact_email")
