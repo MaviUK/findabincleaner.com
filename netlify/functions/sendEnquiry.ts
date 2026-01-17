@@ -12,7 +12,7 @@ import { createClient } from "@supabase/supabase-js";
  *  - ENQUIRY_INBOX_TO     (admin BCC + fallback recipient if business email missing)
  *
  * Behaviour:
- *  - Stores enquiry in public.enquiries
+ *  - Stores enquiry in public.enquiries (including acknowledged flag)
  *  - Sends to business (cleaners.contact_email)
  *  - Sends a copy to the user (payload.email)
  *  - Optional BCC to ENQUIRY_INBOX_TO
@@ -64,6 +64,7 @@ export const handler: Handler = async (event) => {
       phone: string;
       email: string; // user email
       message: string;
+      acknowledged?: boolean; // ✅ NEW
     };
 
     // Required checks
@@ -79,6 +80,13 @@ export const handler: Handler = async (event) => {
     }
     if (!payload.message?.trim())
       return json(400, { error: "Missing message." });
+
+    // ✅ Enforce acknowledgement server-side too
+    if (!payload.acknowledged) {
+      return json(400, {
+        error: "You must confirm you have read and understood the information.",
+      });
+    }
 
     // Resolve business email from cleaners.contact_email
     const businessEmail = await resolveCleanerContactEmail(
@@ -118,6 +126,7 @@ export const handler: Handler = async (event) => {
       message: payload.message.trim(),
       ip,
       user_agent: userAgent,
+      acknowledged: true, // we enforced it above
     });
 
     if (insErr) {
