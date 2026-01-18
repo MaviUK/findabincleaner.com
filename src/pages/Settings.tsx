@@ -1,3 +1,5 @@
+i also have them in this file
+
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
@@ -188,13 +190,10 @@ function CategoryPills({
     );
   }, [categories]);
 
-  // ✅ UPDATED: return icon IMAGE paths (not emoji)
-  const iconSrcFor = (slug: string) => {
-    if (slug === "bin-cleaner") return "/icons/bin-cleaner.png";
-    if (slug === "window-cleaner") return "/icons/window-cleaner.png";
-    if (slug === "cleaner" || slug === "domestic-cleaner")
-      return "/icons/general-cleaner.png";
-    return null;
+  const iconFor = (slug: string) => {
+    if (slug === "bin-cleaner") return "🗑️";
+    if (slug === "window-cleaner") return "🪟";
+    return "🧼";
   };
 
   return (
@@ -203,8 +202,6 @@ function CategoryPills({
       <div className="flex flex-wrap gap-2">
         {ordered.map((c) => {
           const checked = selected.has(c.id);
-          const iconSrc = iconSrcFor(c.slug);
-
           return (
             <button
               key={c.id}
@@ -217,15 +214,7 @@ function CategoryPills({
                   : "bg-white hover:bg-gray-50 border-gray-300",
               ].join(" ")}
             >
-              {/* ✅ UPDATED: show image icon */}
-              {iconSrc ? (
-                <img
-                  src={iconSrc}
-                  alt=""
-                  className="h-4 w-4 shrink-0"
-                  aria-hidden="true"
-                />
-              ) : null}
+              <span className="text-base leading-none">{iconFor(c.slug)}</span>
               <span>{c.name}</span>
             </button>
           );
@@ -342,9 +331,10 @@ export default function Settings() {
 
         // ✅ Load categories list (always)
         const { data: cats, error: catsErr } = await supabase
-          .from("service_categories")
-          .select("id,name,slug")
-          .order("name", { ascending: true });
+  .from("service_categories")
+  .select("id,name,slug")
+  .order("name", { ascending: true });
+
 
         if (catsErr) throw catsErr;
 
@@ -392,9 +382,7 @@ export default function Settings() {
 
         if (error) throw error;
 
-        const next = new Set<string>(
-          (picks ?? []).map((p: any) => String(p.category_id))
-        );
+        const next = new Set<string>((picks ?? []).map((p: any) => String(p.category_id)));
         if (!mounted) return;
         setSelectedCategoryIds(next);
         setCategoriesLoaded(true);
@@ -553,19 +541,20 @@ export default function Settings() {
       // ✅ save category selections too
       await saveCategories(id);
 
-      // ✅ NEW: sync Google rating if Place ID exists
-      if (googlePlaceId.trim()) {
-        try {
-          await fetch("/.netlify/functions/syncGoogleRating", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ cleaner_id: id }),
-          });
-        } catch (e) {
-          console.warn("Google rating sync failed", e);
-          // Do NOT block saving if Google fails
-        }
+          // ✅ NEW: sync Google rating if Place ID exists
+    if (googlePlaceId.trim()) {
+      try {
+        await fetch("/.netlify/functions/syncGoogleRating", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cleaner_id: id }),
+        });
+      } catch (e) {
+        console.warn("Google rating sync failed", e);
+        // Do NOT block saving if Google fails
       }
+    }
+
 
       setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
       if (newLogo) setLogoPreview(newLogo);
@@ -637,7 +626,6 @@ export default function Settings() {
       <div className="grid lg:grid-cols-2 gap-6">
         {/* LEFT: Core details */}
         <section className="space-y-3 p-4 border rounded-2xl bg-white">
-          {/* ... unchanged ... */}
           <label className="block">
             <span className="text-sm">Business name</span>
             <input
@@ -734,10 +722,83 @@ export default function Settings() {
           </div>
 
           {/* ✅ NEW: Google Place ID (optional) */}
-          {/* ... unchanged ... */}
+          <div className="pt-2 border-t">
+            <div className="text-sm font-medium">Google Business Profile (optional)</div>
 
-          {/* rest unchanged */}
-          {/* Danger Zone unchanged */}
+            <label className="block mt-2">
+              <span className="text-sm">Google Place ID</span>
+              <input
+                className="w-full border rounded px-3 py-2"
+                value={googlePlaceId}
+                onChange={(e) => {
+                  setMsg(null);
+                  setErr(null);
+                  setGooglePlaceId(e.target.value);
+                }}
+                placeholder="e.g. ChIJN1t_tDeuEmsRUsoyG83frY4"
+              />
+              <span className="text-xs text-gray-500">
+                Add your Place ID to show your Google rating under your name in listings.
+              </span>
+            </label>
+
+            <a
+              className="text-xs text-blue-600 underline mt-1 inline-block"
+              href="https://developers.google.com/maps/documentation/javascript/examples/places-placeid-finder"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Find my Place ID
+            </a>
+          </div>
+
+          <div>
+            <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={async (e) => {
+                const f = e.target.files?.[0] || null;
+                setLogoFile(f);
+                setMsg(null);
+                setErr(null);
+                try {
+                  if (f) {
+                    const blob = await resizeTo300PNG(f);
+                    setResizedLogo(blob);
+                    setLogoPreview(URL.createObjectURL(blob));
+                  } else {
+                    setResizedLogo(null);
+                    setLogoPreview(cleaner?.logo_url ?? null);
+                  }
+                } catch (ex: any) {
+                  setErr(ex?.message ?? "Failed to process image.");
+                }
+              }}
+              className="mt-1"
+            />
+            {logoPreview && (
+              <img
+                src={logoPreview}
+                alt="Logo preview"
+                width={80}
+                height={80}
+                className="mt-2 h-20 w-20 object-contain rounded bg-white"
+              />
+            )}
+            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
+          </div>
+
+          {msg && <div className="text-green-700 text-sm">{msg}</div>}
+          {err && <div className="text-red-700 text-sm">{err}</div>}
+
+          <button
+            className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
+            disabled={!canSave || saving}
+            onClick={save}
+          >
+            {saving ? "Saving…" : "Save settings"}
+          </button>
         </section>
       </div>
 
