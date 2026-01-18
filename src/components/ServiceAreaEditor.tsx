@@ -246,6 +246,26 @@ function geoMultiPolygonAreaKm2(gjInput: any): number {
   return Math.max(0, totalM2) / 1_000_000;
 }
 
+function getScrollParent(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null;
+
+  let parent: HTMLElement | null = el.parentElement;
+
+  while (parent) {
+    const style = window.getComputedStyle(parent);
+    const overflowY = style.overflowY;
+    const canScroll =
+      (overflowY === "auto" || overflowY === "scroll") &&
+      parent.scrollHeight > parent.clientHeight;
+
+    if (canScroll) return parent;
+    parent = parent.parentElement;
+  }
+
+  return document.scrollingElement as HTMLElement; // fallback
+}
+
+
 type Props = {
   businessId?: string;
   cleanerId?: string;
@@ -565,22 +585,35 @@ useEffect(() => {
     mapRef.current = map;
   }, []);
 
-  const scrollToMapOnMobile = useCallback(() => {
+ const scrollToMapOnMobile = useCallback(() => {
   if (typeof window === "undefined") return;
 
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
   if (!isMobile) return;
 
-  // Wait until zoom/fitBounds has kicked in
-  window.setTimeout(() => {
-    mapWrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const target = mapWrapRef.current;
+  if (!target) return;
 
-    // Optional sticky header offset
-    window.setTimeout(() => {
-      window.scrollBy({ top: -80, behavior: "smooth" });
-    }, 250);
-  }, 250);
+  // Let fitBounds/layout settle first
+  window.setTimeout(() => {
+    const scroller = getScrollParent(target);
+
+    // If we found a scrollable container (not the page)
+    if (scroller && scroller !== document.scrollingElement) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+
+      const top = targetRect.top - scrollerRect.top + scroller.scrollTop;
+      scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "smooth" });
+      return;
+    }
+
+    // Fallback: scroll the page
+    const pageTop = window.scrollY + target.getBoundingClientRect().top;
+    window.scrollTo({ top: Math.max(0, pageTop - 80), behavior: "smooth" });
+  }, 350);
 }, []);
+;
 
 
   const zoomToArea = useCallback(
