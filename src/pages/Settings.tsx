@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerCard from "../components/CleanerCard";
-import LogoutButton from "../components/LogoutButton";
 import { PAYMENT_METHODS as PM_ALL } from "../constants/paymentMethods";
 import AccountDangerZone from "../components/settings/AccountDangerZone";
 
@@ -641,9 +640,9 @@ export default function Settings() {
   return (
     <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
       <header className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <LogoutButton />
-      </header>
+  <h1 className="text-2xl font-bold">Settings</h1>
+</header>
+
 
       {/* TOP: Full-width preview */}
       <section className="p-0 bg-transparent border-0">
