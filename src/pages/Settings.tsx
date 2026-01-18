@@ -359,7 +359,12 @@ export default function Settings() {
         if (catsErr) throw catsErr;
 
         if (!mounted) return;
-        setCategories((cats ?? []) as Category[]);
+
+        // filter to allowed slugs (keeps UI tidy)
+        const allowed = new Set<string>(ALLOWED_CATEGORY_SLUGS as any);
+        setCategories(
+          ((cats ?? []) as Category[]).filter((c) => allowed.has(c.slug))
+        );
       } catch (e: any) {
         setErr(e.message || "Failed to load profile.");
       } finally {
@@ -561,10 +566,7 @@ export default function Settings() {
         google_place_id: googlePlaceId.trim() || null,
       };
 
-      const { error } = await supabase
-        .from("cleaners")
-        .update(payload)
-        .eq("id", id);
+      const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
       if (error) throw error;
 
       // ✅ save category selections too
@@ -584,9 +586,7 @@ export default function Settings() {
         }
       }
 
-      setCleaner((prev) =>
-        prev ? ({ ...prev, ...payload, id } as Cleaner) : prev
-      );
+      setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
       setResizedLogo(null);
@@ -599,9 +599,17 @@ export default function Settings() {
     }
   }
 
+  const hasAnyContactMethod = useMemo(() => {
+    return (
+      phone.trim().length > 0 ||
+      website.trim().length > 0 ||
+      whatsapp.trim().length > 0
+    );
+  }, [phone, website, whatsapp]);
+
   const canSave = useMemo(
-    () => businessName.trim().length > 0,
-    [businessName]
+    () => businessName.trim().length > 0 && hasAnyContactMethod,
+    [businessName, hasAnyContactMethod]
   );
 
   // Build the preview object for the CleanerCard
@@ -632,17 +640,30 @@ export default function Settings() {
   );
 
   if (loading || !ready) {
-    return (
-      <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>
-    );
+    return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
   }
 
   return (
     <main className="container mx-auto max-w-6xl px-4 py-8 space-y-6">
-      <header className="flex items-center justify-between">
-  <h1 className="text-2xl font-bold">Settings</h1>
-</header>
+      {!hasAnyContactMethod && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-900">
+          <div className="font-semibold mb-1">
+            Action required: add contact details
+          </div>
+          <p className="text-sm">
+            Your business <strong>will not appear in search results</strong>{" "}
+            until at least one contact method is added.
+          </p>
+          <p className="text-sm mt-1">
+            Please add at least one of: <strong>Phone</strong>,{" "}
+            <strong>Website</strong>, or <strong>WhatsApp</strong>.
+          </p>
+        </div>
+      )}
 
+      <header className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Settings</h1>
+      </header>
 
       {/* TOP: Full-width preview */}
       <section className="p-0 bg-transparent border-0">
@@ -713,8 +734,7 @@ export default function Settings() {
               placeholder="+447… or full wa.me link"
             />
             <span className="text-xs text-gray-500">
-              Enter an international number (e.g. +447…) or a full WhatsApp
-              link.
+              Enter an international number (e.g. +447…) or a full WhatsApp link.
             </span>
           </label>
 
@@ -742,11 +762,9 @@ export default function Settings() {
         {/* RIGHT: Methods, industries, logo, save */}
         <section className="space-y-4 p-4 border rounded-2xl bg-white">
           <PaymentPills value={paymentMethods} onChange={setPaymentMethods} />
-
-          {/* (Optional) keep if you still want domestic/commercial on listing */}
           <ServiceTypePills value={serviceTypes} onChange={setServiceTypes} />
 
-          {/* ✅ NEW: industries/categories selection */}
+          {/* ✅ industries/categories selection */}
           <div className="pt-2 border-t">
             {!categoriesLoaded ? (
               <div className="text-sm text-gray-500">Loading industries…</div>
@@ -759,7 +777,7 @@ export default function Settings() {
             )}
           </div>
 
-          {/* ✅ NEW: Google Place ID (optional) */}
+          {/* ✅ Google Place ID */}
           <div className="pt-2 border-t">
             <div className="text-sm font-medium">
               Google Business Profile (optional)
@@ -778,8 +796,7 @@ export default function Settings() {
                 placeholder="e.g. ChIJN1t_tDeuEmsRUsoyG83frY4"
               />
               <span className="text-xs text-gray-500">
-                Add your Place ID to show your Google rating under your name in
-                listings.
+                Add your Place ID to show your Google rating under your name in listings.
               </span>
             </label>
 
@@ -793,6 +810,7 @@ export default function Settings() {
             </a>
           </div>
 
+          {/* Logo */}
           <div>
             <div className="text-sm font-medium">
               Logo (auto-resized to 300×300 PNG)
@@ -841,8 +859,17 @@ export default function Settings() {
             className="bg-black text-white px-4 py-2 rounded disabled:opacity-60"
             disabled={!canSave || saving}
             onClick={save}
+            title={
+              !hasAnyContactMethod
+                ? "Add at least one contact method (Phone, Website, or WhatsApp) to appear in results."
+                : undefined
+            }
           >
-            {saving ? "Saving…" : "Save settings"}
+            {!hasAnyContactMethod
+              ? "Add contact details to continue"
+              : saving
+              ? "Saving…"
+              : "Save settings"}
           </button>
         </section>
       </div>
