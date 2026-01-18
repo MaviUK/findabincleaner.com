@@ -1,5 +1,5 @@
 // src/components/FindCleaners.tsx
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
@@ -102,6 +102,9 @@ export default function FindCleaners({
   const hasSearchedOnceRef = useRef(false);
   const lastSearchedPostcodeRef = useRef<string>("");
 
+  // ✅ hard guard: prevents infinite auto-search loops
+  const lastAutoSearchKeyRef = useRef<string>("");
+
   useEffect(() => {
     let cancelled = false;
 
@@ -123,199 +126,196 @@ export default function FindCleaners({
     };
   }, [serviceSlug]);
 
-  const lookup = useCallback(
-    async (ev?: React.FormEvent, postcodeOverride?: string) => {
-      ev?.preventDefault();
-      setError(null);
+  async function lookup(ev?: React.FormEvent, postcodeOverride?: string) {
+    ev?.preventDefault();
+    setError(null);
 
-      onSearchStart?.();
-      if (!onSearchComplete) setResults([]);
+    onSearchStart?.();
+    if (!onSearchComplete) setResults([]);
 
-      const pc = (postcodeOverride ?? postcode)
-        .trim()
-        .toUpperCase()
-        .replace(/\s+/g, " ");
-      if (!pc) {
-        setError("Please enter a postcode.");
-        return;
-      }
+    const pc = (postcodeOverride ?? postcode)
+      .trim()
+      .toUpperCase()
+      .replace(/\s+/g, " ");
+    if (!pc) {
+      setError("Please enter a postcode.");
+      return;
+    }
 
-      // ✅ store last searched postcode so switching tabs re-runs it
-      hasSearchedOnceRef.current = true;
-      lastSearchedPostcodeRef.current = pc;
+    // ✅ store last searched postcode so switching tabs can re-run it
+    hasSearchedOnceRef.current = true;
+    lastSearchedPostcodeRef.current = pc;
 
-      try {
-        setLoading(true);
+    try {
+      setLoading(true);
 
-        // 1) Geocode
-        const res = await fetch(
-          `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
-        );
+      // 1) Geocode
+      const res = await fetch(
+        `https://api.postcodes.io/postcodes/${encodeURIComponent(pc)}`
+      );
 
-        if (!res.ok) {
-          if (res.status === 404 || res.status === 400) {
-            setError(FRIENDLY_BAD_POSTCODE);
-            return;
-          }
-          setError("Couldn’t look up that postcode. Please try again.");
-          return;
-        }
-
-        const geo = await res.json();
-        if (geo.status !== 200 || !geo.result) {
+      if (!res.ok) {
+        if (res.status === 404 || res.status === 400) {
           setError(FRIENDLY_BAD_POSTCODE);
           return;
         }
-
-        const lat: number = Number(geo.result.latitude);
-        const lng: number = Number(geo.result.longitude);
-        const town: string =
-          geo.result.post_town ||
-          geo.result.admin_district ||
-          geo.result.parliamentary_constituency ||
-          geo.result.region ||
-          "";
-
-        // 2) RPC returns eligible cleaners + sponsor flags + matched area
-        const { data: rpcRows, error: rpcErr } = await supabase.rpc(
-          "search_cleaners",
-          {
-            p_category_slug: serviceSlug,
-            p_lat: lat,
-            p_lng: lng,
-          }
-        );
-
-        if (rpcErr) {
-          setError(rpcErr.message);
-          return;
-        }
-
-        const rows: RpcRow[] = (rpcRows || []) as any;
-
-        const eligibleIds = rows.map((r) => r.cleaner_id).filter(Boolean);
-        if (eligibleIds.length === 0) {
-          const none: MatchOut[] = [];
-          if (!onSearchComplete) setResults(none);
-          onSearchComplete?.(none, pc, town, lat, lng);
-          return;
-        }
-
-        // 3) Fetch full cleaner details for eligible IDs
-        // ✅ IMPORTANT: include google fields here
-        const { data: cleaners, error: cleanersErr } = await supabase
-          .from("cleaners")
-          .select(
-            "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count, google_rating, google_reviews_count"
-          )
-          .in("id", eligibleIds);
-
-        if (cleanersErr) {
-          setError(cleanersErr.message);
-          return;
-        }
-
-        // map rpc by cleaner_id so we keep sponsor + area fields
-        const rpcById = new Map<string, RpcRow>();
-        rows.forEach((r) => rpcById.set(r.cleaner_id, r));
-
-        const categoryId = categoryIdRef.current;
-
-        const normalized: MatchOut[] = (cleaners || []).map((c: any) => {
-          const r = rpcById.get(c.id);
-          return {
-            cleaner_id: c.id,
-            business_name: c.business_name ?? r?.business_name ?? null,
-            logo_url: c.logo_url ?? null,
-            website: c.website ?? null,
-            phone: c.phone ?? null,
-            whatsapp: c.whatsapp ?? null,
-            payment_methods: toArray(c.payment_methods),
-            service_types: toArray(c.service_types),
-            rating_avg: c.rating_avg ?? null,
-            rating_count: c.rating_count ?? null,
-
-            // ✅ PASS THROUGH google rating fields
-            google_rating: c.google_rating ?? r?.google_rating ?? null,
-            google_reviews_count:
-              c.google_reviews_count ?? r?.google_reviews_count ?? null,
-
-            distance_m: r?.distance_meters ?? null,
-            area_id: r?.area_id ?? null,
-            area_name: r?.area_name ?? null,
-            is_covering_sponsor: Boolean(r?.is_covering_sponsor),
-            category_id: categoryId,
-          };
-        });
-
-        // live-only
-        const liveOnly = normalized.filter(
-          (r) => r.phone || r.whatsapp || r.website
-        );
-
-        // 4) Order: sponsored first (stable), then shuffle the rest randomly
-        const sponsored = liveOnly.filter((x) => x.is_covering_sponsor);
-        const nonSponsored = liveOnly.filter((x) => !x.is_covering_sponsor);
-        const ordered = [...sponsored, ...shuffle(nonSponsored)];
-
-        // 5) Record impressions
-        try {
-          const sessionId = getOrCreateSessionId();
-          const searchId = crypto.randomUUID();
-          const sponsoredCount = sponsored.length;
-
-          const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(
-            5
-          )}|${lng.toFixed(5)}|${ordered.length}`;
-
-          if (lastImpressionKey.current !== impressionKey) {
-            lastImpressionKey.current = impressionKey;
-
-            await Promise.all(
-              ordered.map((r, idx) =>
-                recordEventFetch({
-                  event: "impression",
-                  cleanerId: r.cleaner_id,
-                  areaId: r.area_id ?? null,
-                  categoryId: r.category_id ?? null,
-                  sessionId,
-                  meta: {
-                    search_id: searchId,
-                    postcode: pc,
-                    town,
-                    locality: town,
-                    service_slug: serviceSlug,
-                    area_id: r.area_id ?? null,
-                    area_name: r.area_name ?? null,
-                    position: idx + 1,
-                    is_sponsored: Boolean(r.is_covering_sponsor),
-                    results_count: ordered.length,
-                    sponsored_count: sponsoredCount,
-                    lat,
-                    lng,
-                  },
-                })
-              )
-            );
-          }
-        } catch (e) {
-          console.warn("impression logging failed", e);
-        }
-
-        // 6) Update UI
-        if (!onSearchComplete) setResults(ordered);
-        onSearchComplete?.(ordered, pc, town, lat, lng);
-      } catch (e: any) {
-        console.error("FindCleaners lookup error:", e);
-        setError("Something went wrong. Please try again.");
-      } finally {
-        setLoading(false);
+        setError("Couldn’t look up that postcode. Please try again.");
+        return;
       }
-    },
-    [postcode, onSearchStart, onSearchComplete, serviceSlug]
-  );
 
-  // ✅ when user switches service tab, re-run last searched postcode automatically
+      const geo = await res.json();
+      if (geo.status !== 200 || !geo.result) {
+        setError(FRIENDLY_BAD_POSTCODE);
+        return;
+      }
+
+      const lat: number = Number(geo.result.latitude);
+      const lng: number = Number(geo.result.longitude);
+      const town: string =
+        geo.result.post_town ||
+        geo.result.admin_district ||
+        geo.result.parliamentary_constituency ||
+        geo.result.region ||
+        "";
+
+      // 2) RPC returns eligible cleaners + sponsor flags + matched area
+      const { data: rpcRows, error: rpcErr } = await supabase.rpc(
+        "search_cleaners",
+        {
+          p_category_slug: serviceSlug,
+          p_lat: lat,
+          p_lng: lng,
+        }
+      );
+
+      if (rpcErr) {
+        setError(rpcErr.message);
+        return;
+      }
+
+      const rows: RpcRow[] = (rpcRows || []) as any;
+
+      const eligibleIds = rows.map((r) => r.cleaner_id).filter(Boolean);
+      if (eligibleIds.length === 0) {
+        const none: MatchOut[] = [];
+        if (!onSearchComplete) setResults(none);
+        onSearchComplete?.(none, pc, town, lat, lng);
+        return;
+      }
+
+      // 3) Fetch full cleaner details for eligible IDs
+      // ✅ IMPORTANT: include google fields here
+      const { data: cleaners, error: cleanersErr } = await supabase
+        .from("cleaners")
+        .select(
+          "id, business_name, logo_url, website, phone, whatsapp, payment_methods, service_types, rating_avg, rating_count, google_rating, google_reviews_count"
+        )
+        .in("id", eligibleIds);
+
+      if (cleanersErr) {
+        setError(cleanersErr.message);
+        return;
+      }
+
+      // map rpc by cleaner_id so we keep sponsor + area fields
+      const rpcById = new Map<string, RpcRow>();
+      rows.forEach((r) => rpcById.set(r.cleaner_id, r));
+
+      const categoryId = categoryIdRef.current;
+
+      const normalized: MatchOut[] = (cleaners || []).map((c: any) => {
+        const r = rpcById.get(c.id);
+        return {
+          cleaner_id: c.id,
+          business_name: c.business_name ?? r?.business_name ?? null,
+          logo_url: c.logo_url ?? null,
+          website: c.website ?? null,
+          phone: c.phone ?? null,
+          whatsapp: c.whatsapp ?? null,
+          payment_methods: toArray(c.payment_methods),
+          service_types: toArray(c.service_types),
+          rating_avg: c.rating_avg ?? null,
+          rating_count: c.rating_count ?? null,
+
+          // ✅ PASS THROUGH google rating fields
+          google_rating: c.google_rating ?? r?.google_rating ?? null,
+          google_reviews_count:
+            c.google_reviews_count ?? r?.google_reviews_count ?? null,
+
+          distance_m: r?.distance_meters ?? null,
+          area_id: r?.area_id ?? null,
+          area_name: r?.area_name ?? null,
+          is_covering_sponsor: Boolean(r?.is_covering_sponsor),
+          category_id: categoryId,
+        };
+      });
+
+      // live-only
+      const liveOnly = normalized.filter(
+        (r) => r.phone || r.whatsapp || r.website
+      );
+
+      // 4) Order: sponsored first (stable), then shuffle the rest randomly
+      const sponsored = liveOnly.filter((x) => x.is_covering_sponsor);
+      const nonSponsored = liveOnly.filter((x) => !x.is_covering_sponsor);
+      const ordered = [...sponsored, ...shuffle(nonSponsored)];
+
+      // 5) Record impressions
+      try {
+        const sessionId = getOrCreateSessionId();
+        const searchId = crypto.randomUUID();
+        const sponsoredCount = sponsored.length;
+
+        const impressionKey = `${pc}|${serviceSlug}|${lat.toFixed(
+          5
+        )}|${lng.toFixed(5)}|${ordered.length}`;
+
+        if (lastImpressionKey.current !== impressionKey) {
+          lastImpressionKey.current = impressionKey;
+
+          await Promise.all(
+            ordered.map((r, idx) =>
+              recordEventFetch({
+                event: "impression",
+                cleanerId: r.cleaner_id,
+                areaId: r.area_id ?? null,
+                categoryId: r.category_id ?? null,
+                sessionId,
+                meta: {
+                  search_id: searchId,
+                  postcode: pc,
+                  town,
+                  locality: town,
+                  service_slug: serviceSlug,
+                  area_id: r.area_id ?? null,
+                  area_name: r.area_name ?? null,
+                  position: idx + 1,
+                  is_sponsored: Boolean(r.is_covering_sponsor),
+                  results_count: ordered.length,
+                  sponsored_count: sponsoredCount,
+                  lat,
+                  lng,
+                },
+              })
+            )
+          );
+        }
+      } catch (e) {
+        console.warn("impression logging failed", e);
+      }
+
+      // 6) Update UI
+      if (!onSearchComplete) setResults(ordered);
+      onSearchComplete?.(ordered, pc, town, lat, lng);
+    } catch (e: any) {
+      console.error("FindCleaners lookup error:", e);
+      setError("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ✅ when user switches service tab, re-run last searched postcode automatically (ONCE)
   useEffect(() => {
     if (!hasSearchedOnceRef.current) return;
     if (loading) return;
@@ -323,9 +323,15 @@ export default function FindCleaners({
     const pc = lastSearchedPostcodeRef.current;
     if (!pc) return;
 
+    const key = `${serviceSlug}|${pc}`;
+    if (lastAutoSearchKeyRef.current === key) return; // ✅ prevents loops
+    lastAutoSearchKeyRef.current = key;
+
     setPostcode(pc); // keep input synced
-    void lookup(undefined, pc); // re-run search for new serviceSlug
-  }, [serviceSlug, lookup, loading]);
+    void lookup(undefined, pc);
+    // intentionally only depends on serviceSlug
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serviceSlug]);
 
   return (
     <div className="space-y-3">
