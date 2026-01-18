@@ -32,7 +32,11 @@ const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
 
 // ✅ Categories we want visible in the business UI (hide domestic-cleaner for now)
 type Category = { id: string; name: string; slug: string };
-const ALLOWED_CATEGORY_SLUGS = ["bin-cleaner", "window-cleaner", "domestic-cleaner"] as const;
+const ALLOWED_CATEGORY_SLUGS = [
+  "bin-cleaner",
+  "window-cleaner",
+  "domestic-cleaner",
+] as const;
 
 // shape the CleanerCard expects (lightweight local type)
 type CleanerCardShape = {
@@ -157,7 +161,9 @@ function ServiceTypePills({
                 checked={checked}
                 onChange={(e) => toggle(m.key, e.target.checked)}
               />
-              {m.icon && <span className="text-base leading-none">{m.icon}</span>}
+              {m.icon && (
+                <span className="text-base leading-none">{m.icon}</span>
+              )}
               <span>{m.label}</span>
             </label>
           );
@@ -182,24 +188,32 @@ function CategoryPills({
       "bin-cleaner": 1,
       "window-cleaner": 2,
       cleaner: 3,
+      "domestic-cleaner": 3, // keep it near "cleaner"
     };
     return [...categories].sort(
       (a, b) => (order[a.slug] ?? 99) - (order[b.slug] ?? 99)
     );
   }, [categories]);
 
-  const iconFor = (slug: string) => {
-    if (slug === "bin-cleaner") return "🗑️";
-    if (slug === "window-cleaner") return "🪟";
-    return "🧼";
+  // ✅ UPDATED: Use your image icons instead of emoji
+  const iconSrcFor = (slug: string) => {
+    if (slug === "bin-cleaner") return "/icons/bin-cleaner.jpg";
+    if (slug === "window-cleaner") return "/icons/window-cleaner.jpg";
+    if (slug === "cleaner" || slug === "domestic-cleaner")
+      return "/icons/general-cleaner.jpg";
+    return null;
   };
 
   return (
     <div className="space-y-2">
-      <div className="text-sm font-medium">Industries (what you appear under)</div>
+      <div className="text-sm font-medium">
+        Industries (what you appear under)
+      </div>
       <div className="flex flex-wrap gap-2">
         {ordered.map((c) => {
           const checked = selected.has(c.id);
+          const iconSrc = iconSrcFor(c.slug);
+
           return (
             <button
               key={c.id}
@@ -212,14 +226,22 @@ function CategoryPills({
                   : "bg-white hover:bg-gray-50 border-gray-300",
               ].join(" ")}
             >
-              <span className="text-base leading-none">{iconFor(c.slug)}</span>
+              {iconSrc ? (
+                <img
+                  src={iconSrc}
+                  alt=""
+                  className="h-4 w-4 shrink-0"
+                  aria-hidden="true"
+                />
+              ) : null}
               <span>{c.name}</span>
             </button>
           );
         })}
       </div>
       <p className="text-xs text-gray-500">
-        These control search + dashboard tabs + area purchases. (You can add more later.)
+        These control search + dashboard tabs + area purchases. (You can add more
+        later.)
       </p>
     </div>
   );
@@ -268,7 +290,9 @@ export default function Settings() {
 
   // ✅ industries/categories state
   const [categories, setCategories] = useState<Category[]>([]);
-  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(new Set());
+  const [selectedCategoryIds, setSelectedCategoryIds] = useState<Set<string>>(
+    new Set()
+  );
   const [categoriesLoaded, setCategoriesLoaded] = useState(false);
 
   // logo state
@@ -329,10 +353,9 @@ export default function Settings() {
 
         // ✅ Load categories list (always)
         const { data: cats, error: catsErr } = await supabase
-  .from("service_categories")
-  .select("id,name,slug")
-  .order("name", { ascending: true });
-
+          .from("service_categories")
+          .select("id,name,slug")
+          .order("name", { ascending: true });
 
         if (catsErr) throw catsErr;
 
@@ -380,7 +403,9 @@ export default function Settings() {
 
         if (error) throw error;
 
-        const next = new Set<string>((picks ?? []).map((p: any) => String(p.category_id)));
+        const next = new Set<string>(
+          (picks ?? []).map((p: any) => String(p.category_id))
+        );
         if (!mounted) return;
         setSelectedCategoryIds(next);
         setCategoriesLoaded(true);
@@ -409,8 +434,12 @@ export default function Settings() {
     setAbout(c.about ?? "");
     setContactEmail(c.contact_email ?? fallbackEmail ?? "");
     setLogoPreview(c.logo_url ?? null);
-    setPaymentMethods(Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []);
-    setServiceTypes(Array.isArray(c.service_types) ? (c.service_types as string[]) : []);
+    setPaymentMethods(
+      Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []
+    );
+    setServiceTypes(
+      Array.isArray(c.service_types) ? (c.service_types as string[]) : []
+    );
 
     // ✅ NEW
     setGooglePlaceId((c as any).google_place_id ?? "");
@@ -533,28 +562,32 @@ export default function Settings() {
         google_place_id: googlePlaceId.trim() || null,
       };
 
-      const { error } = await supabase.from("cleaners").update(payload).eq("id", id);
+      const { error } = await supabase
+        .from("cleaners")
+        .update(payload)
+        .eq("id", id);
       if (error) throw error;
 
       // ✅ save category selections too
       await saveCategories(id);
 
-          // ✅ NEW: sync Google rating if Place ID exists
-    if (googlePlaceId.trim()) {
-      try {
-        await fetch("/.netlify/functions/syncGoogleRating", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ cleaner_id: id }),
-        });
-      } catch (e) {
-        console.warn("Google rating sync failed", e);
-        // Do NOT block saving if Google fails
+      // ✅ NEW: sync Google rating if Place ID exists
+      if (googlePlaceId.trim()) {
+        try {
+          await fetch("/.netlify/functions/syncGoogleRating", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cleaner_id: id }),
+          });
+        } catch (e) {
+          console.warn("Google rating sync failed", e);
+          // Do NOT block saving if Google fails
+        }
       }
-    }
 
-
-      setCleaner((prev) => (prev ? ({ ...prev, ...payload, id } as Cleaner) : prev));
+      setCleaner((prev) =>
+        prev ? ({ ...prev, ...payload, id } as Cleaner) : prev
+      );
       if (newLogo) setLogoPreview(newLogo);
       setLogoFile(null);
       setResizedLogo(null);
@@ -567,7 +600,10 @@ export default function Settings() {
     }
   }
 
-  const canSave = useMemo(() => businessName.trim().length > 0, [businessName]);
+  const canSave = useMemo(
+    () => businessName.trim().length > 0,
+    [businessName]
+  );
 
   // Build the preview object for the CleanerCard
   const previewCleaner: CleanerCardShape = useMemo(
@@ -597,7 +633,9 @@ export default function Settings() {
   );
 
   if (loading || !ready) {
-    return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
+    return (
+      <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>
+    );
   }
 
   return (
@@ -609,7 +647,9 @@ export default function Settings() {
 
       {/* TOP: Full-width preview */}
       <section className="p-0 bg-transparent border-0">
-        <h2 className="text-lg font-semibold mb-3">Business details (preview)</h2>
+        <h2 className="text-lg font-semibold mb-3">
+          Business details (preview)
+        </h2>
 
         <div className="rounded-xl border border-black/5 bg-white p-4">
           <CleanerCard cleaner={previewCleaner as any} showPayments />
@@ -674,7 +714,8 @@ export default function Settings() {
               placeholder="+447… or full wa.me link"
             />
             <span className="text-xs text-gray-500">
-              Enter an international number (e.g. +447…) or a full WhatsApp link.
+              Enter an international number (e.g. +447…) or a full WhatsApp
+              link.
             </span>
           </label>
 
@@ -721,7 +762,9 @@ export default function Settings() {
 
           {/* ✅ NEW: Google Place ID (optional) */}
           <div className="pt-2 border-t">
-            <div className="text-sm font-medium">Google Business Profile (optional)</div>
+            <div className="text-sm font-medium">
+              Google Business Profile (optional)
+            </div>
 
             <label className="block mt-2">
               <span className="text-sm">Google Place ID</span>
@@ -736,7 +779,8 @@ export default function Settings() {
                 placeholder="e.g. ChIJN1t_tDeuEmsRUsoyG83frY4"
               />
               <span className="text-xs text-gray-500">
-                Add your Place ID to show your Google rating under your name in listings.
+                Add your Place ID to show your Google rating under your name in
+                listings.
               </span>
             </label>
 
@@ -751,7 +795,9 @@ export default function Settings() {
           </div>
 
           <div>
-            <div className="text-sm font-medium">Logo (auto-resized to 300×300 PNG)</div>
+            <div className="text-sm font-medium">
+              Logo (auto-resized to 300×300 PNG)
+            </div>
             <input
               type="file"
               accept="image/*"
@@ -784,7 +830,9 @@ export default function Settings() {
                 className="mt-2 h-20 w-20 object-contain rounded bg-white"
               />
             )}
-            <p className="text-xs text-gray-500 mt-1">Preview shows the resized 300×300 image.</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Preview shows the resized 300×300 image.
+            </p>
           </div>
 
           {msg && <div className="text-green-700 text-sm">{msg}</div>}
