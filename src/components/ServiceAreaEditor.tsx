@@ -276,6 +276,7 @@ export default function ServiceAreaEditor({
 
   const mapRef = useRef<google.maps.Map | null>(null);
   const drawingMgrRef = useRef<google.maps.drawing.DrawingManager | null>(null);
+  const mapWrapRef = useRef<HTMLDivElement | null>(null);
 
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaRow[]>([]);
   const [sponsorship, setSponsorship] = useState<SponsorshipMap>({});
