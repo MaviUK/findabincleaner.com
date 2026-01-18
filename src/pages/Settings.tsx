@@ -197,10 +197,10 @@ function CategoryPills({
 
   // ✅ UPDATED: Use your image icons instead of emoji
   const iconSrcFor = (slug: string) => {
-    if (slug === "bin-cleaner") return "/icons/bin-cleaner.jpg";
-    if (slug === "window-cleaner") return "/icons/window-cleaner.jpg";
+    if (slug === "bin-cleaner") return "/icons/bin-cleaner.png";
+    if (slug === "window-cleaner") return "/icons/window-cleaner.png";
     if (slug === "cleaner" || slug === "domestic-cleaner")
-      return "/icons/general-cleaner.jpg";
+      return "/icons/general-cleaner.png";
     return null;
   };
 
