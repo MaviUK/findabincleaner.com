@@ -21,7 +21,7 @@ const SERVICE_BUTTONS: {
   {
     slug: "window-cleaner",
     label: "Window Cleaner",
-    icon: "/icons/window-cleaner.jpg",
+    icon: "/icons/window-cleaner.png",
     blurb: "Windows, frames, sills",
   },
   {
