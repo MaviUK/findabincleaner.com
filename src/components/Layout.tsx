@@ -46,7 +46,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               draggable={false}
             />
             <span className="font-extrabold tracking-tight text-gray-900 text-lg">
-              Clean<span className="text-emerald-600">.</span>ly
+              Klean<span className="text-emerald-600">.</span>ly
             </span>
           </Link>
 
@@ -82,5 +82,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
 
