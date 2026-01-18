@@ -15,7 +15,7 @@ const SERVICE_BUTTONS: {
   {
     slug: "bin-cleaner",
     label: "Bin Cleaner",
-    icon: "/icons/bin-cleaner.jpg",
+    icon: "/icons/bin-cleaner.png",
     blurb: "Wheelie bins, deep clean & deodorise",
   },
   {
@@ -27,7 +27,7 @@ const SERVICE_BUTTONS: {
   {
     slug: "cleaner",
     label: "General Cleaner",
-    icon: "/icons/general-cleaner.jpg",
+    icon: "/icons/general-cleaner.png",
     blurb: "General domestic cleaning",
   },
 ];
