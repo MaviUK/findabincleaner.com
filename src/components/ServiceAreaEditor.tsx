@@ -564,13 +564,10 @@ useEffect(() => {
     mapRef.current = map;
   }, []);
 
-  const zoomToArea = useCallback(
-    (area: ServiceAreaRow) => {
-      if (!isLoaded || !mapRef.current) return;
-
-      const scrollToMapOnMobile = useCallback(() => {
-  // Only on mobile / small screens
+  const scrollToMapOnMobile = useCallback(() => {
   if (typeof window === "undefined") return;
+
+  // Tailwind md breakpoint
   if (window.innerWidth >= 768) return;
 
   const el = document.getElementById("service-area-map");
@@ -578,12 +575,16 @@ useEffect(() => {
 
   el.scrollIntoView({ behavior: "smooth", block: "start" });
 
-  // Optional: offset for sticky header (tweak/remove if not needed)
+  // Optional offset for sticky header
   window.setTimeout(() => {
     window.scrollBy({ top: -80, behavior: "smooth" });
   }, 250);
 }, []);
 
+
+  const zoomToArea = useCallback(
+    (area: ServiceAreaRow) => {
+      if (!isLoaded || !mapRef.current) return;
 
       const gj = maybeParseGeo(area?.gj);
       if (!gj?.coordinates) return;
@@ -988,9 +989,11 @@ useEffect(() => {
                   >
                     <button
                       type="button"
-                      onClick={() =>   zoomToArea(a);
+                      onClick={() => {
+  zoomToArea(a);
   scrollToMapOnMobile();
 }}
+
                       className="text-left w-full group"
                       title="Click to zoom to this area"
                     >
