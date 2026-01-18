@@ -568,24 +568,19 @@ useEffect(() => {
   const scrollToMapOnMobile = useCallback(() => {
   if (typeof window === "undefined") return;
 
-  // More reliable than innerWidth on some mobile browser modes
   const isMobile = window.matchMedia("(max-width: 767px)").matches;
   if (!isMobile) return;
 
-  const el = document.getElementById("service-area-map");
-  if (!el) return;
-
-  // Delay slightly so GoogleMap/fitBounds/layout settles
+  // Wait until zoom/fitBounds has kicked in
   window.setTimeout(() => {
-    el.scrollIntoView({ behavior: "smooth", block: "start" });
+    mapWrapRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
 
-    // Optional offset if you have a sticky header
+    // Optional sticky header offset
     window.setTimeout(() => {
       window.scrollBy({ top: -80, behavior: "smooth" });
     }, 250);
-  }, 50);
+  }, 250);
 }, []);
-
 
 
   const zoomToArea = useCallback(
@@ -997,7 +992,7 @@ useEffect(() => {
                       type="button"
                       onClick={() => {
   zoomToArea(a);
-  scrollToMapOnMobile();
+  window.setTimeout(() => scrollToMapOnMobile(), 300);
 }}
 
                       className="text-left w-full group"
