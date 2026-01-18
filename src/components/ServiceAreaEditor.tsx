@@ -1139,7 +1139,7 @@ useEffect(() => {
         </div>
 
         {/* Map */}
-        <div className="md:col-span-8" id="service-area-map">
+        <div ref={mapWrapRef} className="md:col-span-8" id="service-area-map">
           {isLoaded ? (
             <GoogleMap
               mapContainerStyle={MAP_CONTAINER}
