@@ -301,6 +301,9 @@ export default function Settings() {
 
   const navigate = useNavigate();
 
+  // ✅ Address gating (trim whitespace)
+  const addressTrimmed = useMemo(() => (address ?? "").trim(), [address]);
+
   useEffect(() => {
     let mounted = true;
 
@@ -462,6 +465,10 @@ export default function Settings() {
   }
 
   async function ensureRow(): Promise<string> {
+    // ✅ Hard-block here too (prevents creating rows with empty address)
+    const addr = (address ?? "").trim();
+    if (!addr) throw new Error("Business address is required.");
+
     if (cleaner && cleaner.id) return cleaner.id;
 
     const { data: created, error } = await supabase
@@ -469,7 +476,7 @@ export default function Settings() {
       .insert({
         user_id: userId,
         business_name: businessName || null,
-        address: address || null,
+        address: addr, // ✅ always trimmed & required
         phone: phone || null,
         whatsapp: whatsapp || null,
         website: website || null,
@@ -544,6 +551,13 @@ export default function Settings() {
     setErr(null);
 
     try {
+      // ✅ Hard block (prevents bypass via devtools)
+      const addr = (address ?? "").trim();
+      if (!addr) {
+        setErr("Business address is required.");
+        return;
+      }
+
       const id = await ensureRow();
       const newLogo = await uploadLogoIfAny();
 
@@ -552,7 +566,7 @@ export default function Settings() {
         service_types?: string[];
       } = {
         business_name: businessName || null,
-        address: address || null,
+        address: addr, // ✅ always trimmed & required
         phone: phone || null,
         whatsapp: whatsapp || null,
         website: website || null,
@@ -607,9 +621,13 @@ export default function Settings() {
     );
   }, [phone, website, whatsapp]);
 
+  // ✅ UPDATED: require address too
   const canSave = useMemo(
-    () => businessName.trim().length > 0 && hasAnyContactMethod,
-    [businessName, hasAnyContactMethod]
+    () =>
+      businessName.trim().length > 0 &&
+      addressTrimmed.length > 0 &&
+      hasAnyContactMethod,
+    [businessName, addressTrimmed, hasAnyContactMethod]
   );
 
   // Build the preview object for the CleanerCard
@@ -702,6 +720,11 @@ export default function Settings() {
               onChange={(e) => setAddress(e.target.value)}
               placeholder="Street, Town, Postcode"
             />
+            {!addressTrimmed && (
+              <p className="mt-1 text-sm text-red-700">
+                Business address is required.
+              </p>
+            )}
           </label>
 
           <div className="grid md:grid-cols-2 gap-3">
@@ -860,12 +883,16 @@ export default function Settings() {
             disabled={!canSave || saving}
             onClick={save}
             title={
-              !hasAnyContactMethod
+              !addressTrimmed
+                ? "Add a business address to save."
+                : !hasAnyContactMethod
                 ? "Add at least one contact method (Phone, Website, or WhatsApp) to appear in results."
                 : undefined
             }
           >
-            {!hasAnyContactMethod
+            {!addressTrimmed
+              ? "Add business address to continue"
+              : !hasAnyContactMethod
               ? "Add contact details to continue"
               : saving
               ? "Saving…"
