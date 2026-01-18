@@ -568,6 +568,23 @@ useEffect(() => {
     (area: ServiceAreaRow) => {
       if (!isLoaded || !mapRef.current) return;
 
+      const scrollToMapOnMobile = useCallback(() => {
+  // Only on mobile / small screens
+  if (typeof window === "undefined") return;
+  if (window.innerWidth >= 768) return;
+
+  const el = document.getElementById("service-area-map");
+  if (!el) return;
+
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  // Optional: offset for sticky header (tweak/remove if not needed)
+  window.setTimeout(() => {
+    window.scrollBy({ top: -80, behavior: "smooth" });
+  }, 250);
+}, []);
+
+
       const gj = maybeParseGeo(area?.gj);
       if (!gj?.coordinates) return;
 
@@ -971,7 +988,9 @@ useEffect(() => {
                   >
                     <button
                       type="button"
-                      onClick={() => zoomToArea(a)}
+                      onClick={() =>   zoomToArea(a);
+  scrollToMapOnMobile();
+}}
                       className="text-left w-full group"
                       title="Click to zoom to this area"
                     >
@@ -1111,7 +1130,7 @@ useEffect(() => {
         </div>
 
         {/* Map */}
-        <div className="md:col-span-8">
+        <div className="md:col-span-8" id="service-area-map">
           {isLoaded ? (
             <GoogleMap
               mapContainerStyle={MAP_CONTAINER}
