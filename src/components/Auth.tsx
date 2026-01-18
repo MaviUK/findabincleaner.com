@@ -10,31 +10,48 @@ export default function Auth() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const goDashboard = () => {
+    // If you're using HashRouter anywhere, this prevents /dashboard server 404s
+    window.location.href = "/#/dashboard";
+  };
+
   const google = async () => {
-    setError(null); setBusy(true);
+    setError(null);
+    setBusy(true);
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: window.location.origin + "/#/dashboard" }
-window.location.href = "/#/dashboard";
+      options: {
+        redirectTo: window.location.origin + "/#/dashboard",
+      },
     });
+
     if (error) setError(error.message);
     setBusy(false);
   };
 
   const submit = async () => {
-    setError(null); setBusy(true);
+    setError(null);
+    setBusy(true);
+
     try {
       if (mode === "signup") {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({
+          email,
+          password,
+        });
         if (error) throw error;
       }
-      window.location.href = "/dashboard";
+
+      goDashboard();
     } catch (e: any) {
-      setError(e.message || "Auth failed");
-    } finally { setBusy(false); }
+      setError(e?.message || "Auth failed");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -43,19 +60,38 @@ window.location.href = "/#/dashboard";
         {mode === "signup" ? "Create your cleaner account" : "Log in"}
       </h1>
 
-      <button className="w-full border rounded px-4 py-2" onClick={google} disabled={busy}>
+      <button
+        className="w-full border rounded px-4 py-2"
+        onClick={google}
+        disabled={busy}
+        type="button"
+      >
         Continue with Google
       </button>
 
       <div className="text-center text-sm text-gray-500">or</div>
 
       <div className="space-y-2">
-        <input className="w-full border rounded px-3 py-2" placeholder="Email"
-               type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <input className="w-full border rounded px-3 py-2" placeholder="Password"
-               type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <button className="w-full bg-black text-white rounded px-4 py-2"
-                onClick={submit} disabled={busy}>
+        <input
+          className="w-full border rounded px-3 py-2"
+          placeholder="Email"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <input
+          className="w-full border rounded px-3 py-2"
+          placeholder="Password"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button
+          className="w-full bg-black text-white rounded px-4 py-2"
+          onClick={submit}
+          disabled={busy}
+          type="button"
+        >
           {mode === "signup" ? "Sign up" : "Log in"}
         </button>
       </div>
@@ -64,9 +100,27 @@ window.location.href = "/#/dashboard";
 
       <div className="text-sm">
         {mode === "signup" ? (
-          <>Already have an account? <button className="underline" onClick={() => setMode("login")}>Log in</button></>
+          <>
+            Already have an account?{" "}
+            <button
+              className="underline"
+              type="button"
+              onClick={() => setMode("login")}
+            >
+              Log in
+            </button>
+          </>
         ) : (
-          <>New cleaner? <button className="underline" onClick={() => setMode("signup")}>Create account</button></>
+          <>
+            New cleaner?{" "}
+            <button
+              className="underline"
+              type="button"
+              onClick={() => setMode("signup")}
+            >
+              Create account
+            </button>
+          </>
         )}
       </div>
     </div>
