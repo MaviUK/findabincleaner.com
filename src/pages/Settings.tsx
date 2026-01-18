@@ -1,5 +1,3 @@
-i also have them in this file
-
 // src/pages/Settings.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
