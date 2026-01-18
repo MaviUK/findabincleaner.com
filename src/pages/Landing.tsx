@@ -15,19 +15,19 @@ const SERVICE_BUTTONS: {
   {
     slug: "bin-cleaner",
     label: "Bin Cleaner",
-    icon: "🗑️",
+    icon: "/icons/bin-cleaner.jpg",
     blurb: "Wheelie bins, deep clean & deodorise",
   },
   {
     slug: "window-cleaner",
     label: "Window Cleaner",
-    icon: "🪟",
+    icon: "/icons/window-cleaner.jpg",
     blurb: "Windows, frames, sills",
   },
   {
     slug: "cleaner",
     label: "General Cleaner",
-    icon: "🧼",
+    icon: "/icons/general-cleaner.jpg",
     blurb: "General domestic cleaning",
   },
 ];
