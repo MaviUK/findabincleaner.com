@@ -567,19 +567,24 @@ useEffect(() => {
   const scrollToMapOnMobile = useCallback(() => {
   if (typeof window === "undefined") return;
 
-  // Tailwind md breakpoint
-  if (window.innerWidth >= 768) return;
+  // More reliable than innerWidth on some mobile browser modes
+  const isMobile = window.matchMedia("(max-width: 767px)").matches;
+  if (!isMobile) return;
 
   const el = document.getElementById("service-area-map");
   if (!el) return;
 
-  el.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  // Optional offset for sticky header
+  // Delay slightly so GoogleMap/fitBounds/layout settles
   window.setTimeout(() => {
-    window.scrollBy({ top: -80, behavior: "smooth" });
-  }, 250);
+    el.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    // Optional offset if you have a sticky header
+    window.setTimeout(() => {
+      window.scrollBy({ top: -80, behavior: "smooth" });
+    }, 250);
+  }, 50);
 }, []);
+
 
 
   const zoomToArea = useCallback(
