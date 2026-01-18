@@ -9,6 +9,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
   useEffect(() => {
     let mounted = true;
+
     (async () => {
       const {
         data: { session },
@@ -26,12 +27,14 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     };
   }, []);
 
-  const ctaHref = authed ? "/dashboard" : "/login?mode=signup";
-  const ctaLabel = authed ? "Dashboard" : "Register a Business";
   const hideCta = location.pathname === "/login";
 
   // ✅ One wrapper used everywhere (header + footer should match body rails)
   const WRAP = "mx-auto w-full max-w-7xl px-4 sm:px-6";
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -51,14 +54,39 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
           </Link>
 
           {!hideCta && (
-            <Link
-              to={ctaHref}
-              className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
-                         bg-gray-900 text-white hover:bg-black
-                         focus:outline-none focus:ring-4 focus:ring-black/20"
-            >
-              {ctaLabel}
-            </Link>
+            <div className="flex items-center gap-3">
+              {authed ? (
+                <>
+                  <Link
+                    to="/dashboard"
+                    className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
+                               bg-gray-900 text-white hover:bg-black
+                               focus:outline-none focus:ring-4 focus:ring-black/20"
+                  >
+                    Dashboard
+                  </Link>
+
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
+                               border border-gray-300 text-gray-700 hover:bg-gray-100
+                               focus:outline-none focus:ring-4 focus:ring-black/10"
+                  >
+                    Log out
+                  </button>
+                </>
+              ) : (
+                <Link
+                  to="/login?mode=signup"
+                  className="inline-flex items-center rounded-xl px-4 py-2 text-sm font-semibold
+                             bg-gray-900 text-white hover:bg-black
+                             focus:outline-none focus:ring-4 focus:ring-black/20"
+                >
+                  Register a Business
+                </Link>
+              )}
+            </div>
           )}
         </div>
       </header>
@@ -82,6 +110,3 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
-
-
-
