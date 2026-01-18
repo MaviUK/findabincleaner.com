@@ -7,89 +7,201 @@ const TERMS_VERSION = "2025-09-29";
 
 const TermsContent = () => (
   <div className="prose max-w-none">
-    <h2>Cleenly Marketplace – Business Terms & Conditions</h2>
+    <h2>Kleanly – Business Terms & Conditions</h2>
     <p><strong>Last updated:</strong> 29 September 2025</p>
     <p>
-      These Terms govern your use of the Cleenly Marketplace. By creating an
-      account or listing your business, you agree to these Terms.
-    </p>
+  These Business Terms & Conditions ("Terms") govern your use of the Kleanly
+  Marketplace ("Platform", "we", "us", "our"). By creating an account, listing
+  your business, or purchasing any services, you agree to be bound by these Terms.
+</p>
 
-    <h3>1. Using the Service</h3>
+<h3>1. Platform Role</h3>
+<ul>
+  <li>
+    Kleanly operates an online marketplace connecting consumers with independent
+    service providers.
+  </li>
+  <li>
+    We are not a party to any agreement between you and consumers and do not act
+    as your agent, partner, employee, or representative.
+  </li>
+  <li>
+    You provide services in your own name and at your own risk.
+  </li>
+</ul>
+
+<h3>2. Eligibility & Account Responsibility</h3>
+<ul>
+  <li>You must be at least 18 years old and authorised to act for your business.</li>
+  <li>
+    You are responsible for maintaining accurate account information and for all
+    activity carried out under your account.
+  </li>
+  <li>
+    You must notify us immediately of any unauthorised use of your account.
+  </li>
+</ul>
+
+<h3>3. Listings, Content & Service Areas</h3>
+<ul>
+  <li>
+    You are solely responsible for the accuracy, legality, and completeness of
+    your business listing, pricing, service descriptions, and availability.
+  </li>
+  <li>
+    You must draw and maintain your service areas accurately and keep them up to
+    date.
+  </li>
+  <li>
+    You confirm that you own or have permission to use all content you upload.
+  </li>
+  <li>
+    You grant us a non-exclusive, worldwide, royalty-free licence to host, display,
+    reproduce, and promote your content for operating and marketing the Platform.
+  </li>
+  <li>
+    We may edit, remove, or suspend listings that are misleading, unlawful, or
+    breach these Terms.
+  </li>
+</ul>
+
+<h3>4. Services to Consumers</h3>
+<ul>
+  <li>
+    All services are provided directly by you to consumers. You are solely
+    responsible for service quality, scheduling, pricing, cancellations,
+    refunds, and dispute resolution.
+  </li>
+  <li>
+    We do not guarantee any number of enquiries, bookings, or revenue.
+  </li>
+</ul>
+
+<h3>5. Reviews & Ratings</h3>
+<ul>
+  <li>
+    Consumers may leave reviews based on their experience.
+  </li>
+  <li>
+    We may remove reviews that are abusive, unlawful, or breach our content
+    policies but do not verify their accuracy.
+  </li>
+  <li>
+    You must not manipulate, fabricate, or incentivise reviews.
+  </li>
+</ul>
+
+<h3>6. Fees, Payments & Sponsorships</h3>
+<ul>
+  <li>
+    Listings may be free or paid depending on your plan. We may introduce or
+    change fees with reasonable notice.
+  </li>
+  <li>
+    Paid plans, featured placements, or sponsored service areas provide increased
+    visibility only and do not guarantee enquiries or bookings.
+  </li>
+  <li>
+    All fees are non-refundable unless required by law or explicitly stated.
+  </li>
+  <li>
+    Failure to pay may result in suspension or removal of your listing.
+  </li>
+</ul>
+
+<h3>7. Insurance & Compliance</h3>
+<ul>
+  <li>
+    You are responsible for holding all licences, approvals, and insurance
+    required to provide your services, including public liability insurance
+    where applicable.
+  </li>
+  <li>
+    You confirm compliance with all applicable laws and regulations.
+  </li>
+</ul>
+
+<h3>8. Prohibited Conduct</h3>
+<ul>
+  <li>No unlawful, misleading, infringing, or deceptive content or activity.</li>
+  <li>No scraping, data harvesting, reverse engineering, or interference with
+    the Platform.
+  </li>
+  <li>No attempts to bypass fees, rankings, or sponsored placements.</li>
+</ul>
+
+<h3>9. Availability & Changes</h3>
+<ul>
+  <li>
+    The Platform is provided “as is” and “as available”.
+  </li>
+  <li>
+    We may modify, suspend, or discontinue any part of the Platform at any time.
+  </li>
+</ul>
+
+<h3>10. Limitation of Liability</h3>
+<ul>
+  <li>
+    We are not liable for your services, consumer interactions, property damage,
+    personal injury, or disputes.
+  </li>
+  <li>
+    To the maximum extent permitted by law, we exclude liability for indirect,
+    incidental, or consequential losses.
+  </li>
+  <li>
+    Our total aggregate liability is limited to the greater of £250 or the fees
+    paid by you to us in the preceding 12 months.
+  </li>
+</ul>
+
+<h3>11. Indemnity</h3>
+<ul>
+  <li>
+    You agree to indemnify and hold us harmless from all claims, losses,
+    liabilities, damages, costs, and expenses arising from:
     <ul>
-      <li>You must be at least 18 and authorised to act for your business.</li>
-      <li>You are responsible for your account and all activity under it.</li>
+      <li>Your listing or content</li>
+      <li>Your services to consumers</li>
+      <li>Your breach of these Terms</li>
     </ul>
+  </li>
+</ul>
 
-    <h3>2. Your Listing & Content</h3>
-    <ul>
-      <li>You are responsible for accuracy and legality of your listing.</li>
-      <li>
-        You grant us a non-exclusive, royalty-free licence to host and display your
-        content for operating and promoting the service.
-      </li>
-    </ul>
+<h3>12. Suspension & Termination</h3>
+<ul>
+  <li>You may delete your account at any time.</li>
+  <li>
+    We may suspend or terminate your account immediately if you breach these
+    Terms, act unlawfully, or pose risk to consumers or the Platform.
+  </li>
+</ul>
 
-    <h3>3. Service Areas & Availability</h3>
-    <ul>
-      <li>You must draw and maintain your service areas accurately.</li>
-      <li>We are not party to any contract between you and consumers.</li>
-    </ul>
+<h3>13. Data Protection</h3>
+<ul>
+  <li>
+    We process personal data in accordance with our Privacy Notice and UK GDPR.
+  </li>
+  <li>
+    You are responsible for lawful handling of any customer data obtained
+    outside the Platform.
+  </li>
+</ul>
 
-    <h3>4. Reviews & Ratings</h3>
-    <ul>
-      <li>We may host reviews and may remove abusive or unlawful reviews.</li>
-    </ul>
+<h3>14. Governing Law</h3>
+<ul>
+  <li>
+    These Terms are governed by the laws of England and Wales.
+  </li>
+  <li>
+    The courts of England and Wales have exclusive jurisdiction.
+  </li>
+</ul>
 
-    <h3>5. Fees</h3>
-    <ul>
-      <li>Listings are currently free. We may introduce paid plans with notice.</li>
-    </ul>
-
-    <h3>6. Prohibited Conduct</h3>
-    <ul>
-      <li>No unlawful, infringing, or misleading content or activity.</li>
-      <li>No scraping, reverse-engineering, or service interference.</li>
-    </ul>
-
-    <h3>7. Data Protection & Privacy</h3>
-    <ul>
-      <li>See our Privacy Notice. You control any off-platform customer data.</li>
-    </ul>
-
-    <h3>8. Availability & Changes</h3>
-    <ul>
-      <li>The service is provided “as is”. We may update or discontinue features.</li>
-    </ul>
-
-    <h3>9. Liability</h3>
-    <ul>
-      <li>We are not liable for your services to consumers.</li>
-      <li>
-        To the extent permitted by law, we exclude indirect/consequential losses.
-        Our total liability is limited to £100 or fees paid in the prior 12 months.
-      </li>
-    </ul>
-
-    <h3>10. Indemnity</h3>
-    <ul>
-      <li>
-        You agree to indemnify us for claims arising from your listing, services, or
-        breach of these Terms.
-      </li>
-    </ul>
-
-    <h3>11. Termination</h3>
-    <ul>
-      <li>You may delete your account at any time.</li>
-      <li>We may suspend or terminate for breach or legal reasons.</li>
-    </ul>
-
-    <h3>12. Governing Law</h3>
-    <ul>
-      <li>England &amp; Wales law, courts of England &amp; Wales have exclusive jurisdiction.</li>
-    </ul>
-
-    <p><strong>Contact:</strong> cleenlymarketplace@gmail.com</p>
+<p>
+  <strong>Contact:</strong> support@klean.ly
+</p>
     <p className="text-sm text-gray-500">
       Version: <code>v{TERMS_VERSION}</code>
     </p>
