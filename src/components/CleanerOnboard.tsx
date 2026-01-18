@@ -73,6 +73,10 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
 
   const [ring, setRing] = useState<google.maps.LatLngLiteral[] | null>(null);
 
+  // ✅ Require address before save (trim whitespace)
+  const addressTrimmed = (address ?? "").trim();
+  const canSave = Boolean(addressTrimmed) && !saving;
+
   // Memoize libraries with correct type to avoid warnings & TS errors
   const libraries = useMemo<Libraries>(() => ["drawing", "places"], []);
   const { isLoaded, loadError } = useLoadScript({
@@ -89,7 +93,7 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
     const sb = searchBoxRef.current;
     const place = sb?.getPlaces()?.[0];
     if (!place) return;
-    setAddress(place.formatted_address || inputRef.current?.value || "");
+    setAddress((place.formatted_address || inputRef.current?.value || "").trim());
   };
 
   const onPolygonComplete = (poly: google.maps.Polygon) => {
@@ -134,16 +138,26 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
   };
 
   const save = async () => {
-    setSaving(true); setMsg(null); setError(null);
+    setSaving(true);
+    setMsg(null);
+    setError(null);
+
     try {
+      // ✅ Hard block (prevents bypass via devtools)
+      const addr = (address ?? "").trim();
+      if (!addr) {
+        setError("Please add your business address before saving.");
+        return;
+      }
+
       const logoUrl = await uploadLogo();
 
       // optional client geocode
       let latLng: google.maps.LatLngLiteral | null = null;
-      if (address && isLoaded && (window as any).google?.maps?.Geocoder) {
+      if (addr && isLoaded && (window as any).google?.maps?.Geocoder) {
         latLng = await new Promise<google.maps.LatLngLiteral | null>((resolve) => {
           const geocoder = new google.maps.Geocoder();
-          geocoder.geocode({ address }, (results, status) => {
+          geocoder.geocode({ address: addr }, (results, status) => {
             if (status === "OK" && results?.[0]) {
               const g = results[0].geometry.location;
               resolve({ lat: g.lat(), lng: g.lng() });
@@ -154,7 +168,7 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
 
       const payload: Partial<Cleaner> = {
         business_name: businessName || cleaner.business_name,
-        address: address || cleaner.address,
+        address: addr, // ✅ always trimmed & non-empty
         logo_url: logoUrl || cleaner.logo_url,
       };
 
@@ -249,9 +263,20 @@ export default function CleanerOnboard({ userId, cleaner, onSaved }: Props) {
               onChange={(e) => setAddress(e.target.value)}
             />
           )}
+
+          {/* ✅ helper text when missing */}
+          {!addressTrimmed && (
+            <p className="mt-1 text-sm text-red-700">Address is required to save your profile.</p>
+          )}
         </label>
 
-        <button className="bg-black text-white rounded px-4 py-2" onClick={save} disabled={saving}>
+        <button
+          className={`bg-black text-white rounded px-4 py-2 ${
+            !canSave ? "opacity-50 cursor-not-allowed" : ""
+          }`}
+          onClick={save}
+          disabled={!canSave}
+        >
           {saving ? "Saving…" : "Save details"}
         </button>
 
