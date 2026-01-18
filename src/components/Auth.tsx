@@ -14,7 +14,8 @@ export default function Auth() {
     setError(null); setBusy(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: window.location.origin + "/dashboard" }
+      options: { redirectTo: window.location.origin + "/#/dashboard" }
+window.location.href = "/#/dashboard";
     });
     if (error) setError(error.message);
     setBusy(false);
