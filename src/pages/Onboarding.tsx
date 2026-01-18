@@ -6,191 +6,138 @@ import { supabase } from "../lib/supabase";
 const TERMS_VERSION = "2025-09-29";
 
 const TermsContent = () => (
-  <div
-    className={[
-      // base prose
-      "prose max-w-none",
+  <div className="max-w-none text-gray-900">
+    <h2 className="text-xl font-extrabold">Kleanly – Business Terms &amp; Conditions</h2>
 
-      // headings: bigger + bold + spacing above
-      "prose-h2:text-2xl prose-h2:font-extrabold prose-h2:mb-2",
-      "prose-h3:text-lg prose-h3:font-bold prose-h3:mt-6 prose-h3:mb-2",
-
-      // paragraphs: slightly tighter, readable
-      "prose-p:my-3",
-
-      // lists: consistent spacing
-      "prose-ul:my-3 prose-li:my-1",
-    ].join(" ")}
-  >
-    <h2>Kleanly – Business Terms &amp; Conditions</h2>
-
-    <p className="text-sm text-gray-600">
+    <p className="mt-2 text-sm text-gray-600">
       <strong>Last updated:</strong> 29 September 2025
     </p>
 
-    <p>
-      These Business Terms &amp; Conditions ("Terms") govern your use of the
-      Kleanly Marketplace ("Platform", "we", "us", "our"). By creating an
-      account, listing your business, or purchasing any services, you agree to
-      be bound by these Terms.
+    <p className="mt-4 leading-7">
+      These Business Terms &amp; Conditions ("Terms") govern your use of the Kleanly
+      Marketplace ("Platform", "we", "us", "our"). By creating an account, listing
+      your business, or purchasing any services, you agree to be bound by these Terms.
     </p>
 
-    <h3>1. Platform Role</h3>
-    <p>
-      Kleanly operates an online marketplace connecting consumers with
-      independent service providers.
+    {/* --- Section 1 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">1. Platform Role</h3>
+    <p className="mt-2 leading-7">
+      Kleanly operates an online marketplace connecting consumers with independent service providers.
     </p>
-    <ul>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>
-        We are not a party to any agreement between you and consumers and do not
-        act as your agent, partner, employee, or representative.
+        We are not a party to any agreement between you and consumers and do not act as your agent,
+        partner, employee, or representative.
       </li>
       <li>You provide services in your own name and at your own risk.</li>
     </ul>
 
-    <h3>2. Eligibility &amp; Account Responsibility</h3>
-    <p>To use the Platform as a business, you must meet the following conditions:</p>
-    <ul>
-      <li>
-        You must be at least 18 years old and authorised to act for your business.
-      </li>
-      <li>
-        You are responsible for maintaining accurate account information and for
-        all activity carried out under your account.
-      </li>
+    {/* --- Section 2 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">2. Eligibility &amp; Account Responsibility</h3>
+    <p className="mt-2 leading-7">To use the Platform as a business, you must meet the following conditions:</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>You must be at least 18 years old and authorised to act for your business.</li>
+      <li>You are responsible for maintaining accurate account information and for all activity carried out under your account.</li>
       <li>You must notify us immediately of any unauthorised use of your account.</li>
     </ul>
 
-    <h3>3. Listings, Content &amp; Service Areas</h3>
-    <p>
-      You control what you publish on the Platform and are responsible for keeping
-      it accurate and lawful.
+    {/* --- Section 3 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">3. Listings, Content &amp; Service Areas</h3>
+    <p className="mt-2 leading-7">
+      You control what you publish on the Platform and are responsible for keeping it accurate and lawful.
     </p>
-    <ul>
-      <li>
-        You are solely responsible for the accuracy, legality, and completeness of
-        your business listing, pricing, service descriptions, and availability.
-      </li>
-      <li>
-        You must draw and maintain your service areas accurately and keep them up to
-        date.
-      </li>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>You are solely responsible for the accuracy, legality, and completeness of your business listing, pricing, service descriptions, and availability.</li>
+      <li>You must draw and maintain your service areas accurately and keep them up to date.</li>
       <li>You confirm that you own or have permission to use all content you upload.</li>
-      <li>
-        You grant us a non-exclusive, worldwide, royalty-free licence to host,
-        display, reproduce, and promote your content for operating and marketing
-        the Platform.
-      </li>
-      <li>
-        We may edit, remove, or suspend listings that are misleading, unlawful, or
-        breach these Terms.
-      </li>
+      <li>You grant us a non-exclusive, worldwide, royalty-free licence to host, display, reproduce, and promote your content for operating and marketing the Platform.</li>
+      <li>We may edit, remove, or suspend listings that are misleading, unlawful, or breach these Terms.</li>
     </ul>
 
-    <h3>4. Services to Consumers</h3>
-    <p>
+    {/* --- Section 4 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">4. Services to Consumers</h3>
+    <p className="mt-2 leading-7">
       Any work booked through Kleanly is provided by you directly to the consumer.
     </p>
-    <ul>
-      <li>
-        You are solely responsible for service quality, scheduling, pricing,
-        cancellations, refunds, and dispute resolution.
-      </li>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>You are solely responsible for service quality, scheduling, pricing, cancellations, refunds, and dispute resolution.</li>
       <li>We do not guarantee any number of enquiries, bookings, or revenue.</li>
     </ul>
 
-    <h3>5. Reviews &amp; Ratings</h3>
-    <p>
-      Consumers may leave reviews based on their experience of your services.
-    </p>
-    <ul>
+    {/* --- Section 5 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">5. Reviews &amp; Ratings</h3>
+    <p className="mt-2 leading-7">Consumers may leave reviews based on their experience of your services.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>We may remove reviews that are abusive, unlawful, or breach our policies.</li>
       <li>We do not verify the accuracy of reviews.</li>
       <li>You must not manipulate, fabricate, or incentivise reviews.</li>
     </ul>
 
-    <h3>6. Fees, Payments &amp; Sponsorships</h3>
-    <p>
-      Some features may be free or paid depending on your plan and selections.
-    </p>
-    <ul>
-      <li>
-        Listings may be free or paid depending on your plan. We may introduce or
-        change fees with reasonable notice.
-      </li>
-      <li>
-        Paid plans, featured placements, or sponsored service areas provide increased
-        visibility only and do not guarantee enquiries or bookings.
-      </li>
-      <li>
-        All fees are non-refundable unless required by law or explicitly stated.
-      </li>
+    {/* --- Section 6 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">6. Fees, Payments &amp; Sponsorships</h3>
+    <p className="mt-2 leading-7">Some features may be free or paid depending on your plan and selections.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>Listings may be free or paid depending on your plan. We may introduce or change fees with reasonable notice.</li>
+      <li>Paid plans, featured placements, or sponsored service areas provide increased visibility only and do not guarantee enquiries or bookings.</li>
+      <li>All fees are non-refundable unless required by law or explicitly stated.</li>
       <li>Failure to pay may result in suspension or removal of your listing.</li>
     </ul>
 
-    <h3>7. Insurance &amp; Compliance</h3>
-    <p>
-      You are responsible for meeting all legal and insurance requirements for
-      your services.
+    {/* --- Section 7 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">7. Insurance &amp; Compliance</h3>
+    <p className="mt-2 leading-7">
+      You are responsible for meeting all legal and insurance requirements for your services.
     </p>
-    <ul>
-      <li>
-        You are responsible for holding all licences, approvals, and insurance
-        required to provide your services, including public liability insurance
-        where applicable.
-      </li>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>You are responsible for holding all licences, approvals, and insurance required to provide your services, including public liability insurance where applicable.</li>
       <li>You confirm compliance with all applicable laws and regulations.</li>
     </ul>
 
-    <h3>8. Prohibited Conduct</h3>
-    <p>You must not misuse the Platform or harm its operation.</p>
-    <ul>
+    {/* --- Section 8 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">8. Prohibited Conduct</h3>
+    <p className="mt-2 leading-7">You must not misuse the Platform or harm its operation.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>No unlawful, misleading, infringing, or deceptive content or activity.</li>
-      <li>
-        No scraping, data harvesting, reverse engineering, or interference with the
-        Platform.
-      </li>
+      <li>No scraping, data harvesting, reverse engineering, or interference with the Platform.</li>
       <li>No attempts to bypass fees, rankings, or sponsored placements.</li>
     </ul>
 
-    <h3>9. Availability &amp; Changes</h3>
-    <p>
-      We may update the Platform over time and cannot guarantee uninterrupted access.
-    </p>
-    <ul>
+    {/* --- Section 9 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">9. Availability &amp; Changes</h3>
+    <p className="mt-2 leading-7">We may update the Platform over time and cannot guarantee uninterrupted access.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>The Platform is provided “as is” and “as available”.</li>
       <li>We may modify, suspend, or discontinue any part of the Platform at any time.</li>
     </ul>
 
-    <h3>10. Limitation of Liability</h3>
-    <p>
-      Your relationship with consumers is your responsibility. Our liability is limited
-      as set out below.
-    </p>
-    <ul>
-      <li>
-        We are not liable for your services, consumer interactions, property damage,
-        personal injury, or disputes.
-      </li>
-      <li>
-        To the maximum extent permitted by law, we exclude liability for indirect,
-        incidental, or consequential losses.
-      </li>
-      <li>
-        Our total aggregate liability is limited to the greater of £250 or the fees
-        paid by you to us in the preceding 12 months.
-      </li>
+    {/* --- Section 10 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">10. Limitation of Liability</h3>
+    <p className="mt-2 leading-7">Your relationship with consumers is your responsibility. Our liability is limited as set out below.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
+      <li>We are not liable for your services, consumer interactions, property damage, personal injury, or disputes.</li>
+      <li>To the maximum extent permitted by law, we exclude liability for indirect, incidental, or consequential losses.</li>
+      <li>Our total aggregate liability is limited to the greater of £250 or the fees paid by you to us in the preceding 12 months.</li>
     </ul>
 
-    <h3>11. Indemnity</h3>
-    <p>
-      You agree to protect us from claims connected with your listing and services.
-    </p>
-    <ul>
+    {/* --- Section 11 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">11. Indemnity</h3>
+    <p className="mt-2 leading-7">You agree to protect us from claims connected with your listing and services.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>
-        You agree to indemnify and hold us harmless from all claims, losses,
-        liabilities, damages, costs, and expenses arising from:
-        <ul>
+        You agree to indemnify and hold us harmless from all claims, losses, liabilities, damages,
+        costs, and expenses arising from:
+        <ul className="mt-2 list-disc pl-5 space-y-1">
           <li>Your listing or content</li>
           <li>Your services to consumers</li>
           <li>Your breach of these Terms</li>
@@ -198,46 +145,40 @@ const TermsContent = () => (
       </li>
     </ul>
 
-    <h3>12. Suspension &amp; Termination</h3>
-    <p>
-      We may remove access to protect consumers and the Platform.
-    </p>
-    <ul>
+    {/* --- Section 12 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">12. Suspension &amp; Termination</h3>
+    <p className="mt-2 leading-7">We may remove access to protect consumers and the Platform.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>You may delete your account at any time.</li>
-      <li>
-        We may suspend or terminate your account immediately if you breach these
-        Terms, act unlawfully, or pose risk to consumers or the Platform.
-      </li>
+      <li>We may suspend or terminate your account immediately if you breach these Terms, act unlawfully, or pose risk to consumers or the Platform.</li>
     </ul>
 
-    <h3>13. Data Protection</h3>
-    <p>
-      We process personal data in line with our Privacy Notice. You must handle customer
-      data lawfully.
-    </p>
-    <ul>
+    {/* --- Section 13 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">13. Data Protection</h3>
+    <p className="mt-2 leading-7">We process personal data in line with our Privacy Notice. You must handle customer data lawfully.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>We process personal data in accordance with our Privacy Notice and UK GDPR.</li>
-      <li>
-        You are responsible for lawful handling of any customer data obtained outside
-        the Platform.
-      </li>
+      <li>You are responsible for lawful handling of any customer data obtained outside the Platform.</li>
     </ul>
 
-    <h3>14. Governing Law</h3>
-    <p>
-      These Terms are governed by the laws stated below.
-    </p>
-    <ul>
+    {/* --- Section 14 --- */}
+    <div className="h-5" />
+    <h3 className="text-lg font-bold">14. Governing Law</h3>
+    <p className="mt-2 leading-7">These Terms are governed by the laws stated below.</p>
+    <ul className="mt-2 list-disc pl-5 space-y-1">
       <li>These Terms are governed by the laws of England and Wales.</li>
       <li>The courts of England and Wales have exclusive jurisdiction.</li>
     </ul>
 
-    <p className="mt-6">
+    <div className="h-5" />
+    <p className="leading-7">
       <strong>Contact:</strong> support@klean.ly
     </p>
 
-    <p className="text-sm text-gray-500">
-      Version: <code>v{TERMS_VERSION}</code>
+    <p className="mt-2 text-sm text-gray-500">
+      Version: <code className="px-1 py-0.5 rounded bg-gray-100">v{TERMS_VERSION}</code>
     </p>
   </div>
 );
