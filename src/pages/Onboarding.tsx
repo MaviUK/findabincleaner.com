@@ -6,202 +6,236 @@ import { supabase } from "../lib/supabase";
 const TERMS_VERSION = "2025-09-29";
 
 const TermsContent = () => (
-  <div className="prose max-w-none">
-    <h2>Kleanly – Business Terms & Conditions</h2>
-    <p><strong>Last updated:</strong> 29 September 2025</p>
+  <div
+    className={[
+      // base prose
+      "prose max-w-none",
+
+      // headings: bigger + bold + spacing above
+      "prose-h2:text-2xl prose-h2:font-extrabold prose-h2:mb-2",
+      "prose-h3:text-lg prose-h3:font-bold prose-h3:mt-6 prose-h3:mb-2",
+
+      // paragraphs: slightly tighter, readable
+      "prose-p:my-3",
+
+      // lists: consistent spacing
+      "prose-ul:my-3 prose-li:my-1",
+    ].join(" ")}
+  >
+    <h2>Kleanly – Business Terms &amp; Conditions</h2>
+
+    <p className="text-sm text-gray-600">
+      <strong>Last updated:</strong> 29 September 2025
+    </p>
+
     <p>
-  These Business Terms & Conditions ("Terms") govern your use of the Kleanly
-  Marketplace ("Platform", "we", "us", "our"). By creating an account, listing
-  your business, or purchasing any services, you agree to be bound by these Terms.
-</p>
+      These Business Terms &amp; Conditions ("Terms") govern your use of the
+      Kleanly Marketplace ("Platform", "we", "us", "our"). By creating an
+      account, listing your business, or purchasing any services, you agree to
+      be bound by these Terms.
+    </p>
 
-<h3>1. Platform Role</h3>
-<ul>
-  <li>
-    Kleanly operates an online marketplace connecting consumers with independent
-    service providers.
-  </li>
-  <li>
-    We are not a party to any agreement between you and consumers and do not act
-    as your agent, partner, employee, or representative.
-  </li>
-  <li>
-    You provide services in your own name and at your own risk.
-  </li>
-</ul>
-
-<h3>2. Eligibility & Account Responsibility</h3>
-<ul>
-  <li>You must be at least 18 years old and authorised to act for your business.</li>
-  <li>
-    You are responsible for maintaining accurate account information and for all
-    activity carried out under your account.
-  </li>
-  <li>
-    You must notify us immediately of any unauthorised use of your account.
-  </li>
-</ul>
-
-<h3>3. Listings, Content & Service Areas</h3>
-<ul>
-  <li>
-    You are solely responsible for the accuracy, legality, and completeness of
-    your business listing, pricing, service descriptions, and availability.
-  </li>
-  <li>
-    You must draw and maintain your service areas accurately and keep them up to
-    date.
-  </li>
-  <li>
-    You confirm that you own or have permission to use all content you upload.
-  </li>
-  <li>
-    You grant us a non-exclusive, worldwide, royalty-free licence to host, display,
-    reproduce, and promote your content for operating and marketing the Platform.
-  </li>
-  <li>
-    We may edit, remove, or suspend listings that are misleading, unlawful, or
-    breach these Terms.
-  </li>
-</ul>
-
-<h3>4. Services to Consumers</h3>
-<ul>
-  <li>
-    All services are provided directly by you to consumers. You are solely
-    responsible for service quality, scheduling, pricing, cancellations,
-    refunds, and dispute resolution.
-  </li>
-  <li>
-    We do not guarantee any number of enquiries, bookings, or revenue.
-  </li>
-</ul>
-
-<h3>5. Reviews & Ratings</h3>
-<ul>
-  <li>
-    Consumers may leave reviews based on their experience.
-  </li>
-  <li>
-    We may remove reviews that are abusive, unlawful, or breach our content
-    policies but do not verify their accuracy.
-  </li>
-  <li>
-    You must not manipulate, fabricate, or incentivise reviews.
-  </li>
-</ul>
-
-<h3>6. Fees, Payments & Sponsorships</h3>
-<ul>
-  <li>
-    Listings may be free or paid depending on your plan. We may introduce or
-    change fees with reasonable notice.
-  </li>
-  <li>
-    Paid plans, featured placements, or sponsored service areas provide increased
-    visibility only and do not guarantee enquiries or bookings.
-  </li>
-  <li>
-    All fees are non-refundable unless required by law or explicitly stated.
-  </li>
-  <li>
-    Failure to pay may result in suspension or removal of your listing.
-  </li>
-</ul>
-
-<h3>7. Insurance & Compliance</h3>
-<ul>
-  <li>
-    You are responsible for holding all licences, approvals, and insurance
-    required to provide your services, including public liability insurance
-    where applicable.
-  </li>
-  <li>
-    You confirm compliance with all applicable laws and regulations.
-  </li>
-</ul>
-
-<h3>8. Prohibited Conduct</h3>
-<ul>
-  <li>No unlawful, misleading, infringing, or deceptive content or activity.</li>
-  <li>No scraping, data harvesting, reverse engineering, or interference with
-    the Platform.
-  </li>
-  <li>No attempts to bypass fees, rankings, or sponsored placements.</li>
-</ul>
-
-<h3>9. Availability & Changes</h3>
-<ul>
-  <li>
-    The Platform is provided “as is” and “as available”.
-  </li>
-  <li>
-    We may modify, suspend, or discontinue any part of the Platform at any time.
-  </li>
-</ul>
-
-<h3>10. Limitation of Liability</h3>
-<ul>
-  <li>
-    We are not liable for your services, consumer interactions, property damage,
-    personal injury, or disputes.
-  </li>
-  <li>
-    To the maximum extent permitted by law, we exclude liability for indirect,
-    incidental, or consequential losses.
-  </li>
-  <li>
-    Our total aggregate liability is limited to the greater of £250 or the fees
-    paid by you to us in the preceding 12 months.
-  </li>
-</ul>
-
-<h3>11. Indemnity</h3>
-<ul>
-  <li>
-    You agree to indemnify and hold us harmless from all claims, losses,
-    liabilities, damages, costs, and expenses arising from:
+    <h3>1. Platform Role</h3>
+    <p>
+      Kleanly operates an online marketplace connecting consumers with
+      independent service providers.
+    </p>
     <ul>
-      <li>Your listing or content</li>
-      <li>Your services to consumers</li>
-      <li>Your breach of these Terms</li>
+      <li>
+        We are not a party to any agreement between you and consumers and do not
+        act as your agent, partner, employee, or representative.
+      </li>
+      <li>You provide services in your own name and at your own risk.</li>
     </ul>
-  </li>
-</ul>
 
-<h3>12. Suspension & Termination</h3>
-<ul>
-  <li>You may delete your account at any time.</li>
-  <li>
-    We may suspend or terminate your account immediately if you breach these
-    Terms, act unlawfully, or pose risk to consumers or the Platform.
-  </li>
-</ul>
+    <h3>2. Eligibility &amp; Account Responsibility</h3>
+    <p>To use the Platform as a business, you must meet the following conditions:</p>
+    <ul>
+      <li>
+        You must be at least 18 years old and authorised to act for your business.
+      </li>
+      <li>
+        You are responsible for maintaining accurate account information and for
+        all activity carried out under your account.
+      </li>
+      <li>You must notify us immediately of any unauthorised use of your account.</li>
+    </ul>
 
-<h3>13. Data Protection</h3>
-<ul>
-  <li>
-    We process personal data in accordance with our Privacy Notice and UK GDPR.
-  </li>
-  <li>
-    You are responsible for lawful handling of any customer data obtained
-    outside the Platform.
-  </li>
-</ul>
+    <h3>3. Listings, Content &amp; Service Areas</h3>
+    <p>
+      You control what you publish on the Platform and are responsible for keeping
+      it accurate and lawful.
+    </p>
+    <ul>
+      <li>
+        You are solely responsible for the accuracy, legality, and completeness of
+        your business listing, pricing, service descriptions, and availability.
+      </li>
+      <li>
+        You must draw and maintain your service areas accurately and keep them up to
+        date.
+      </li>
+      <li>You confirm that you own or have permission to use all content you upload.</li>
+      <li>
+        You grant us a non-exclusive, worldwide, royalty-free licence to host,
+        display, reproduce, and promote your content for operating and marketing
+        the Platform.
+      </li>
+      <li>
+        We may edit, remove, or suspend listings that are misleading, unlawful, or
+        breach these Terms.
+      </li>
+    </ul>
 
-<h3>14. Governing Law</h3>
-<ul>
-  <li>
-    These Terms are governed by the laws of England and Wales.
-  </li>
-  <li>
-    The courts of England and Wales have exclusive jurisdiction.
-  </li>
-</ul>
+    <h3>4. Services to Consumers</h3>
+    <p>
+      Any work booked through Kleanly is provided by you directly to the consumer.
+    </p>
+    <ul>
+      <li>
+        You are solely responsible for service quality, scheduling, pricing,
+        cancellations, refunds, and dispute resolution.
+      </li>
+      <li>We do not guarantee any number of enquiries, bookings, or revenue.</li>
+    </ul>
 
-<p>
-  <strong>Contact:</strong> support@klean.ly
-</p>
+    <h3>5. Reviews &amp; Ratings</h3>
+    <p>
+      Consumers may leave reviews based on their experience of your services.
+    </p>
+    <ul>
+      <li>We may remove reviews that are abusive, unlawful, or breach our policies.</li>
+      <li>We do not verify the accuracy of reviews.</li>
+      <li>You must not manipulate, fabricate, or incentivise reviews.</li>
+    </ul>
+
+    <h3>6. Fees, Payments &amp; Sponsorships</h3>
+    <p>
+      Some features may be free or paid depending on your plan and selections.
+    </p>
+    <ul>
+      <li>
+        Listings may be free or paid depending on your plan. We may introduce or
+        change fees with reasonable notice.
+      </li>
+      <li>
+        Paid plans, featured placements, or sponsored service areas provide increased
+        visibility only and do not guarantee enquiries or bookings.
+      </li>
+      <li>
+        All fees are non-refundable unless required by law or explicitly stated.
+      </li>
+      <li>Failure to pay may result in suspension or removal of your listing.</li>
+    </ul>
+
+    <h3>7. Insurance &amp; Compliance</h3>
+    <p>
+      You are responsible for meeting all legal and insurance requirements for
+      your services.
+    </p>
+    <ul>
+      <li>
+        You are responsible for holding all licences, approvals, and insurance
+        required to provide your services, including public liability insurance
+        where applicable.
+      </li>
+      <li>You confirm compliance with all applicable laws and regulations.</li>
+    </ul>
+
+    <h3>8. Prohibited Conduct</h3>
+    <p>You must not misuse the Platform or harm its operation.</p>
+    <ul>
+      <li>No unlawful, misleading, infringing, or deceptive content or activity.</li>
+      <li>
+        No scraping, data harvesting, reverse engineering, or interference with the
+        Platform.
+      </li>
+      <li>No attempts to bypass fees, rankings, or sponsored placements.</li>
+    </ul>
+
+    <h3>9. Availability &amp; Changes</h3>
+    <p>
+      We may update the Platform over time and cannot guarantee uninterrupted access.
+    </p>
+    <ul>
+      <li>The Platform is provided “as is” and “as available”.</li>
+      <li>We may modify, suspend, or discontinue any part of the Platform at any time.</li>
+    </ul>
+
+    <h3>10. Limitation of Liability</h3>
+    <p>
+      Your relationship with consumers is your responsibility. Our liability is limited
+      as set out below.
+    </p>
+    <ul>
+      <li>
+        We are not liable for your services, consumer interactions, property damage,
+        personal injury, or disputes.
+      </li>
+      <li>
+        To the maximum extent permitted by law, we exclude liability for indirect,
+        incidental, or consequential losses.
+      </li>
+      <li>
+        Our total aggregate liability is limited to the greater of £250 or the fees
+        paid by you to us in the preceding 12 months.
+      </li>
+    </ul>
+
+    <h3>11. Indemnity</h3>
+    <p>
+      You agree to protect us from claims connected with your listing and services.
+    </p>
+    <ul>
+      <li>
+        You agree to indemnify and hold us harmless from all claims, losses,
+        liabilities, damages, costs, and expenses arising from:
+        <ul>
+          <li>Your listing or content</li>
+          <li>Your services to consumers</li>
+          <li>Your breach of these Terms</li>
+        </ul>
+      </li>
+    </ul>
+
+    <h3>12. Suspension &amp; Termination</h3>
+    <p>
+      We may remove access to protect consumers and the Platform.
+    </p>
+    <ul>
+      <li>You may delete your account at any time.</li>
+      <li>
+        We may suspend or terminate your account immediately if you breach these
+        Terms, act unlawfully, or pose risk to consumers or the Platform.
+      </li>
+    </ul>
+
+    <h3>13. Data Protection</h3>
+    <p>
+      We process personal data in line with our Privacy Notice. You must handle customer
+      data lawfully.
+    </p>
+    <ul>
+      <li>We process personal data in accordance with our Privacy Notice and UK GDPR.</li>
+      <li>
+        You are responsible for lawful handling of any customer data obtained outside
+        the Platform.
+      </li>
+    </ul>
+
+    <h3>14. Governing Law</h3>
+    <p>
+      These Terms are governed by the laws stated below.
+    </p>
+    <ul>
+      <li>These Terms are governed by the laws of England and Wales.</li>
+      <li>The courts of England and Wales have exclusive jurisdiction.</li>
+    </ul>
+
+    <p className="mt-6">
+      <strong>Contact:</strong> support@klean.ly
+    </p>
+
     <p className="text-sm text-gray-500">
       Version: <code>v{TERMS_VERSION}</code>
     </p>
@@ -219,8 +253,13 @@ export default function Onboarding() {
   // If already accepted, bounce to settings
   useEffect(() => {
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.user) { nav("/login", { replace: true }); return; }
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (!session?.user) {
+        nav("/login", { replace: true });
+        return;
+      }
 
       const { data: me, error } = await supabase
         .from("cleaners")
@@ -247,7 +286,9 @@ export default function Onboarding() {
       setSaving(true);
       setErr(null);
 
-      const { data: { session } } = await supabase.auth.getSession();
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
       if (!session?.user) throw new Error("Not signed in.");
 
       // 1) Find existing row
@@ -263,7 +304,9 @@ export default function Onboarding() {
         const fallbackName =
           (session.user.user_metadata as any)?.business_name ??
           (session.user.user_metadata as any)?.name ??
-          (session.user.email ? `${session.user.email.split("@")[0]} Bin Cleaning` : "New Cleaner");
+          (session.user.email
+            ? `${session.user.email.split("@")[0]} Bin Cleaning`
+            : "New Cleaner");
 
         const { error: insErr } = await supabase.from("cleaners").insert({
           user_id: session.user.id,
