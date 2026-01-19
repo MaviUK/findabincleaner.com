@@ -10,7 +10,6 @@ type Cleaner = {
   website: string | null;
   phone: string | null;
   whatsapp?: string | null;
-  distance_m?: number | null;
 
   area_id?: string | null;
   area_name?: string | null;
@@ -326,12 +325,6 @@ export default function CleanerCard({
                   {typeof (cleaner as any).google_reviews_count === "number"
                     ? `(${(cleaner as any).google_reviews_count} reviews)`
                     : ""}
-                </div>
-              )}
-
-              {typeof cleaner.distance_m === "number" && (
-                <div className="text-xs text-gray-500 mt-1">
-                  {(cleaner.distance_m / 1000).toFixed(1)} km
                 </div>
               )}
 
