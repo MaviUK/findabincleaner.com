@@ -146,16 +146,6 @@ export default function CleanerCard({
     }
   }
 
-  // keep: unchanged
-  function openWhatsAppOrCall() {
-    if (whatsapp) {
-      const wa = whatsapp.replace(/[^\d+]/g, "");
-      window.open(`https://wa.me/${wa}`, "_blank", "noopener,noreferrer");
-      return;
-    }
-    if (phone) window.location.href = `tel:${phone}`;
-  }
-
   const canSend =
     enqName.trim().length > 0 &&
     enqAddress.trim().length > 0 &&
@@ -198,9 +188,7 @@ export default function CleanerCard({
       return false;
     }
     if (!enqAccepted) {
-      setEnqError(
-        "Please confirm you have read and understood the information."
-      );
+      setEnqError("Please confirm you have read and understood the information.");
       return false;
     }
     setEnqError(null);
@@ -244,9 +232,7 @@ export default function CleanerCard({
       setLastChannel("email");
       setEnqSent(true);
     } catch (e: any) {
-      setEnqError(
-        e?.message || "Sorry — something went wrong sending your enquiry."
-      );
+      setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
     } finally {
       setEnqSending(false);
     }
@@ -257,6 +243,7 @@ export default function CleanerCard({
     setLastChannel(null);
 
     if (!validateOrSetError()) return;
+
     if (!whatsapp) {
       setEnqError("WhatsApp is not available for this business.");
       return;
@@ -270,7 +257,11 @@ export default function CleanerCard({
       // 2) Open WhatsApp
       setLastChannel("whatsapp");
       setEnqSent(true);
-      window.open(buildWhatsAppUrl(whatsapp, whatsappPrefill), "_blank", "noopener,noreferrer");
+      window.open(
+        buildWhatsAppUrl(whatsapp, whatsappPrefill),
+        "_blank",
+        "noopener,noreferrer"
+      );
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong.");
     } finally {
@@ -326,9 +317,7 @@ export default function CleanerCard({
           <div className="flex items-start justify-between gap-3">
             {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">
-                {name}
-              </div>
+              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
               {/* Google rating */}
               {typeof (cleaner as any).google_rating === "number" && (
@@ -346,7 +335,7 @@ export default function CleanerCard({
                 </div>
               )}
 
-              {/* MOBILE ICON ACTIONS (hide missing methods) */}
+              {/* MOBILE ICON ACTIONS */}
               <div className="flex gap-3 mt-3 sm:hidden">
                 {(whatsapp || phone) && (
                   <button
@@ -392,7 +381,7 @@ export default function CleanerCard({
               </div>
             </div>
 
-            {/* DESKTOP ACTIONS (hide missing methods) */}
+            {/* DESKTOP ACTIONS */}
             <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
               {(whatsapp || phone) && (
                 <button
@@ -449,9 +438,7 @@ export default function CleanerCard({
               <div className="px-5 pt-5 pb-3 border-b border-black/5 shrink-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">
-                      Enquiry to {name}
-                    </h2>
+                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
                     <p className="text-sm text-gray-600 mt-1">
                       Address, phone and email are required.
                     </p>
@@ -499,8 +486,7 @@ export default function CleanerCard({
                       onPlaceChanged={() => {
                         try {
                           const place = ac?.getPlace?.();
-                          const value =
-                            place?.formatted_address || place?.name || "";
+                          const value = place?.formatted_address || place?.name || "";
                           if (value) {
                             setEnqAddress(value);
                             setEnqSent(false);
@@ -535,9 +521,7 @@ export default function CleanerCard({
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">
-                    Pick from suggestions for best results.
-                  </p>
+                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -567,9 +551,7 @@ export default function CleanerCard({
                     required
                   />
                   {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
-                    <p className="text-xs text-red-600">
-                      Enter a valid email address.
-                    </p>
+                    <p className="text-xs text-red-600">Enter a valid email address.</p>
                   ) : null}
                 </Field>
 
@@ -611,31 +593,33 @@ export default function CleanerCard({
                     </span>
                   </label>
 
-                  {/* MOBILE ONLY: WhatsApp button (plus Email) */}
-                  {whatsapp ? (
-                    <button
-                      type="button"
-                      disabled={!canSend}
-                      className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
-                      onClick={() => {
-                        logClick("click_message");
-                        void sendViaWhatsApp();
-                      }}
-                      title={
-                        !canSend
+                  {/* MOBILE ONLY: WhatsApp button (ALWAYS SHOWN; disabled if not available) */}
+                  <button
+                    type="button"
+                    disabled={!whatsapp || !canSend}
+                    className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+                    onClick={() => {
+                      logClick("click_message");
+                      void sendViaWhatsApp();
+                    }}
+                    title={
+                      !whatsapp
+                        ? "WhatsApp is not available for this business."
+                        : !canSend
                           ? "Please complete all fields and confirm you have read and understood the information above"
                           : "Send via WhatsApp"
-                      }
-                    >
-                      {enqSending && lastChannel === "whatsapp"
+                    }
+                  >
+                    {!whatsapp
+                      ? "WhatsApp not available"
+                      : enqSending && lastChannel === "whatsapp"
                         ? "Saving…"
                         : enqSent && lastChannel === "whatsapp"
                           ? "Opened ✓"
                           : "Send via WhatsApp"}
-                    </button>
-                  ) : null}
+                  </button>
 
-                  {/* ALL DEVICES: Email button (desktop should only see this) */}
+                  {/* EMAIL: always visible (desktop should only see this) */}
                   <button
                     type="button"
                     onClick={() => {
