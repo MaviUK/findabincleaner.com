@@ -533,10 +533,7 @@ useEffect(() => {
   })();
 }, [categoryId, sponsorshipVersion]);
 
-
-  // availability is only meaningful when user can actually purchase (needs myBusinessId)
-  const computeAvailabilityForArea = useCallback(
-      // ✅ Purchase-rule guard (DB is source of truth)
+  // ✅ Purchase-rule guard (DB is source of truth)
   const guardCanPurchaseSponsor = useCallback(
     async (areaId: string) => {
       if (!myBusinessId) {
@@ -578,6 +575,8 @@ useEffect(() => {
     [myBusinessId, categoryId]
   );
 
+  // availability is only meaningful when user can actually purchase (needs myBusinessId)
+ const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
 
