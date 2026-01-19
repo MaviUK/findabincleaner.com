@@ -1006,8 +1006,14 @@ useEffect(() => {
                     return;
                   }
 
-                  setSponsorAreaId(a.id);
-                  setSponsorOpen(true);
+                  if (!categoryId) {
+  setError("Please select an industry first (Bin Cleaner / Domestic / Window Cleaner).");
+  return;
+}
+
+setSponsorAreaId(a.id);
+setSponsorOpen(true);
+
                 };
 
                 return (
@@ -1318,21 +1324,22 @@ useEffect(() => {
       </div>
 
       {/* Sponsor modal */}
-      {sponsorOpen && sponsorAreaId && (
-        <AreaSponsorModal
-          open={sponsorOpen}
-          onClose={() => {
-            setSponsorOpen(false);
-            clearPreview();
-          }}
-          businessId={myBusinessId}
-          categoryId={categoryId}
-          areaId={sponsorAreaId}
-          areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
-          onPreviewGeoJSON={(multi) => drawPreview(multi)}
-          onClearPreview={() => clearPreview()}
-        />
-      )}
+      {sponsorOpen && sponsorAreaId && categoryId && (
+  <AreaSponsorModal
+    open={sponsorOpen}
+    onClose={() => {
+      setSponsorOpen(false);
+      clearPreview();
+    }}
+    businessId={myBusinessId}
+    categoryId={categoryId} // now guaranteed string
+    areaId={sponsorAreaId}
+    areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
+    onPreviewGeoJSON={(multi) => drawPreview(multi)}
+    onClearPreview={() => clearPreview()}
+  />
+)}
+)}
 
       {/* Manage modal */}
       {manageOpen && manageAreaId && (
@@ -1348,7 +1355,7 @@ useEffect(() => {
       {/* Copy modal (unchanged) */}
       {copyOpen && copyArea && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
               <div>
                 <div className="font-semibold">Copy area to another industry</div>
