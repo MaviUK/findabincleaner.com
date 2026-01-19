@@ -1439,70 +1439,77 @@ setSponsorOpen(true);
         </div>
       )}
 
-  {/* Delete modal */}
-{deleteOpen && deleteAreaId && (
-  <DeleteAreaModal
-    open={deleteOpen}
-    onClose={() => setDeleteOpen(false)}
-    areaId={deleteAreaId}
-    areaName={deleteAreaName}
-    cleanerId={myBusinessId}
-    isSponsoredByMe={deleteIsSponsoredByMe}
-    onDeleted={async () => {
-      // If we were editing it, clear the draft polygons
-      if (activeAreaId === deleteAreaId) resetDraft();
+      {/* Delete modal */}
+      {deleteOpen && deleteAreaId && (
+        <DeleteAreaModal
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          areaId={deleteAreaId}
+          areaName={deleteAreaName}
+          cleanerId={myBusinessId}
+          isSponsoredByMe={deleteIsSponsoredByMe}
+          onDeleted={async () => {
+            if (activeAreaId === deleteAreaId) resetDraft();
 
-      // Remove from UI immediately so outline + fills disappear right away
-      setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
+            // remove from list immediately
+            setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
 
-      // Remove cached per-area state so any sponsored overlay tied to this area is gone instantly
-      setSponsorship((prev) => {
-        const next = { ...prev };
-        delete next[deleteAreaId];
-        return next;
-      });
+            // remove cached per-area state immediately
+            setSponsorship((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
 
-      setAvail((prev) => {
-        const next = { ...prev };
-        delete next[deleteAreaId];
-        return next;
-      });
+            setAvail((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
 
-      setAvailLoading((prev) => {
-        const next = { ...prev };
-        delete next[deleteAreaId];
-        return next;
-      });
+            setAvailLoading((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
 
-      // Clear any preview overlay
-      setPreviewGeo(null);
+            // clear preview overlay
+            setPreviewGeo(null);
 
-      // ✅ IMPORTANT:
-      // The "yellow" fill you still see after delete is coming from the *categorySponsored* overlay,
-      // not the per-area sponsorship map. So we clear it immediately, then fetch it again.
-      setCategorySponsored([]);
+            // category-wide overlay is what causes the lingering “yellow”
+            setCategorySponsored([]);
 
-      // Refresh areas from DB (source of truth)
-      await fetchAreas();
+            // refresh source of truth
+            await fetchAreas();
 
-      // Re-fetch category-wide sponsored overlay (now without the deleted area's contribution)
-      if (categoryId) {
-        try {
-          const res = await fetch("/.netlify/functions/category-sponsored-geo", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ categoryId }),
-          });
+            // re-fetch category sponsored overlay
+            if (categoryId) {
+              try {
+                const res = await fetch("/.netlify/functions/category-sponsored-geo", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ categoryId }),
+                });
 
-          const j = await res.json().catch(() => null);
-          setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
-        } catch {
-          // If this fails, the overlay will repopulate next time the normal effect runs
-        }
-      }
-    }}
-  />
-)}
+                const j = await res.json().catch(() => null);
+                setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+              } catch {
+                // ignore; overlay will repopulate next time effect runs
+              }
+            }
+          }}
+        />
+      )}
+
+      {/*
+        IMPORTANT BACKEND NOTE:
+        For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
+        slot.sponsored_geojson (GeoJSON of the purchased area).
+      */}
+    </>
+  );
+}
+
 
 {/*
 IMPORTANT BACKEND NOTE:
