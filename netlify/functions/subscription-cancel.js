@@ -1,10 +1,14 @@
+// netlify/functions/subscription-cancel.js
 import Stripe from "stripe";
 import { createClient } from "@supabase/supabase-js";
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY, { apiVersion: "2024-06-20" });
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY
 );
 
 const json = (body, status = 200) =>
@@ -27,13 +31,16 @@ export default async (req) => {
   const areaId = body?.areaId || null;
   const slot = Number(body?.slot) || null;
 
-  console.log("[subscription-cancel] payload:", { businessId, areaId, slot });
+  // NEW: action controls cancel vs reactivate
+  const action = (body?.action || "cancel").toString(); // "cancel" | "reactivate"
+
+  console.log("[subscription-cancel] payload:", { businessId, areaId, slot, action });
 
   if (!businessId || !areaId || !slot) {
     return json({ ok: false, error: "Missing params" }, 400);
   }
 
-  // Look up the user’s subscription in our DB to find the Stripe sub id
+  // Look up the subscription row to find the Stripe subscription id
   const { data: subRow, error: subErr } = await supabase
     .from("sponsored_subscriptions")
     .select("id, stripe_subscription_id")
@@ -50,22 +57,42 @@ export default async (req) => {
     return json({ ok: false, error: "Subscription not found" }, 404);
   }
 
-  // Cancel at period end on Stripe
-  await stripe.subscriptions.update(subRow.stripe_subscription_id, {
-    cancel_at_period_end: true,
+  const cancelAtPeriodEnd = action !== "reactivate";
+
+  // Update on Stripe
+  const stripeSub = await stripe.subscriptions.update(subRow.stripe_subscription_id, {
+    cancel_at_period_end: cancelAtPeriodEnd,
   });
 
-  // Mirror locally
+  // Mirror locally (IMPORTANT: do NOT mark "canceled" unless Stripe has actually ended)
+  // We'll use "canceling" when scheduled to cancel.
+  const nextStatus = cancelAtPeriodEnd ? "canceling" : "active";
+  const nextPeriodEnd = stripeSub?.current_period_end
+    ? new Date(stripeSub.current_period_end * 1000).toISOString()
+    : null;
+
   const { error: updErr } = await supabase
     .from("sponsored_subscriptions")
-    .update({ status: "canceled" })
+    .update({
+      status: nextStatus,
+      current_period_end: nextPeriodEnd,
+    })
     .eq("id", subRow.id);
 
   if (updErr) {
     console.error("[subscription-cancel] local mirror error:", updErr);
-    // Still report ok (Stripe change is what matters), but surface the local failure
-    return json({ ok: true, warn: "Stripe updated; local status not updated" });
+    return json({
+      ok: true,
+      warn: "Stripe updated; local status not updated",
+      cancel_at_period_end: cancelAtPeriodEnd,
+      current_period_end: nextPeriodEnd,
+    });
   }
 
-  return json({ ok: true });
-}
+  return json({
+    ok: true,
+    cancel_at_period_end: cancelAtPeriodEnd,
+    current_period_end: nextPeriodEnd,
+    status: nextStatus,
+  });
+};
