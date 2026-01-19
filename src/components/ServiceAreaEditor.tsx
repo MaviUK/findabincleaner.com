@@ -1439,25 +1439,68 @@ setSponsorOpen(true);
         </div>
       )}
 
-      {/* Delete modal */}
-      {deleteOpen && deleteAreaId && (
-        <DeleteAreaModal
-          open={deleteOpen}
-          onClose={() => setDeleteOpen(false)}
-          areaId={deleteAreaId}
-          areaName={deleteAreaName}
-          cleanerId={myBusinessId}
-          isSponsoredByMe={deleteIsSponsoredByMe}
-          onDeleted={async () => {
-            if (activeAreaId === deleteAreaId) resetDraft();
-            setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
-            await fetchAreas();
-          }}
-        />
-      )}
-    </>
-  );
-}
+    {/* Delete modal */}
+{deleteOpen && deleteAreaId && (
+  <DeleteAreaModal
+    open={deleteOpen}
+    onClose={() => setDeleteOpen(false)}
+    areaId={deleteAreaId}
+    areaName={deleteAreaName}
+    cleanerId={myBusinessId}
+    isSponsoredByMe={deleteIsSponsoredByMe}
+    onDeleted={async () => {
+      // if we were editing it, clear draft
+      if (activeAreaId === deleteAreaId) resetDraft();
+
+      // ✅ remove from the list immediately
+      setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
+
+      // ✅ remove cached per-area overlays immediately
+      setSponsorship((prev) => {
+        const next = { ...prev };
+        delete next[deleteAreaId];
+        return next;
+      });
+
+      setAvail((prev) => {
+        const next = { ...prev };
+        delete next[deleteAreaId];
+        return next;
+      });
+
+      setAvailLoading((prev) => {
+        const next = { ...prev };
+        delete next[deleteAreaId];
+        return next;
+      });
+
+      // ✅ clear any preview overlay
+      setPreviewGeo(null);
+
+      // ✅ clear category overlay immediately (removes “yellow” instantly)
+      setCategorySponsored([]);
+
+      // ✅ refresh source of truth
+      await fetchAreas();
+
+      // ✅ re-fetch category sponsored overlay
+      try {
+        if (categoryId) {
+          const res = await fetch("/.netlify/functions/category-sponsored-geo", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ categoryId }),
+          });
+          const j = await res.json().catch(() => null);
+          setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+        }
+      } catch {
+        // ignore; overlay will repopulate next time effect runs
+      }
+    }}
+  />
+)}
+
 
 /**
  * IMPORTANT BACKEND NOTE:
