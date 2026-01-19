@@ -338,94 +338,96 @@ export default function CleanerCard({
                 </div>
               )}
 
-             {/* MOBILE ICON ACTIONS */}
-<div className="flex gap-3 mt-3 sm:hidden">
-  {(whatsapp || phone) && (
-    <button
-      type="button"
-      className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700"
-      onClick={() => {
-        logClick("click_message");
-        openEnquiry();
-      }}
-      title="Message"
-    >
-      💬
-    </button>
-  )}
+              {/* MOBILE ICON ACTIONS (hide missing methods) */}
+              <div className="flex gap-3 mt-3 sm:hidden">
+                {(whatsapp || phone) && (
+                  <button
+                    type="button"
+                    className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700"
+                    onClick={() => {
+                      logClick("click_message");
+                      openEnquiry();
+                    }}
+                    title="Message"
+                  >
+                    💬
+                  </button>
+                )}
 
-  {phone && (
-    <button
-      type="button"
-      className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50"
-      onClick={() => {
-        logClick("click_phone");
-        window.location.href = `tel:${phone}`;
-      }}
-      title="Call"
-    >
-      📞
-    </button>
-  )}
+                {phone && (
+                  <button
+                    type="button"
+                    className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50"
+                    onClick={() => {
+                      logClick("click_phone");
+                      window.location.href = `tel:${phone}`;
+                    }}
+                    title="Call"
+                  >
+                    📞
+                  </button>
+                )}
 
-  {websiteUrl && (
-    <button
-      type="button"
-      className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
-      onClick={() => {
-        logClick("click_website");
-        window.open(websiteUrl, "_blank", "noopener,noreferrer");
-      }}
-      title="Website"
-    >
-      🌐
-    </button>
-  )}
-</div>
+                {websiteUrl && (
+                  <button
+                    type="button"
+                    className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
+                    onClick={() => {
+                      logClick("click_website");
+                      window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                    }}
+                    title="Website"
+                  >
+                    🌐
+                  </button>
+                )}
+              </div>
+            </div>
 
+            {/* DESKTOP ACTIONS (hide missing methods) */}
+            <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
+              {(whatsapp || phone) && (
+                <button
+                  type="button"
+                  className="h-10 rounded-full bg-teal-600 text-white font-semibold text-sm hover:bg-teal-700"
+                  onClick={() => {
+                    logClick("click_message");
+                    openEnquiry();
+                  }}
+                >
+                  Message
+                </button>
+              )}
 
-           {/* DESKTOP ACTIONS */}
-<div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
-  {(whatsapp || phone) && (
-    <button
-      type="button"
-      className="h-10 rounded-full bg-teal-600 text-white font-semibold text-sm hover:bg-teal-700"
-      onClick={() => {
-        logClick("click_message");
-        openEnquiry();
-      }}
-    >
-      Message
-    </button>
-  )}
+              {phone && (
+                <button
+                  type="button"
+                  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50"
+                  onClick={() => {
+                    logClick("click_phone");
+                    setShowPhoneNumber((v) => !v);
+                  }}
+                >
+                  {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
+                </button>
+              )}
 
-  {phone && (
-    <button
-      type="button"
-      className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50"
-      onClick={() => {
-        logClick("click_phone");
-        setShowPhoneNumber((v) => !v);
-      }}
-    >
-      {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
-    </button>
-  )}
-
-  {websiteUrl && (
-    <button
-      type="button"
-      className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50"
-      onClick={() => {
-        logClick("click_website");
-        window.open(websiteUrl, "_blank", "noopener,noreferrer");
-      }}
-    >
-      Website
-    </button>
-  )}
-</div>
-
+              {websiteUrl && (
+                <button
+                  type="button"
+                  className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50"
+                  onClick={() => {
+                    logClick("click_website");
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  Website
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Enquiry modal */}
       {showEnquiry && (
