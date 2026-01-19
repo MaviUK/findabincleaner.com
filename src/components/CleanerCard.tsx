@@ -435,7 +435,7 @@ export default function CleanerCard({
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
          <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
-            <<div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[100dvh]">
+            <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[100dvh]">
               {/* Header */}
               <div className="px-5 pt-5 pb-3 border-b border-black/5">
                 <div className="flex items-start justify-between gap-3">
