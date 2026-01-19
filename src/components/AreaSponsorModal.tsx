@@ -194,7 +194,14 @@ export default function AreaSponsorModal({
       window.clearTimeout(timeout);
       ac.abort();
     };
-  }, [open, businessId, areaId, slot, categoryId, onPreviewGeoJSON, onClearPreview]);
+  }, [
+  open,
+  businessId,
+  areaId,
+  slot,
+  categoryId,
+]);
+
 
   // ─────────────────────────
   // Checkout
