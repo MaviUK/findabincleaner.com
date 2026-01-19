@@ -39,6 +39,9 @@ export default function AreaManageModal({
   const [err, setErr] = useState<string | null>(null);
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
+  const [infoOpen, setInfoOpen] = useState(false);
+  const [infoMsg, setInfoMsg] = useState("");
+
   const title = useMemo(() => `Manage Slot #${slot}`, [slot]);
 
   // Load current subscription for this business/area/slot
@@ -101,7 +104,9 @@ export default function AreaManageModal({
       if (!json?.ok) throw new Error(json?.error || "Cancel failed");
 
       onClose();
-      alert("Your sponsorship will be cancelled at the end of the current period.");
+setInfoMsg("Your sponsorship will be cancelled at the end of the current period.");
+setInfoOpen(true);
+
     } catch (e: any) {
       setErr(e?.message || "Cancel failed");
     } finally {
