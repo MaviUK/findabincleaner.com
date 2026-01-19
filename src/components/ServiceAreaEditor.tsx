@@ -1337,7 +1337,6 @@ setSponsorOpen(true);
     onClearPreview={() => clearPreview()}
   />
 )}
-)}
 
       {/* Manage modal */}
       {manageOpen && manageAreaId && (
