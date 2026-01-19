@@ -334,18 +334,19 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                 >
                   💬
                 </button>
-
-                <button
+<button
   type="button"
-  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
+  className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
   onClick={() => {
     logClick("click_phone");
-    if (phone) setShowPhoneNumber(true); // ✅ show number instead of tel:
+    if (phone) window.location.href = `tel:${phone}`;
   }}
   disabled={!phone}
+  title="Call"
 >
-  {showPhoneNumber ? phone : "Phone"}
+  📞
 </button>
+
 
 
                 <button
@@ -377,17 +378,18 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                 Message
               </button>
 
-              <button
-                type="button"
-                className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
-                onClick={() => {
-                  logClick("click_phone");
-                  if (phone) window.location.href = `tel:${phone}`;
-                }}
-                disabled={!phone}
-              >
-                Phone
-              </button>
+             <button
+  type="button"
+  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
+  onClick={() => {
+    logClick("click_phone");
+    if (phone) setShowPhoneNumber((v) => !v); // toggle show/hide
+  }}
+  disabled={!phone}
+>
+  {showPhoneNumber ? phone : "Phone"}
+</button>
+
 
               <button
                 type="button"
