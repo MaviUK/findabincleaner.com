@@ -1,4 +1,3 @@
-// src/components/AreaManageModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
@@ -39,12 +38,13 @@ export default function AreaManageModal({
   const [err, setErr] = useState<string | null>(null);
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
 
+  // ✅ NEW: info modal state
   const [infoOpen, setInfoOpen] = useState(false);
   const [infoMsg, setInfoMsg] = useState("");
 
   const title = useMemo(() => `Manage Slot #${slot}`, [slot]);
 
-  // Load current subscription for this business/area/slot
+  // Load current subscription
   useEffect(() => {
     let cancelled = false;
 
@@ -58,7 +58,7 @@ export default function AreaManageModal({
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
-            businessId: cleanerId,  // IMPORTANT
+            businessId: cleanerId,
             areaId,
             slot,
           }),
@@ -95,7 +95,7 @@ export default function AreaManageModal({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          businessId: cleanerId,  // IMPORTANT
+          businessId: cleanerId,
           areaId,
           slot,
         }),
@@ -104,9 +104,8 @@ export default function AreaManageModal({
       if (!json?.ok) throw new Error(json?.error || "Cancel failed");
 
       onClose();
-setInfoMsg("Your sponsorship will be cancelled at the end of the current period.");
-setInfoOpen(true);
-
+      setInfoMsg("Your sponsorship will be cancelled at the end of the current period.");
+      setInfoOpen(true);
     } catch (e: any) {
       setErr(e?.message || "Cancel failed");
     } finally {
@@ -117,52 +116,98 @@ setInfoOpen(true);
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
-      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b">
-          <h3 className="font-semibold">{title}</h3>
-          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
-            Close
-          </button>
-        </div>
+    <>
+      {/* MAIN MANAGE MODAL */}
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+        <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
+          <div className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl">
+            <h3 className="font-semibold text-amber-900">{title}</h3>
+            <button
+              className="text-sm opacity-70 hover:opacity-100"
+              onClick={onClose}
+            >
+              Close
+            </button>
+          </div>
 
-        <div className="px-4 py-4 space-y-3">
-          {err && (
-            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-              {err}
-            </div>
-          )}
+          <div className="px-4 py-4 space-y-3">
+            {err && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                {err}
+              </div>
+            )}
 
-          {loading && <div className="text-sm text-gray-600">Loading…</div>}
+            {loading && <div className="text-sm text-gray-600">Loading…</div>}
 
-          {!loading && sub && (
-            <div className="text-sm space-y-1">
-              <div>
-                <span className="font-medium">Area:</span> {sub.area_name || "—"}
+            {!loading && sub && (
+              <div className="text-sm space-y-1">
+                <div>
+                  <span className="font-medium">Area:</span>{" "}
+                  {sub.area_name || "—"}
+                </div>
+                <div>
+                  <span className="font-medium">Status:</span>{" "}
+                  {sub.status || "unknown"}
+                </div>
+                <div>
+                  <span className="font-medium">Next renewal:</span>{" "}
+                  {sub.current_period_end
+                    ? new Date(sub.current_period_end).toLocaleString()
+                    : "—"}
+                </div>
+                <div>
+                  <span className="font-medium">Price:</span>{" "}
+                  {typeof sub.price_monthly_pennies === "number"
+                    ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
+                    : "—"}
+                </div>
               </div>
-              <div>
-                <span className="font-medium">Status:</span> {sub.status || "unknown"}
-              </div>
-              <div>
-                <span className="font-medium">Next renewal:</span>{" "}
-                {sub.current_period_end ? new Date(sub.current_period_end).toLocaleString() : "—"}
-              </div>
-              <div>
-                <span className="font-medium">Price:</span>{" "}
-                {typeof sub.price_monthly_pennies === "number"
-                  ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
-                  : "—"}
-              </div>
-            </div>
-          )}
-        </div>
+            )}
+          </div>
 
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
-          <button className="btn" onClick={cancelAtPeriodEnd} disabled={loading}>
-            Cancel at period end
-          </button>
+          <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+            <button
+              className="btn"
+              onClick={cancelAtPeriodEnd}
+              disabled={loading}
+            >
+              Cancel at period end
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+
+      {/* INFO CONFIRMATION MODAL */}
+      {infoOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
+            <div className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl">
+              <div className="font-semibold text-amber-900">
+                Sponsorship Updated
+              </div>
+              <button
+                className="text-sm opacity-70 hover:opacity-100"
+                onClick={() => setInfoOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-4">
+              <div className="text-sm text-gray-800">{infoMsg}</div>
+            </div>
+
+            <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+              <button
+                className="btn"
+                onClick={() => setInfoOpen(false)}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
