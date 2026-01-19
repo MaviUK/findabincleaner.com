@@ -45,7 +45,6 @@ export type MatchOut = {
   google_rating?: number | null;
   google_reviews_count?: number | null;
 
-  distance_m: number | null;
   area_id: string | null;
   area_name?: string | null;
   is_covering_sponsor?: boolean;
@@ -241,7 +240,6 @@ export default function FindCleaners({
           google_reviews_count:
             c.google_reviews_count ?? r?.google_reviews_count ?? null,
 
-          distance_m: r?.distance_meters ?? null,
           area_id: r?.area_id ?? null,
           area_name: r?.area_name ?? null,
           is_covering_sponsor: Boolean(r?.is_covering_sponsor),
@@ -365,4 +363,5 @@ export default function FindCleaners({
     </div>
   );
 }
+
 
