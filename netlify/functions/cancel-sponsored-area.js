@@ -41,10 +41,18 @@ function getBearer(req) {
   return m ? m[1] : null;
 }
 
-async function cancelStripeSub(stripeSubId) {
-  // Compatibility across Stripe SDK versions:
+async function cancelAtPeriodEnd(stripeSubId) {
+  // ✅ Cancel at period end (this is what your UI promises)
+  return stripe.subscriptions.update(stripeSubId, {
+    cancel_at_period_end: true,
+  });
+}
+
+// (optional) keep an immediate cancel helper if you need it elsewhere
+async function cancelStripeSubNow(stripeSubId) {
   if (stripe.subscriptions?.cancel) return stripe.subscriptions.cancel(stripeSubId);
   if (stripe.subscriptions?.del) return stripe.subscriptions.del(stripeSubId);
+  // fallback: best-effort immediate cancellation isn't possible here
   return stripe.subscriptions.update(stripeSubId, { cancel_at_period_end: false });
 }
 
@@ -117,7 +125,9 @@ export default async (req) => {
     }
 
     // 1) Cancel at Stripe immediately
-    await cancelAtPeriodEnd(row.stripe_subscription_id);
+    await stripe.subscriptions.update(row.stripe_subscription_id, {
+  cancel_at_period_end: true,
+});
 
     // 2) Update DB row so UI reacts instantly (webhook will also update)
     await sb
