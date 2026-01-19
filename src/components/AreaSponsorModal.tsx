@@ -77,7 +77,6 @@ export default function AreaSponsorModal({
 
   useEffect(() => {
     if (!open) return;
-    // reset position each time it opens (centered-ish)
     setPos({ x: 0, y: 0 });
   }, [open]);
 
@@ -111,7 +110,6 @@ export default function AreaSponsorModal({
     const run = async () => {
       if (!open) return;
 
-      // clear any previous overlay
       onClearPreview?.();
       onPreviewGeoJSON?.(null);
 
@@ -166,7 +164,7 @@ export default function AreaSponsorModal({
             reason: j.reason,
           });
 
-          // ✅ IMPORTANT: only ever preview the REMAINING geojson (never fall back to area geom)
+          // ✅ only preview remaining geojson
           onPreviewGeoJSON?.(geojson);
         }
       } catch (e: any) {
@@ -190,7 +188,6 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-    // intentionally not depending on onPreviewGeoJSON
   }, [open, businessId, areaId, slot, categoryId]);
 
   const handleClose = () => {
@@ -240,15 +237,12 @@ export default function AreaSponsorModal({
       }
 
       const url = j?.checkout_url as string | undefined;
+      if (!url) {
+        console.error("Checkout response missing checkout_url", j);
+        throw new Error("Stripe did not return a checkout URL.");
+      }
 
-if (!url) {
-  console.error("Checkout response missing checkout_url", j);
-  throw new Error("Stripe did not return a checkout URL.");
-}
-
-// full page redirect to Stripe
-window.location.assign(url);
-
+      window.location.assign(url);
     } catch (e: any) {
       setCheckoutErr(e?.message || "Checkout failed");
       setCheckingOut(false);
@@ -264,106 +258,41 @@ window.location.assign(url);
   }
 
   return (
-    <div className="fixed inset-0 z-[10000] bg-black/40">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30 p-4">
       <div
-        className="absolute left-1/2 top-1/2"
+        className="relative w-full max-w-2xl"
         style={{
-          transform: `translate(-50%, -50%) translate(${pos.x}px, ${pos.y}px)`,
+          transform: `translate(${pos.x}px, ${pos.y}px)`,
         }}
       >
-        <div className="bg-white w-[640px] max-w-[92vw] rounded-xl shadow-xl overflow-hidden">
-          {/* DRAG BAR */}
+        <div className="w-full rounded-xl bg-white shadow-xl border border-amber-200 overflow-hidden">
+          {/* DRAG BAR (matches other modal header style) */}
           <div
-            className="flex items-start justify-between px-4 py-3 border-b cursor-move select-none"
+            className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl cursor-move select-none"
             onPointerDown={onDragStart}
             onPointerMove={onDragMove}
             onPointerUp={onDragEnd}
             onPointerCancel={onDragEnd}
           >
             <div>
-              <div className="font-semibold">Sponsor — {areaName || "Area"}</div>
-              <div className="text-xs text-gray-500">Drag this bar to move the window</div>
+              <div className="font-semibold text-amber-900">
+                Sponsor — {areaName || "Area"}
+              </div>
+              <div className="text-xs text-amber-800/70">
+                Drag this bar to move the window
+              </div>
             </div>
 
-            <button className="btn" onClick={handleClose}>
+            <button
+              className="text-sm opacity-70 hover:opacity-100"
+              onClick={handleClose}
+            >
               Close
             </button>
           </div>
 
-          <div className="p-4 space-y-3">
-            <div className="rounded-md border border-emerald-200 bg-emerald-50 text-emerald-800 text-sm p-2">
-              Featured sponsorship makes you first in local search results. Preview highlights the
-              purchasable sub-region (for this industry only).
-            </div>
-
-            {/* tiny debug line */}
-            <div className="text-[11px] text-gray-500">
-              Debug: areaId={areaId} • categoryId={categoryId}
-            </div>
-
-            {pv.loading && (
-              <div className="rounded-md border border-gray-200 bg-gray-50 text-gray-700 text-sm p-2">
-                Computing preview…
-              </div>
-            )}
-
-            {pv.error && (
-              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                {pv.error}
-              </div>
-            )}
-
-            {checkoutErr && (
-              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                {checkoutErr}
-              </div>
-            )}
-
-            {pv.soldOut && !hasArea && (
-              <div className="rounded-md border border-red-200 bg-red-50 text-red-700 text-sm p-2">
-                No purchasable area left for this industry in this polygon.
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
-              <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
-              <Stat
-                label="Price per km² / month"
-                hint="From server"
-                value={GBP(pv.ratePerKm2 ?? null)}
-              />
-              <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
-              <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
-              <Stat label="Coverage" value={coverageLabel} />
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-1">
-              <button className="btn" onClick={handleClose}>
-                Cancel
-              </button>
-              <button
-                className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
-                onClick={startCheckout}
-                disabled={!canBuy}
-                title={canBuy ? "Buy now" : ""}
-              >
-                {checkingOut ? "Redirecting..." : "Buy now"}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
-  return (
-    <div className="border rounded-lg p-3">
-      <div className="text-xs text-gray-500">{label}</div>
-      <div className="mt-1 font-semibold">{value}</div>
-      {hint && <div className="text-[10px] text-gray-400">{hint}</div>}
-    </div>
-  );
-}
+          <div className="px-4 py-4 space-y-3">
+            <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
+              <div className="font-semibold mb-1">Featured sponsorship</div>
+              <div>
+                Featured sponsorship makes you first in local search results.
