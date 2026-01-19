@@ -26,9 +26,9 @@ const SERVICE_BUTTONS: {
   },
   {
     slug: "cleaner",
-    label: "General Cleaner",
+    label: "Domestic Cleaner",
     icon: "/icons/general-cleaner.png",
-    blurb: "General domestic cleaning",
+    blurb: "Domestic cleaning",
   },
 ];
 
