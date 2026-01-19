@@ -117,7 +117,9 @@ export default function CleanerCard({
   const [enqAccepted, setEnqAccepted] = useState(false);
 
   // track last action so we can show correct message
-  const [lastChannel, setLastChannel] = useState<"email" | "whatsapp" | null>(null);
+  const [lastChannel, setLastChannel] = useState<"email" | "whatsapp" | null>(
+    null
+  );
 
   // Google Places loaded?
   const hasPlaces =
@@ -196,7 +198,9 @@ export default function CleanerCard({
       return false;
     }
     if (!enqAccepted) {
-      setEnqError("Please confirm you have read and understood the information.");
+      setEnqError(
+        "Please confirm you have read and understood the information."
+      );
       return false;
     }
     setEnqError(null);
@@ -240,7 +244,9 @@ export default function CleanerCard({
       setLastChannel("email");
       setEnqSent(true);
     } catch (e: any) {
-      setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
+      setEnqError(
+        e?.message || "Sorry — something went wrong sending your enquiry."
+      );
     } finally {
       setEnqSending(false);
     }
@@ -320,7 +326,9 @@ export default function CleanerCard({
           <div className="flex items-start justify-between gap-3">
             {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
+              <div className="text-lg font-bold text-gray-900 truncate">
+                {name}
+              </div>
 
               {/* Google rating */}
               {typeof (cleaner as any).google_rating === "number" && (
@@ -434,13 +442,16 @@ export default function CleanerCard({
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
-         <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
+          {/* bottom-sheet on mobile, centered on desktop */}
+          <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
             <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[calc(100dvh-1.5rem)]">
               {/* Header */}
-              <div className="px-5 pt-5 pb-3 border-b border-black/5">
+              <div className="px-5 pt-5 pb-3 border-b border-black/5 shrink-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
+                    <h2 className="text-xl font-bold truncate">
+                      Enquiry to {name}
+                    </h2>
                     <p className="text-sm text-gray-600 mt-1">
                       Address, phone and email are required.
                     </p>
@@ -457,9 +468,8 @@ export default function CleanerCard({
                 </div>
               </div>
 
-              {/* Body */}
-             <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1 overscroll-contain">
-
+              {/* Body (scrolls) */}
+              <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1 overscroll-contain">
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
                     ✅ Enquiry saved.
@@ -489,7 +499,8 @@ export default function CleanerCard({
                       onPlaceChanged={() => {
                         try {
                           const place = ac?.getPlace?.();
-                          const value = place?.formatted_address || place?.name || "";
+                          const value =
+                            place?.formatted_address || place?.name || "";
                           if (value) {
                             setEnqAddress(value);
                             setEnqSent(false);
@@ -524,7 +535,9 @@ export default function CleanerCard({
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
+                  <p className="text-xs text-gray-500">
+                    Pick from suggestions for best results.
+                  </p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -554,7 +567,9 @@ export default function CleanerCard({
                     required
                   />
                   {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
-                    <p className="text-xs text-red-600">Enter a valid email address.</p>
+                    <p className="text-xs text-red-600">
+                      Enter a valid email address.
+                    </p>
                   ) : null}
                 </Field>
 
@@ -578,7 +593,7 @@ export default function CleanerCard({
                 )}
               </div>
 
-              {/* Footer */}
+              {/* Footer (always visible) */}
               <div className="px-5 py-4 border-t border-black/5 bg-white shrink-0">
                 <div className="flex flex-col gap-2">
                   <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
@@ -596,6 +611,7 @@ export default function CleanerCard({
                     </span>
                   </label>
 
+                  {/* MOBILE ONLY: WhatsApp button (plus Email) */}
                   {whatsapp ? (
                     <button
                       type="button"
@@ -611,10 +627,15 @@ export default function CleanerCard({
                           : "Send via WhatsApp"
                       }
                     >
-                      {enqSending && lastChannel === "whatsapp" ? "Saving…" : "Send via WhatsApp"}
+                      {enqSending && lastChannel === "whatsapp"
+                        ? "Saving…"
+                        : enqSent && lastChannel === "whatsapp"
+                          ? "Opened ✓"
+                          : "Send via WhatsApp"}
                     </button>
                   ) : null}
 
+                  {/* ALL DEVICES: Email button (desktop should only see this) */}
                   <button
                     type="button"
                     onClick={() => {
@@ -629,22 +650,12 @@ export default function CleanerCard({
                         : "Send enquiry"
                     }
                   >
-                    {enqSending && lastChannel !== "whatsapp"
+                    {enqSending && lastChannel === "email"
                       ? "Sending…"
                       : enqSent && lastChannel === "email"
                         ? "Sent ✓"
                         : "Send Enquiry"}
                   </button>
-
-                  {!whatsapp && phone ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-white text-gray-900 ring-1 ring-black/10 hover:bg-gray-50"
-                      onClick={openWhatsAppOrCall}
-                    >
-                      Call Instead
-                    </button>
-                  ) : null}
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
