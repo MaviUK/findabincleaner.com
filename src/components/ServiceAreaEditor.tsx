@@ -1439,7 +1439,7 @@ setSponsorOpen(true);
         </div>
       )}
 
-    {/* Delete modal */}
+  {/* Delete modal */}
 {deleteOpen && deleteAreaId && (
   <DeleteAreaModal
     open={deleteOpen}
@@ -1449,13 +1449,13 @@ setSponsorOpen(true);
     cleanerId={myBusinessId}
     isSponsoredByMe={deleteIsSponsoredByMe}
     onDeleted={async () => {
-      // if we were editing it, clear draft
+      // If we were editing it, clear the draft polygons
       if (activeAreaId === deleteAreaId) resetDraft();
 
-      // ✅ remove from the list immediately
+      // Remove from UI immediately so outline + fills disappear right away
       setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
 
-      // ✅ remove cached per-area overlays immediately
+      // Remove cached per-area state so any sponsored overlay tied to this area is gone instantly
       setSponsorship((prev) => {
         const next = { ...prev };
         delete next[deleteAreaId];
@@ -1474,37 +1474,39 @@ setSponsorOpen(true);
         return next;
       });
 
-      // ✅ clear any preview overlay
+      // Clear any preview overlay
       setPreviewGeo(null);
 
-      // ✅ clear category overlay immediately (removes “yellow” instantly)
+      // ✅ IMPORTANT:
+      // The "yellow" fill you still see after delete is coming from the *categorySponsored* overlay,
+      // not the per-area sponsorship map. So we clear it immediately, then fetch it again.
       setCategorySponsored([]);
 
-      // ✅ refresh source of truth
+      // Refresh areas from DB (source of truth)
       await fetchAreas();
 
-      // ✅ re-fetch category sponsored overlay
-      try {
-        if (categoryId) {
+      // Re-fetch category-wide sponsored overlay (now without the deleted area's contribution)
+      if (categoryId) {
+        try {
           const res = await fetch("/.netlify/functions/category-sponsored-geo", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ categoryId }),
           });
+
           const j = await res.json().catch(() => null);
           setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+        } catch {
+          // If this fails, the overlay will repopulate next time the normal effect runs
         }
-      } catch {
-        // ignore; overlay will repopulate next time effect runs
       }
     }}
   />
 )}
 
-
-/**
- * IMPORTANT BACKEND NOTE:
- * For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
- * slot.sponsored_geojson (GeoJSON of the purchased area). If it is missing, this UI falls back to
- * coloring the entire service area so you still see *something*.
- */
+{/*
+IMPORTANT BACKEND NOTE:
+For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
+slot.sponsored_geojson (GeoJSON of the purchased area). If it is missing, the UI cannot know the
+exact purchased sub-region and may fall back to showing broader fills.
+*/}
