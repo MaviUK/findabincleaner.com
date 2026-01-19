@@ -613,8 +613,6 @@ useEffect(() => {
     window.scrollTo({ top: Math.max(0, pageTop - 80), behavior: "smooth" });
   }, 350);
 }, []);
-;
-
 
   const zoomToArea = useCallback(
     (area: ServiceAreaRow) => {
