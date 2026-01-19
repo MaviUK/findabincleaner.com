@@ -62,21 +62,20 @@ export default function AreaSponsorModal({
     geojson: null,
   });
 
-  const monthlyPrice = useMemo(() => {
-    if (pv.priceCents == null) return null;
-    return pv.priceCents / 100;
-  }, [pv.priceCents]);
+  const monthlyPrice = useMemo(
+    () => (pv.priceCents != null ? pv.priceCents / 100 : null),
+    [pv.priceCents]
+  );
 
-  // -------------------------
-  // Draggable header
-  // -------------------------
-  const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  // ─────────────────────────
+  // Drag handling
+  // ─────────────────────────
+  const [pos, setPos] = useState({ x: 0, y: 0 });
   const draggingRef = useRef(false);
   const startRef = useRef<{ mx: number; my: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
-    if (!open) return;
-    setPos({ x: 0, y: 0 });
+    if (open) setPos({ x: 0, y: 0 });
   }, [open]);
 
   const onDragStart = (e: React.PointerEvent) => {
@@ -87,9 +86,10 @@ export default function AreaSponsorModal({
 
   const onDragMove = (e: React.PointerEvent) => {
     if (!draggingRef.current || !startRef.current) return;
-    const dx = e.clientX - startRef.current.mx;
-    const dy = e.clientY - startRef.current.my;
-    setPos({ x: startRef.current.x + dx, y: startRef.current.y + dy });
+    setPos({
+      x: startRef.current.x + (e.clientX - startRef.current.mx),
+      y: startRef.current.y + (e.clientY - startRef.current.my),
+    });
   };
 
   const onDragEnd = (e: React.PointerEvent) => {
@@ -100,100 +100,105 @@ export default function AreaSponsorModal({
     } catch {}
   };
 
-  // -------------------------
-  // Preview call (per industry)
-  // -------------------------
+  // ─────────────────────────
+  // Preview fetch (FIXED)
+  // ─────────────────────────
   useEffect(() => {
-    let cancelled = false;
+    if (!open) return;
 
-    const run = async () => {
-      if (!open) return;
+    const ac = new AbortController();
+    const timeout = window.setTimeout(() => ac.abort(), 12000);
 
-      onClearPreview?.();
-      onPreviewGeoJSON?.(null);
+    onClearPreview?.();
+    onPreviewGeoJSON?.(null);
 
-      if (!businessId || !areaId || !categoryId) {
-        setPv((s) => ({
-          ...s,
-          loading: false,
-          error: "Missing businessId / areaId / categoryId",
-          soldOut: false,
-          totalKm2: null,
-          availableKm2: null,
-          priceCents: null,
-          ratePerKm2: null,
-          geojson: null,
-        }));
-        return;
-      }
+    if (!businessId || !areaId || !categoryId) {
+      setPv({
+        loading: false,
+        error: "Missing businessId / areaId / categoryId",
+        totalKm2: null,
+        availableKm2: null,
+        soldOut: false,
+        ratePerKm2: null,
+        priceCents: null,
+        geojson: null,
+      });
+      return;
+    }
 
-      setPv((s) => ({ ...s, loading: true, error: null }));
+    setPv({
+      loading: true,
+      error: null,
+      totalKm2: null,
+      availableKm2: null,
+      soldOut: false,
+      ratePerKm2: null,
+      priceCents: null,
+      geojson: null,
+    });
 
+    (async () => {
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ businessId, areaId, slot, categoryId }),
+          signal: ac.signal,
         });
 
         const j = await res.json().catch(() => null);
 
         if (!res.ok || !j?.ok) {
-          throw new Error(j?.error || j?.message || "Preview failed");
+          throw new Error(j?.error || j?.message || `Preview failed (${res.status})`);
         }
 
         const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
         const availableKm2 = typeof j.available_km2 === "number" ? j.available_km2 : 0;
+        const soldOut = Boolean(j.sold_out) || availableKm2 <= EPS;
+        const geojson = soldOut ? null : j.geojson ?? null;
 
-        const soldOut =
-          Boolean(j.sold_out) || !Number.isFinite(availableKm2) || availableKm2 <= EPS;
+        setPv({
+          loading: false,
+          error: null,
+          soldOut,
+          totalKm2,
+          availableKm2,
+          ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+          priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
+          geojson,
+          reason: j.reason,
+        });
 
-        const geojson = soldOut ? null : (j.geojson ?? null);
-
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: null,
-            soldOut,
-            totalKm2,
-            availableKm2,
-            ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
-            geojson,
-            reason: j.reason,
-          });
-
-          onPreviewGeoJSON?.(geojson);
-        }
+        onPreviewGeoJSON?.(geojson);
       } catch (e: any) {
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: e?.message || "Preview failed",
-            soldOut: false,
-            totalKm2: null,
-            availableKm2: null,
-            ratePerKm2: null,
-            priceCents: null,
-            geojson: null,
-          });
-          onPreviewGeoJSON?.(null);
-        }
+        setPv({
+          loading: false,
+          error:
+            e?.name === "AbortError"
+              ? "Preview timed out. Please try again."
+              : e?.message || "Preview failed",
+          soldOut: false,
+          totalKm2: null,
+          availableKm2: null,
+          ratePerKm2: null,
+          priceCents: null,
+          geojson: null,
+        });
+        onPreviewGeoJSON?.(null);
+      } finally {
+        window.clearTimeout(timeout);
       }
-    };
+    })();
 
-    run();
     return () => {
-      cancelled = true;
+      window.clearTimeout(timeout);
+      ac.abort();
     };
-  }, [open, businessId, areaId, slot, categoryId, onClearPreview, onPreviewGeoJSON]);
+  }, [open, businessId, areaId, slot, categoryId, onPreviewGeoJSON, onClearPreview]);
 
-  const handleClose = () => {
-    onClearPreview?.();
-    onPreviewGeoJSON?.(null);
-    onClose();
-  };
-
+  // ─────────────────────────
+  // Checkout
+  // ─────────────────────────
   const [checkingOut, setCheckingOut] = useState(false);
   const [checkoutErr, setCheckoutErr] = useState<string | null>(null);
 
@@ -216,28 +221,13 @@ export default function AreaSponsorModal({
       const j = await res.json().catch(() => null);
 
       if (!res.ok || !j?.ok) {
-        const message =
-          j?.message ||
-          j?.error ||
-          (res.status === 409
-            ? "No purchasable area left for this industry in this polygon."
-            : `Checkout failed (${res.status})`);
-
-        setCheckoutErr(message);
-
-        if (res.status === 409) {
-          setPv((s) => ({ ...s, soldOut: true, availableKm2: 0, geojson: null }));
-          onPreviewGeoJSON?.(null);
-        }
-
+        setCheckoutErr(j?.error || j?.message || "Checkout failed");
         setCheckingOut(false);
         return;
       }
 
-      const url = j?.checkout_url as string | undefined;
-      if (!url) throw new Error("Stripe did not return a checkout URL.");
-
-      window.location.assign(url);
+      if (!j.checkout_url) throw new Error("Stripe did not return a checkout URL");
+      window.location.assign(j.checkout_url);
     } catch (e: any) {
       setCheckoutErr(e?.message || "Checkout failed");
       setCheckingOut(false);
@@ -247,102 +237,60 @@ export default function AreaSponsorModal({
   if (!open) return null;
 
   let coverageLabel = "—";
-  if (pv.totalKm2 && pv.totalKm2 > EPS && pv.availableKm2 != null) {
-    const pct = (pv.availableKm2 / pv.totalKm2) * 100;
-    coverageLabel = `${pct.toFixed(1)}% of your polygon`;
+  if (pv.totalKm2 && pv.availableKm2 != null && pv.totalKm2 > EPS) {
+    coverageLabel = `${((pv.availableKm2 / pv.totalKm2) * 100).toFixed(1)}% of your polygon`;
   }
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30 p-4">
-      <div
-        className="w-full max-w-2xl"
-        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
-      >
-        <div className="w-full rounded-xl bg-white shadow-xl border border-amber-200 overflow-hidden">
-          {/* Header (drag) */}
+      <div className="w-full max-w-2xl" style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
+        <div className="rounded-xl bg-white shadow-xl border border-amber-200 overflow-hidden">
+          {/* Header */}
           <div
-            className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl cursor-move select-none"
+            className="px-4 py-3 border-b bg-amber-50 cursor-move select-none flex justify-between"
             onPointerDown={onDragStart}
             onPointerMove={onDragMove}
             onPointerUp={onDragEnd}
             onPointerCancel={onDragEnd}
           >
             <div>
-              <div className="font-semibold text-amber-900">
-                Sponsor — {areaName || "Area"}
-              </div>
-              <div className="text-xs text-amber-800/70">
-                Drag this bar to move the window
-              </div>
+              <div className="font-semibold text-amber-900">Sponsor — {areaName || "Area"}</div>
+              <div className="text-xs text-amber-800/70">Drag this bar to move the window</div>
             </div>
-
-            <button
-              className="text-sm opacity-70 hover:opacity-100"
-              onClick={handleClose}
-              disabled={checkingOut}
-            >
+            <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
               Close
             </button>
           </div>
 
           <div className="px-4 py-4 space-y-3">
-            <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
-              <div className="font-semibold mb-1">Featured sponsorship</div>
-              <div>
-                Featured sponsorship makes you first in local search results. Preview highlights the
-                purchasable sub-region (for this industry only).
-              </div>
-            </div>
-
-            <div className="text-[11px] text-gray-500">
-              Debug: areaId={areaId} • categoryId={categoryId}
-            </div>
-
             {pv.loading && (
-              <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3">
-                Computing preview…
-              </div>
+              <div className="text-sm bg-gray-50 border rounded p-3">Computing preview…</div>
             )}
-
             {pv.error && (
-              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
-                {pv.error}
-              </div>
+              <div className="text-sm bg-red-50 border border-red-200 rounded p-3">{pv.error}</div>
             )}
-
             {checkoutErr && (
-              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
-                {checkoutErr}
-              </div>
-            )}
-
-            {pv.soldOut && !hasArea && (
-              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
-                No purchasable area left for this industry in this polygon.
-              </div>
+              <div className="text-sm bg-red-50 border border-red-200 rounded p-3">{checkoutErr}</div>
             )}
 
             <div className="grid grid-cols-2 gap-3">
               <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
               <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
-              <Stat label="Price per km² / month" hint="From server" value={GBP(pv.ratePerKm2 ?? null)} />
-              <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
+              <Stat label="Price per km² / month" value={GBP(pv.ratePerKm2)} />
+              <Stat label="Minimum monthly" value="£1.00" />
               <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
               <Stat label="Coverage" value={coverageLabel} />
             </div>
           </div>
 
-          <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
-            <button className="btn" onClick={handleClose} disabled={checkingOut}>
-              Cancel
-            </button>
+          <div className="px-4 py-3 border-t flex justify-end gap-2">
+            <button className="btn" onClick={onClose}>Cancel</button>
             <button
               className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
               onClick={startCheckout}
               disabled={!canBuy}
-              title={canBuy ? "Buy now" : ""}
             >
-              {checkingOut ? "Redirecting..." : "Buy now"}
+              {checkingOut ? "Redirecting…" : "Buy now"}
             </button>
           </div>
         </div>
@@ -351,12 +299,11 @@ export default function AreaSponsorModal({
   );
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="border rounded-lg p-3">
       <div className="text-xs text-gray-500">{label}</div>
       <div className="mt-1 font-semibold">{value}</div>
-      {hint && <div className="text-[10px] text-gray-400">{hint}</div>}
     </div>
   );
 }
