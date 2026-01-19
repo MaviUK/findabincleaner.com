@@ -1,3 +1,4 @@
+// src/components/AreaManageModal.tsx
 import { useEffect, useMemo, useState } from "react";
 
 type Props = {
@@ -16,6 +17,7 @@ type GetSubOk = {
     status: string | null;
     current_period_end: string | null;
     price_monthly_pennies: number | null;
+    cancel_at_period_end?: boolean | null;
   };
 };
 
@@ -27,71 +29,24 @@ type GetSubErr = {
 
 type GetSubResp = GetSubOk | GetSubErr;
 
-export default function AreaManageModal({
-  open,
-  onClose,
-  cleanerId,
-  areaId,
-  slot,
-}: Props) {
+export default function AreaManageModal({ open, onClose, cleanerId, areaId, slot }: Props) {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [sub, setSub] = useState<GetSubOk["subscription"] | null>(null);
-
-  // ✅ NEW: info modal state
-  const [infoOpen, setInfoOpen] = useState(false);
-  const [infoMsg, setInfoMsg] = useState("");
 
   const title = useMemo(() => `Manage Slot #${slot}`, [slot]);
 
-  // Load current subscription
-  useEffect(() => {
-    let cancelled = false;
+  async function load() {
+    if (!open) return;
 
-    async function run() {
-      if (!open) return;
-      setLoading(true);
-      setErr(null);
-      setSub(null);
-      try {
-        const res = await fetch("/.netlify/functions/subscription-get", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId: cleanerId,
-            areaId,
-            slot,
-          }),
-        });
-        const json: GetSubResp = await res.json();
-
-        if (cancelled) return;
-
-        if ("ok" in json && json.ok) {
-          setSub(json.subscription);
-        } else if ("notFound" in json && json.notFound) {
-          setErr("No active subscription was found for this slot.");
-        } else {
-          setErr(("error" in json && json.error) || "Failed to load subscription.");
-        }
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || "Failed to load subscription.");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [open, cleanerId, areaId, slot]);
-
-  async function cancelAtPeriodEnd() {
     setLoading(true);
     setErr(null);
+    setNotice(null);
+    setSub(null);
+
     try {
-      const res = await fetch("/.netlify/functions/subscription-cancel", {
+      const res = await fetch("/.netlify/functions/subscription-get", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -100,14 +55,81 @@ export default function AreaManageModal({
           slot,
         }),
       });
-      const json: { ok?: boolean; error?: string } = await res.json();
-      if (!json?.ok) throw new Error(json?.error || "Cancel failed");
 
-      onClose();
-      setInfoMsg("Your sponsorship will be cancelled at the end of the current period.");
-      setInfoOpen(true);
+      const json: GetSubResp = await res.json();
+
+      if ("ok" in json && json.ok) {
+        setSub(json.subscription);
+      } else if ("notFound" in json && json.notFound) {
+        setErr("No active subscription was found for this slot.");
+      } else {
+        setErr(("error" in json && json.error) || "Failed to load subscription.");
+      }
     } catch (e: any) {
-      setErr(e?.message || "Cancel failed");
+      setErr(e?.message || "Failed to load subscription.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Load current subscription
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      if (!open) return;
+      await load();
+      if (cancelled) return;
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, cleanerId, areaId, slot]);
+
+  const cancelAtPeriodEnd = Boolean(sub?.cancel_at_period_end);
+  const nextRenewalLabel = sub?.current_period_end
+    ? new Date(sub.current_period_end).toLocaleString()
+    : "—";
+
+  async function toggleCancel() {
+    if (!sub) return;
+
+    setLoading(true);
+    setErr(null);
+    setNotice(null);
+
+    try {
+      const action = cancelAtPeriodEnd ? "reactivate" : "cancel";
+
+      const res = await fetch("/.netlify/functions/subscription-cancel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId: cleanerId,
+          areaId,
+          slot,
+          action, // ✅ NEW
+        }),
+      });
+
+      const json: { ok?: boolean; error?: string; cancel_at_period_end?: boolean } =
+        await res.json().catch(() => ({}));
+
+      if (!json?.ok) throw new Error(json?.error || "Update failed");
+
+      // ✅ In-modal confirmation (no missing alert)
+      setNotice(
+        action === "cancel"
+          ? "Cancelled at period end. You will keep sponsorship until the end of the current billing period."
+          : "Sponsorship reactivated. Your subscription will renew as normal."
+      );
+
+      // Refresh displayed state
+      await load();
+    } catch (e: any) {
+      setErr(e?.message || "Update failed");
     } finally {
       setLoading(false);
     }
@@ -116,98 +138,60 @@ export default function AreaManageModal({
   if (!open) return null;
 
   return (
-    <>
-      {/* MAIN MANAGE MODAL */}
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-        <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
-          <div className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl">
-            <h3 className="font-semibold text-amber-900">{title}</h3>
-            <button
-              className="text-sm opacity-70 hover:opacity-100"
-              onClick={onClose}
-            >
-              Close
-            </button>
-          </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+      <div className="w-full max-w-lg rounded-xl bg-white shadow-xl">
+        <div className="flex items-center justify-between px-4 py-3 border-b">
+          <h3 className="font-semibold">{title}</h3>
+          <button className="text-sm opacity-70 hover:opacity-100" onClick={onClose}>
+            Close
+          </button>
+        </div>
 
-          <div className="px-4 py-4 space-y-3">
-            {err && (
-              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
-                {err}
+        <div className="px-4 py-4 space-y-3">
+          {err && (
+            <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+              {err}
+            </div>
+          )}
+
+          {notice && (
+            <div className="text-sm text-emerald-800 bg-emerald-50 border border-emerald-200 rounded p-2">
+              {notice}
+            </div>
+          )}
+
+          {loading && <div className="text-sm text-gray-600">Loading…</div>}
+
+          {!loading && sub && (
+            <div className="text-sm space-y-1">
+              <div>
+                <span className="font-medium">Area:</span> {sub.area_name || "—"}
               </div>
-            )}
-
-            {loading && <div className="text-sm text-gray-600">Loading…</div>}
-
-            {!loading && sub && (
-              <div className="text-sm space-y-1">
-                <div>
-                  <span className="font-medium">Area:</span>{" "}
-                  {sub.area_name || "—"}
-                </div>
-                <div>
-                  <span className="font-medium">Status:</span>{" "}
-                  {sub.status || "unknown"}
-                </div>
-                <div>
-                  <span className="font-medium">Next renewal:</span>{" "}
-                  {sub.current_period_end
-                    ? new Date(sub.current_period_end).toLocaleString()
-                    : "—"}
-                </div>
-                <div>
-                  <span className="font-medium">Price:</span>{" "}
-                  {typeof sub.price_monthly_pennies === "number"
-                    ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
-                    : "—"}
-                </div>
+              <div>
+                <span className="font-medium">Status:</span>{" "}
+                {cancelAtPeriodEnd ? "canceling (at period end)" : sub.status || "unknown"}
               </div>
-            )}
-          </div>
+              <div>
+                <span className="font-medium">Next renewal:</span> {nextRenewalLabel}
+              </div>
+              <div>
+                <span className="font-medium">Price:</span>{" "}
+                {typeof sub.price_monthly_pennies === "number"
+                  ? `${(sub.price_monthly_pennies / 100).toFixed(2)} GBP/mo`
+                  : "—"}
+              </div>
+            </div>
+          )}
+        </div>
 
-          <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
-            <button
-              className="btn"
-              onClick={cancelAtPeriodEnd}
-              disabled={loading}
-            >
-              Cancel at period end
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
+          {sub && (
+            <button className="btn" onClick={toggleCancel} disabled={loading}>
+              {cancelAtPeriodEnd ? "Keep sponsorship (reactivate)" : "Cancel at period end"}
             </button>
-          </div>
+          )}
         </div>
       </div>
-
-      {/* INFO CONFIRMATION MODAL */}
-      {infoOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
-            <div className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl">
-              <div className="font-semibold text-amber-900">
-                Sponsorship Updated
-              </div>
-              <button
-                className="text-sm opacity-70 hover:opacity-100"
-                onClick={() => setInfoOpen(false)}
-              >
-                Close
-              </button>
-            </div>
-
-            <div className="px-4 py-4">
-              <div className="text-sm text-gray-800">{infoMsg}</div>
-            </div>
-
-            <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
-              <button
-                className="btn"
-                onClick={() => setInfoOpen(false)}
-              >
-                OK
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
+    </div>
   );
 }
