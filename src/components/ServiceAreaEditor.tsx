@@ -545,25 +545,25 @@ useEffect(() => {
         return false;
       }
 
-      // TEMP mapping while UI is still "area-based":
-      // If you are purchasing by sponsor_zone_id already, replace zoneId with that value.
-      const { data: zoneRow, error: zoneErr } = await supabase
-  .from("sponsor_zones")
-  .select("id")
-  .eq("category_id", categoryId)
-  .contains("geom", /* area geometry */)
-  .limit(1)
-  .maybeSingle();
+      // ✅ Resolve sponsor zone for this area (DB is source of truth)
+const { data: zoneId, error: zoneErr } = await supabase.rpc(
+  "get_sponsor_zone_id_for_area",
+  {
+    p_area_id: areaId,
+    p_category_id: categoryId,
+  }
+);
 
-if (zoneErr || !zoneRow?.id) {
+if (zoneErr || !zoneId) {
   setError("No sponsor zone found for this area.");
   return false;
 }
 
-const zoneId = zoneRow.id;
+const zoneIdResolved = zoneId as string;
+
 
       const { data, error } = await supabase.rpc("can_purchase_sponsor_slot", {
-        p_zone_id: zoneId,
+        p_zone_id: zoneIdResolved,
         p_business_id: myBusinessId,
         p_slot: 1,
         p_require_coverage: true,
