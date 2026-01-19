@@ -434,8 +434,8 @@ export default function CleanerCard({
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
-          <div className="absolute inset-0 flex items-center justify-center p-3 sm:p-6">
-            <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden max-h-[calc(100vh-2rem)]">
+         <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
+            <<div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[100dvh]">
               {/* Header */}
               <div className="px-5 pt-5 pb-3 border-b border-black/5">
                 <div className="flex items-start justify-between gap-3">
@@ -458,10 +458,8 @@ export default function CleanerCard({
               </div>
 
               {/* Body */}
-              <div
-                className="px-5 py-4 space-y-4 overflow-y-auto"
-                style={{ maxHeight: "calc(100vh - 240px)" }}
-              >
+             <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1 overscroll-contain">
+
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
                     ✅ Enquiry saved.
@@ -581,7 +579,7 @@ export default function CleanerCard({
               </div>
 
               {/* Footer */}
-              <div className="px-5 py-4 border-t border-black/5 bg-white">
+              <div className="px-5 py-4 border-t border-black/5 bg-white shrink-0">
                 <div className="flex flex-col gap-2">
                   <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
                     <input
