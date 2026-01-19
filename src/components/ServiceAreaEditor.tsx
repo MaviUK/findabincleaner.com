@@ -1389,7 +1389,7 @@ setSponsorOpen(true);
                   onChange={(e) => setCopyTargetCategoryId(e.target.value)}
                   disabled={copyBusy}
                 >
-                  <option value="">Select…</option>
+                  <option value="">Select...</option>
                   {categories
                     .filter((c) => c.id !== (categoryId ?? ""))
                     .map((c) => (
