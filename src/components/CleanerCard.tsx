@@ -64,6 +64,34 @@ function isValidEmail(v: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
+// ✅ ADD THIS RIGHT HERE (below isValidEmail, above CleanerCard)
+function formatUkPhoneForDisplay(raw: string) {
+  if (!raw) return "";
+  let s = raw.replace(/\s+/g, "").trim();
+
+  // +44XXXXXXXXXX -> 0XXXXXXXXXX
+  if (s.startsWith("+44")) {
+    s = "0" + s.slice(3);
+    return s;
+  }
+
+  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some people store without +)
+  if (s.startsWith("44") && s.length >= 11) {
+    s = "0" + s.slice(2);
+  }
+
+  return s;
+}
+
+export default function CleanerCard({
+  cleaner,
+  areaId,
+  categoryId,
+  position,
+  featured,
+}: Props) {
+
+
 export default function CleanerCard({
   cleaner,
   areaId,
