@@ -536,6 +536,48 @@ useEffect(() => {
 
   // availability is only meaningful when user can actually purchase (needs myBusinessId)
   const computeAvailabilityForArea = useCallback(
+      // ✅ Purchase-rule guard (DB is source of truth)
+  const guardCanPurchaseSponsor = useCallback(
+    async (areaId: string) => {
+      if (!myBusinessId) {
+        setError("Please log in to sponsor an area.");
+        return false;
+      }
+      if (!categoryId) {
+        setError("Please select an industry first.");
+        return false;
+      }
+
+      // TEMP mapping while UI is still "area-based":
+      // If you are purchasing by sponsor_zone_id already, replace zoneId with that value.
+      const zoneId = areaId;
+
+      const { data, error } = await supabase.rpc("can_purchase_sponsor_slot", {
+        p_zone_id: zoneId,
+        p_business_id: myBusinessId,
+        p_slot: 1,
+        p_require_coverage: true,
+        p_min_cover_ratio: 0.2,
+      });
+
+      if (error) {
+        setError(error.message);
+        return false;
+      }
+
+      const ok = Boolean((data as any)?.[0]?.ok);
+      const reason = String((data as any)?.[0]?.reason ?? "");
+
+      if (!ok) {
+        setError(reason || "This sponsorship is not available.");
+        return false;
+      }
+
+      return true;
+    },
+    [myBusinessId, categoryId]
+  );
+
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
 
@@ -1004,10 +1046,13 @@ useEffect(() => {
                     return;
                   }
 
-                  if (!categoryId) {
+                 if (!categoryId) {
   setError("Please select an industry first (Bin Cleaner / Domestic / Window Cleaner).");
   return;
 }
+
+const ok = await guardCanPurchaseSponsor(a.id);
+if (!ok) return;
 
 setSponsorAreaId(a.id);
 setSponsorOpen(true);
