@@ -7,13 +7,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
 
-  /**
-   * ✅ Use businessId going forward.
-   * ✅ cleanerId is kept for backwards compatibility (older code might still pass it).
-   */
-  businessId?: string;
-  cleanerId?: string;
-
+  businessId: string;
   categoryId: string;
   areaId: string;
   slot?: Slot;
@@ -51,7 +45,6 @@ export default function AreaSponsorModal({
   open,
   onClose,
   businessId,
-  cleanerId,
   categoryId,
   areaId,
   slot = 1,
@@ -59,9 +52,6 @@ export default function AreaSponsorModal({
   onPreviewGeoJSON,
   onClearPreview,
 }: Props) {
-  // ✅ single source of truth (works with old prop too)
-  const bizId = (businessId || cleanerId || "").trim();
-
   const [pv, setPv] = useState<PreviewState>({
     loading: false,
     error: null,
@@ -72,6 +62,16 @@ export default function AreaSponsorModal({
     priceCents: null,
     geojson: null,
   });
+
+  // ✅ Keep callback refs stable so preview effect does NOT re-run endlessly
+  const onPreviewRef = useRef<typeof onPreviewGeoJSON>();
+  const onClearRef = useRef<typeof onClearPreview>();
+  useEffect(() => {
+    onPreviewRef.current = onPreviewGeoJSON;
+  }, [onPreviewGeoJSON]);
+  useEffect(() => {
+    onClearRef.current = onClearPreview;
+  }, [onClearPreview]);
 
   const monthlyPrice = useMemo(() => {
     if (pv.priceCents == null) return null;
@@ -112,48 +112,50 @@ export default function AreaSponsorModal({
   };
 
   // -------------------------
-  // Preview call
+  // Preview call (per industry) - ✅ stable + abort + timeout
   // -------------------------
   useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
+    if (!open) return;
 
-    const run = async () => {
-      if (!open) return;
+    // clear preview immediately when opening
+    onClearRef.current?.();
+    onPreviewRef.current?.(null);
 
-      // clear previous overlay
-      onClearPreview?.();
-      onPreviewGeoJSON?.(null);
+    // validate inputs
+    if (!businessId || !areaId || !categoryId) {
+      setPv((s) => ({
+        ...s,
+        loading: false,
+        error: "Missing businessId / areaId / categoryId",
+        soldOut: false,
+        totalKm2: null,
+        availableKm2: null,
+        priceCents: null,
+        ratePerKm2: null,
+        geojson: null,
+      }));
+      return;
+    }
 
-      if (!bizId || !areaId || !categoryId) {
-        setPv((s) => ({
-          ...s,
-          loading: false,
-          error: "Missing businessId / areaId / categoryId",
-          soldOut: false,
-          totalKm2: null,
-          availableKm2: null,
-          priceCents: null,
-          ratePerKm2: null,
-          geojson: null,
-        }));
-        return;
-      }
+    const ac = new AbortController();
+    const timeoutMs = 18_000; // ✅ hard timeout so you never “hang”
+    const t = window.setTimeout(() => ac.abort(), timeoutMs);
 
-      setPv((s) => ({ ...s, loading: true, error: null }));
+    setPv((s) => ({ ...s, loading: true, error: null }));
 
+    (async () => {
       try {
         const res = await fetch("/.netlify/functions/sponsored-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ businessId: bizId, areaId, slot, categoryId }),
-          signal: controller.signal,
+          signal: ac.signal,
+          body: JSON.stringify({ businessId, areaId, slot, categoryId }),
         });
 
         const j = await res.json().catch(() => null);
 
         if (!res.ok || !j?.ok) {
-          throw new Error(j?.error || j?.message || "Preview failed");
+          throw new Error(j?.error || j?.message || `Preview failed (${res.status})`);
         }
 
         const totalKm2 = typeof j.total_km2 === "number" ? j.total_km2 : null;
@@ -164,28 +166,24 @@ export default function AreaSponsorModal({
 
         const geojson = soldOut ? null : (j.geojson ?? null);
 
-        if (!cancelled) {
-          setPv({
-            loading: false,
-            error: null,
-            soldOut,
-            totalKm2,
-            availableKm2,
-            ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
-            priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
-            geojson,
-            reason: j.reason,
-          });
-
-          onPreviewGeoJSON?.(geojson);
-        }
-      } catch (e: any) {
-        if (cancelled) return;
-        if (e?.name === "AbortError") return;
-
         setPv({
           loading: false,
-          error: e?.message || "Preview failed",
+          error: null,
+          soldOut,
+          totalKm2,
+          availableKm2,
+          ratePerKm2: typeof j.rate_per_km2 === "number" ? j.rate_per_km2 : null,
+          priceCents: typeof j.price_cents === "number" ? j.price_cents : null,
+          geojson,
+          reason: j.reason,
+        });
+
+        onPreviewRef.current?.(geojson);
+      } catch (e: any) {
+        const aborted = String(e?.name || "").toLowerCase() === "aborterror";
+        setPv({
+          loading: false,
+          error: aborted ? "Preview timed out. Please try again." : (e?.message || "Preview failed"),
           soldOut: false,
           totalKm2: null,
           availableKm2: null,
@@ -193,23 +191,22 @@ export default function AreaSponsorModal({
           priceCents: null,
           geojson: null,
         });
-        onPreviewGeoJSON?.(null);
+        onPreviewRef.current?.(null);
+      } finally {
+        window.clearTimeout(t);
       }
-    };
+    })();
 
-    run();
-
+    // cleanup
     return () => {
-      cancelled = true;
-      controller.abort();
+      window.clearTimeout(t);
+      ac.abort();
     };
-    // IMPORTANT: do not include callbacks in deps to avoid re-fetch loops
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, bizId, areaId, slot, categoryId]);
+  }, [open, businessId, areaId, slot, categoryId]);
 
   const handleClose = () => {
-    onClearPreview?.();
-    onPreviewGeoJSON?.(null);
+    onClearRef.current?.();
+    onPreviewRef.current?.(null);
     onClose();
   };
 
@@ -229,7 +226,7 @@ export default function AreaSponsorModal({
       const res = await fetch("/.netlify/functions/sponsored-checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ businessId: bizId, areaId, slot, categoryId }),
+        body: JSON.stringify({ businessId, areaId, slot, categoryId }),
       });
 
       const j = await res.json().catch(() => null);
@@ -246,7 +243,7 @@ export default function AreaSponsorModal({
 
         if (res.status === 409) {
           setPv((s) => ({ ...s, soldOut: true, availableKm2: 0, geojson: null }));
-          onPreviewGeoJSON?.(null);
+          onPreviewRef.current?.(null);
         }
 
         setCheckingOut(false);
@@ -273,7 +270,10 @@ export default function AreaSponsorModal({
 
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30 p-4">
-      <div className="w-full max-w-2xl" style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}>
+      <div
+        className="w-full max-w-2xl"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
+      >
         <div className="w-full rounded-xl bg-white shadow-xl border border-amber-200 overflow-hidden">
           {/* Header (drag) */}
           <div
@@ -284,7 +284,9 @@ export default function AreaSponsorModal({
             onPointerCancel={onDragEnd}
           >
             <div>
-              <div className="font-semibold text-amber-900">Sponsor — {areaName || "Area"}</div>
+              <div className="font-semibold text-amber-900">
+                Sponsor — {areaName || "Area"}
+              </div>
               <div className="text-xs text-amber-800/70">Drag this bar to move the window</div>
             </div>
 
@@ -301,8 +303,8 @@ export default function AreaSponsorModal({
             <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
               <div className="font-semibold mb-1">Featured sponsorship</div>
               <div>
-                Featured sponsorship makes you first in local search results. Preview highlights
-                the purchasable sub-region (for this industry only).
+                Featured sponsorship makes you first in local search results. Preview highlights the
+                purchasable sub-region (for this industry only).
               </div>
             </div>
 
