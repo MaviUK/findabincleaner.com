@@ -23,7 +23,6 @@ type RpcRow = {
   area_id: string | null;
   area_name: string | null;
   is_covering_sponsor: boolean | null;
-  distance_meters: number | null;
 
   // (optional) if RPC returns these, fine; if not, we still pull from cleaners table
   google_rating?: number | null;
@@ -366,3 +365,4 @@ export default function FindCleaners({
     </div>
   );
 }
+
