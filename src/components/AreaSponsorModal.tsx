@@ -1,14 +1,13 @@
-// src/components/AreaSponsorModal.tsx
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-type Slot = 1; // keep as 1 unless you really use multiple tiers
+type Slot = 1;
 
 type Props = {
   open: boolean;
   onClose: () => void;
 
   businessId: string;
-  categoryId: string; // ✅ REQUIRED (per-industry sponsorship)
+  categoryId: string;
   areaId: string;
   slot?: Slot;
 
@@ -69,7 +68,7 @@ export default function AreaSponsorModal({
   }, [pv.priceCents]);
 
   // -------------------------
-  // Simple draggable modal (no deps)
+  // Draggable header
   // -------------------------
   const [pos, setPos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const draggingRef = useRef(false);
@@ -164,7 +163,6 @@ export default function AreaSponsorModal({
             reason: j.reason,
           });
 
-          // ✅ only preview remaining geojson
           onPreviewGeoJSON?.(geojson);
         }
       } catch (e: any) {
@@ -188,7 +186,7 @@ export default function AreaSponsorModal({
     return () => {
       cancelled = true;
     };
-  }, [open, businessId, areaId, slot, categoryId]);
+  }, [open, businessId, areaId, slot, categoryId, onClearPreview, onPreviewGeoJSON]);
 
   const handleClose = () => {
     onClearPreview?.();
@@ -237,10 +235,7 @@ export default function AreaSponsorModal({
       }
 
       const url = j?.checkout_url as string | undefined;
-      if (!url) {
-        console.error("Checkout response missing checkout_url", j);
-        throw new Error("Stripe did not return a checkout URL.");
-      }
+      if (!url) throw new Error("Stripe did not return a checkout URL.");
 
       window.location.assign(url);
     } catch (e: any) {
@@ -260,13 +255,11 @@ export default function AreaSponsorModal({
   return (
     <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/30 p-4">
       <div
-        className="relative w-full max-w-2xl"
-        style={{
-          transform: `translate(${pos.x}px, ${pos.y}px)`,
-        }}
+        className="w-full max-w-2xl"
+        style={{ transform: `translate(${pos.x}px, ${pos.y}px)` }}
       >
         <div className="w-full rounded-xl bg-white shadow-xl border border-amber-200 overflow-hidden">
-          {/* DRAG BAR (matches other modal header style) */}
+          {/* Header (drag) */}
           <div
             className="px-4 py-3 border-b border-amber-200 flex items-center justify-between bg-amber-50 rounded-t-xl cursor-move select-none"
             onPointerDown={onDragStart}
@@ -286,6 +279,7 @@ export default function AreaSponsorModal({
             <button
               className="text-sm opacity-70 hover:opacity-100"
               onClick={handleClose}
+              disabled={checkingOut}
             >
               Close
             </button>
@@ -295,4 +289,74 @@ export default function AreaSponsorModal({
             <div className="text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded p-3">
               <div className="font-semibold mb-1">Featured sponsorship</div>
               <div>
-                Featured sponsorship makes you first in local search results.
+                Featured sponsorship makes you first in local search results. Preview highlights the
+                purchasable sub-region (for this industry only).
+              </div>
+            </div>
+
+            <div className="text-[11px] text-gray-500">
+              Debug: areaId={areaId} • categoryId={categoryId}
+            </div>
+
+            {pv.loading && (
+              <div className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded p-3">
+                Computing preview…
+              </div>
+            )}
+
+            {pv.error && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
+                {pv.error}
+              </div>
+            )}
+
+            {checkoutErr && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
+                {checkoutErr}
+              </div>
+            )}
+
+            {pv.soldOut && !hasArea && (
+              <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-3">
+                No purchasable area left for this industry in this polygon.
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <Stat label="Total area" value={fmtKm2(pv.totalKm2)} />
+              <Stat label="Available area" value={fmtKm2(pv.availableKm2)} />
+              <Stat label="Price per km² / month" hint="From server" value={GBP(pv.ratePerKm2 ?? null)} />
+              <Stat label="Minimum monthly" hint="Floor price" value="£1.00" />
+              <Stat label="Your monthly price" value={GBP(monthlyPrice)} />
+              <Stat label="Coverage" value={coverageLabel} />
+            </div>
+          </div>
+
+          <div className="px-4 py-3 border-t flex items-center justify-end gap-2">
+            <button className="btn" onClick={handleClose} disabled={checkingOut}>
+              Cancel
+            </button>
+            <button
+              className={`btn ${canBuy ? "btn-primary" : "opacity-60 cursor-default"}`}
+              onClick={startCheckout}
+              disabled={!canBuy}
+              title={canBuy ? "Buy now" : ""}
+            >
+              {checkingOut ? "Redirecting..." : "Buy now"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="border rounded-lg p-3">
+      <div className="text-xs text-gray-500">{label}</div>
+      <div className="mt-1 font-semibold">{value}</div>
+      {hint && <div className="text-[10px] text-gray-400">{hint}</div>}
+    </div>
+  );
+}
