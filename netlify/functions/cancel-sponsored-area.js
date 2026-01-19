@@ -125,9 +125,7 @@ export default async (req) => {
     }
 
     // 1) Cancel at Stripe immediately
-    await stripe.subscriptions.update(row.stripe_subscription_id, {
-  cancel_at_period_end: true,
-});
+    await cancelAtPeriodEnd(row.stripe_subscription_id);
 
     // 2) Update DB row so UI reacts instantly (webhook will also update)
     await sb
@@ -143,8 +141,9 @@ export default async (req) => {
     // 3) Delete the service area polygon
     // Use your existing RPC so all your constraints remain respected.
     const { error: delErr } = await sb.rpc("delete_service_area", {
-      p_area_id: areaId,
-    });
+  p_area_id: areaId,
+  p_cleaner_id: cleanerId,
+});
     if (delErr) throw delErr;
 
     return json({
