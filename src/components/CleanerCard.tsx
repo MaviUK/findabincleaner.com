@@ -64,33 +64,23 @@ function isValidEmail(v: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
-// ✅ ADD THIS RIGHT HERE (below isValidEmail, above CleanerCard)
+// Display-only: always show UK numbers starting with 0 instead of +44/44
 function formatUkPhoneForDisplay(raw: string) {
   if (!raw) return "";
   let s = raw.replace(/\s+/g, "").trim();
 
   // +44XXXXXXXXXX -> 0XXXXXXXXXX
   if (s.startsWith("+44")) {
-    s = "0" + s.slice(3);
-    return s;
+    return "0" + s.slice(3);
   }
 
-  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some people store without +)
+  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some store without +)
   if (s.startsWith("44") && s.length >= 11) {
-    s = "0" + s.slice(2);
+    return "0" + s.slice(2);
   }
 
   return s;
 }
-
-export default function CleanerCard({
-  cleaner,
-  areaId,
-  categoryId,
-  position,
-  featured,
-}: Props) {
-
 
 export default function CleanerCard({
   cleaner,
@@ -110,7 +100,7 @@ export default function CleanerCard({
   const [showEnquiry, setShowEnquiry] = useState(false);
 
   // Desktop: reveal phone number instead of calling
-const [showPhoneNumber, setShowPhoneNumber] = useState(false);
+  const [showPhoneNumber, setShowPhoneNumber] = useState(false);
 
   // enquiry form state
   const [enqName, setEnqName] = useState("");
@@ -284,7 +274,7 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
 
   function closeEnquiry() {
     setShowEnquiry(false);
-    setShowPhoneNumber(false); // ✅ add this
+    setShowPhoneNumber(false);
     setEnqError(null);
     setEnqSending(false);
     setEnqSent(false);
@@ -352,7 +342,7 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
               <div className="flex gap-3 mt-3 sm:hidden">
                 <button
                   type="button"
-                 className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-40"
+                  className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-40"
                   onClick={() => {
                     logClick("click_message");
                     openEnquiry();
@@ -362,20 +352,19 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                 >
                   💬
                 </button>
-<button
-  type="button"
-  className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
-  onClick={() => {
-    logClick("click_phone");
-    if (phone) window.location.href = `tel:${phone}`;
-  }}
-  disabled={!phone}
-  title="Call"
->
-  📞
-</button>
 
-
+                <button
+                  type="button"
+                  className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-40"
+                  onClick={() => {
+                    logClick("click_phone");
+                    if (phone) window.location.href = `tel:${phone}`;
+                  }}
+                  disabled={!phone}
+                  title="Call"
+                >
+                  📞
+                </button>
 
                 <button
                   type="button"
@@ -406,18 +395,17 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                 Message
               </button>
 
-             <button
-  type="button"
-  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
-  onClick={() => {
-    logClick("click_phone");
-    if (phone) setShowPhoneNumber((v) => !v); // toggle show/hide
-  }}
-  disabled={!phone}
->
-  {showPhoneNumber ? phone : "Phone"}
-</button>
-
+              <button
+                type="button"
+                className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
+                onClick={() => {
+                  logClick("click_phone");
+                  if (phone) setShowPhoneNumber((v) => !v); // show/hide
+                }}
+                disabled={!phone}
+              >
+                {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
+              </button>
 
               <button
                 type="button"
@@ -609,7 +597,6 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                       type="button"
                       disabled={!canSend}
                       className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
-
                       onClick={() => {
                         logClick("click_message");
                         void sendViaWhatsApp();
@@ -638,7 +625,11 @@ const [showPhoneNumber, setShowPhoneNumber] = useState(false);
                         : "Send enquiry"
                     }
                   >
-                    {enqSending && lastChannel !== "whatsapp" ? "Sending…" : enqSent && lastChannel === "email" ? "Sent ✓" : "Send Enquiry"}
+                    {enqSending && lastChannel !== "whatsapp"
+                      ? "Sending…"
+                      : enqSent && lastChannel === "email"
+                        ? "Sent ✓"
+                        : "Send Enquiry"}
                   </button>
 
                   {!whatsapp && phone ? (
