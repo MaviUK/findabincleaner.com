@@ -133,7 +133,10 @@ export default function DeleteAreaModal({
                   if (!res.ok || !j?.ok) throw new Error(j?.error || `Failed (${res.status})`);
 
                   // ✅ ensure polygon is deleted (even if the function only cancels)
-                  const del = await supabase.rpc("delete_service_area", { p_area_id: areaId });
+                  const del = await supabase.rpc("delete_service_area", {
+  p_area_id: areaId,
+  p_cleaner_id: cleanerId,
+});
                   if (del.error) {
                     // ignore "already deleted" / "not found" style errors
                     const msg = String(del.error.message || "");
@@ -142,7 +145,11 @@ export default function DeleteAreaModal({
                     }
                   }
                 } else {
-                  const { error } = await supabase.rpc("delete_service_area", { p_area_id: areaId });
+                  const { error } = await supabase.rpc("delete_service_area", {
+  p_area_id: areaId,
+  p_cleaner_id: cleanerId,
+});
+
                   if (error) throw error;
                 }
 
