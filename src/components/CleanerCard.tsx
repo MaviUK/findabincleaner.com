@@ -593,31 +593,30 @@ export default function CleanerCard({
                     </span>
                   </label>
 
-                  {/* MOBILE ONLY: WhatsApp button (ALWAYS SHOWN; disabled if not available) */}
-                  <button
-                    type="button"
-                    disabled={!whatsapp || !canSend}
-                    className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
-                    onClick={() => {
-                      logClick("click_message");
-                      void sendViaWhatsApp();
-                    }}
-                    title={
-                      !whatsapp
-                        ? "WhatsApp is not available for this business."
-                        : !canSend
-                          ? "Please complete all fields and confirm you have read and understood the information above"
-                          : "Send via WhatsApp"
-                    }
-                  >
-                    {!whatsapp
-                      ? "WhatsApp not available"
-                      : enqSending && lastChannel === "whatsapp"
-                        ? "Saving…"
-                        : enqSent && lastChannel === "whatsapp"
-                          ? "Opened ✓"
-                          : "Send via WhatsApp"}
-                  </button>
+                  {/* MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
+{whatsapp && (
+  <button
+    type="button"
+    disabled={!canSend}
+    className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+    onClick={() => {
+      logClick("click_message");
+      void sendViaWhatsApp();
+    }}
+    title={
+      !canSend
+        ? "Please complete all fields and confirm you have read and understood the information above"
+        : "Send via WhatsApp"
+    }
+  >
+    {enqSending && lastChannel === "whatsapp"
+      ? "Saving…"
+      : enqSent && lastChannel === "whatsapp"
+        ? "Opened ✓"
+        : "Send via WhatsApp"}
+  </button>
+)}
+
 
                   {/* EMAIL: always visible (desktop should only see this) */}
                   <button
