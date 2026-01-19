@@ -545,8 +545,10 @@ useEffect(() => {
         return false;
       }
 
-      // ✅ Resolve sponsor zone for this area (DB is source of truth)
-const { data: zoneId, error: zoneErr } = await supabase.rpc(
+// ✅ Resolve sponsor zone for this area (DB is source of truth)
+// Supabase RPC returns either a scalar uuid OR an object/row depending on how the function was created.
+// This handles both safely.
+const { data: zoneOut, error: zoneErr } = await supabase.rpc(
   "get_sponsor_zone_id_for_area",
   {
     p_area_id: areaId,
@@ -554,12 +556,24 @@ const { data: zoneId, error: zoneErr } = await supabase.rpc(
   }
 );
 
-if (zoneErr || !zoneId) {
+if (zoneErr) {
+  setError(zoneErr.message || "Failed to look up sponsor zone.");
+  return false;
+}
+
+// support either: "uuid-string" OR { zone_id: "uuid-string" } OR [{ zone_id: "..." }]
+const zoneIdResolved =
+  typeof zoneOut === "string"
+    ? zoneOut
+    : Array.isArray(zoneOut)
+      ? (zoneOut?.[0]?.zone_id as string | undefined)
+      : (zoneOut as any)?.zone_id;
+
+if (!zoneIdResolved) {
   setError("No sponsor zone found for this area.");
   return false;
 }
 
-const zoneIdResolved = zoneId as string;
 
 
       const { data, error } = await supabase.rpc("can_purchase_sponsor_slot", {
