@@ -589,31 +589,6 @@ const guardCanPurchaseSponsor = useCallback(
   [myBusinessId, categoryId]
 );
 
-      const { data, error } = await supabase.rpc("can_purchase_sponsor_slot", {
-        p_zone_id: zoneIdResolved,
-        p_business_id: myBusinessId,
-        p_slot: 1,
-        p_require_coverage: true,
-        p_min_cover_ratio: 0.2,
-      });
-
-      if (error) {
-        setError(error.message);
-        return false;
-      }
-
-      const ok = Boolean((data as any)?.[0]?.ok);
-      const reason = String((data as any)?.[0]?.reason ?? "");
-
-      if (!ok) {
-        setError(reason || "This sponsorship is not available.");
-        return false;
-      }
-
-      return true;
-    },
-    [myBusinessId, categoryId]
-  );
 
   // availability is only meaningful when user can actually purchase (needs myBusinessId)
  const computeAvailabilityForArea = useCallback(
