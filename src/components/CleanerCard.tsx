@@ -73,7 +73,7 @@ function formatUkPhoneForDisplay(raw: string) {
     return "0" + s.slice(3);
   }
 
-  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some store without +)
+  // 44XXXXXXXXXX -> 0XXXXXXXXXX
   if (s.startsWith("44") && s.length >= 11) {
     return "0" + s.slice(2);
   }
@@ -225,7 +225,6 @@ export default function CleanerCard({
 
     if (!validateOrSetError()) return;
 
-    // ✅ set channel BEFORE sending so button text shows "Sending…"
     setLastChannel("email");
     setEnqSending(true);
 
@@ -251,15 +250,11 @@ export default function CleanerCard({
       return;
     }
 
-    // ✅ set channel BEFORE sending so button text shows "Saving…"
     setLastChannel("whatsapp");
     setEnqSending(true);
 
     try {
-      // 1) Store in DB (via same endpoint)
       await postEnquiry("whatsapp");
-
-      // 2) Open WhatsApp
       setEnqSent(true);
       window.open(
         buildWhatsAppUrl(whatsapp, whatsappPrefill),
@@ -302,13 +297,22 @@ export default function CleanerCard({
     ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-  const logoImgClass = featured
-    ? "h-full w-full object-contain"
-    : "h-full w-full object-cover";
+  const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
 
   return (
     <>
-      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
+      <div
+        className={`relative rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4 ${
+          featured ? "ring-2 ring-amber-300 bg-amber-50/40" : ""
+        }`}
+      >
+        {/* ✅ Sponsored badge for ALL sponsored */}
+        {featured && (
+          <div className="absolute top-3 right-3 rounded-full bg-amber-400 px-3 py-1 text-[11px] font-semibold text-white shadow">
+            Sponsored
+          </div>
+        )}
+
         {/* Logo */}
         <div className={logoBoxClass}>
           {cleaner.logo_url ? (
@@ -324,9 +328,7 @@ export default function CleanerCard({
           <div className="flex items-start justify-between gap-3">
             {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">
-                {name}
-              </div>
+              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
               {/* Google rating */}
               {typeof (cleaner as any).google_rating === "number" && (
@@ -441,9 +443,7 @@ export default function CleanerCard({
               <div className="px-5 pt-5 pb-3 border-b border-black/5 shrink-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">
-                      Enquiry to {name}
-                    </h2>
+                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
                     <p className="text-sm text-gray-600 mt-1">
                       Address, phone and email are required.
                     </p>
@@ -465,12 +465,8 @@ export default function CleanerCard({
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
                     ✅ Enquiry saved.
-                    {lastChannel === "email"
-                      ? " A copy has been emailed to you."
-                      : null}
-                    {lastChannel === "whatsapp"
-                      ? " WhatsApp opened in a new tab."
-                      : null}
+                    {lastChannel === "email" ? " A copy has been emailed to you." : null}
+                    {lastChannel === "whatsapp" ? " WhatsApp opened in a new tab." : null}
                   </div>
                 )}
 
@@ -495,8 +491,7 @@ export default function CleanerCard({
                       onPlaceChanged={() => {
                         try {
                           const place = ac?.getPlace?.();
-                          const value =
-                            place?.formatted_address || place?.name || "";
+                          const value = place?.formatted_address || place?.name || "";
                           if (value) {
                             setEnqAddress(value);
                             setEnqSent(false);
@@ -531,9 +526,7 @@ export default function CleanerCard({
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">
-                    Pick from suggestions for best results.
-                  </p>
+                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -563,9 +556,7 @@ export default function CleanerCard({
                     required
                   />
                   {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
-                    <p className="text-xs text-red-600">
-                      Enter a valid email address.
-                    </p>
+                    <p className="text-xs text-red-600">Enter a valid email address.</p>
                   ) : null}
                 </Field>
 
@@ -600,16 +591,15 @@ export default function CleanerCard({
                       onChange={(e) => setEnqAccepted(e.target.checked)}
                     />
                     <span>
-                      I have read and understand that my details and message will
-                      be shared with the business I am contacting so they can
-                      respond. We also store this information securely in
-                      Kleanly’s database for up to 24 months for record-keeping,
-                      support and service improvement. I may be contacted for
+                      I have read and understand that my details and message will be shared with
+                      the business I am contacting so they can respond. We also store this
+                      information securely in Kleanly’s database for up to 24 months for
+                      record-keeping, support and service improvement. I may be contacted for
                       feedback about my experience. No marketing.
                     </span>
                   </label>
 
-                  {/* ✅ MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
+                  {/* ✅ MOBILE ONLY: WhatsApp button */}
                   {whatsapp && (
                     <button
                       type="button"
@@ -633,7 +623,7 @@ export default function CleanerCard({
                     </button>
                   )}
 
-                  {/* ✅ EMAIL: always visible (desktop should effectively only use this) */}
+                  {/* ✅ EMAIL */}
                   <button
                     type="button"
                     onClick={() => {
@@ -656,8 +646,8 @@ export default function CleanerCard({
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  Your enquiry won’t send until all required fields are completed
-                  and you confirm you have read the information above.
+                  Your enquiry won’t send until all required fields are completed and you confirm
+                  you have read the information above.
                 </p>
               </div>
             </div>
