@@ -1,3 +1,4 @@
+// netlify/functions/sponsored-preview.js
 import { createClient } from "@supabase/supabase-js";
 
 const json = (status, body) =>
@@ -8,23 +9,20 @@ const json = (status, body) =>
 
 const EPS = 1e-6;
 
-/**
- * Lazy init so missing env vars don't crash at import-time.
- * Supports both SUPABASE_SERVICE_ROLE (your Netlify var) and SUPABASE_SERVICE_ROLE_KEY.
- */
 function getSupabaseAdmin() {
   const url = process.env.SUPABASE_URL;
   const key =
-    process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env.SUPABASE_SERVICE_ROLE ||
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY; // ✅ allow this too
 
   if (!url || !key) {
-    // This exact error will show in Netlify function logs
     throw new Error(
       "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE (service role key) in Netlify env."
     );
   }
 
-  return createClient(url, key);
+  return createClient(url, key, { auth: { persistSession: false } });
 }
 
 export default async (req) => {
@@ -53,25 +51,82 @@ export default async (req) => {
   try {
     const sb = getSupabaseAdmin();
 
-    // IMPORTANT: call the INTERNAL function that returns geojson + ewkt
-    const { data, error } = await sb.rpc("area_remaining_preview_internal", {
-      p_area_id: areaId,
-      p_category_id: categoryId,
-      p_slot: slot,
-    });
-    if (error) throw error;
+    // 1) Find the sponsor_zone for this service area + category
+    const { data: zData, error: zErr } = await sb.rpc(
+      "get_sponsor_zone_id_for_area",
+      {
+        p_area_id: areaId,
+        p_category_id: categoryId,
+      }
+    );
+    if (zErr) throw zErr;
 
-    // Supabase RPC returns an array for RETURNS TABLE
-    const row = Array.isArray(data) ? data[0] : data;
-    if (!row) return json(404, { ok: false, error: "Area not found" });
+    const zoneId = (Array.isArray(zData) ? zData[0] : zData) || null;
 
-    const totalKm2 = Number(row.total_km2 ?? 0) || 0;
-    const availableKm2 = Number(row.available_km2 ?? 0) || 0;
+    // No zone match => treated as sold out / not available
+    if (!zoneId) {
+      return json(200, {
+        ok: true,
+        total_km2: 0,
+        available_km2: 0,
+        sold_out: true,
+        reason: "no_zone_match",
+        geojson: null,
+        ewkt: null,
+        rate_per_km2: 0,
+        price_cents: 0,
+      });
+    }
 
-    const soldOut =
-      Boolean(row.sold_out) ||
-      !Number.isFinite(availableKm2) ||
-      availableKm2 <= EPS;
+    // 2) Ask DB if it is purchasable (THIS is the source of truth)
+    const { data: canData, error: canErr } = await sb.rpc(
+      "can_purchase_sponsor_slot",
+      {
+        p_require_coverage: false,
+        p_slot: slot,
+        p_zone_id: zoneId,
+      }
+    );
+    if (canErr) throw canErr;
+
+    const canPurchase = Boolean(Array.isArray(canData) ? canData[0] : canData);
+
+    // 3) Optional preview geometry (nice to have)
+    // If it fails, we still allow purchase if canPurchase=true.
+    let totalKm2 = 0;
+    let availableKm2 = 0;
+    let geojson = null;
+    let ewkt = null;
+    let reason = "ok";
+
+    try {
+      const { data, error } = await sb.rpc("area_remaining_preview_internal", {
+        p_area_id: areaId,
+        p_category_id: categoryId,
+        p_slot: slot,
+      });
+
+      if (!error) {
+        const row = Array.isArray(data) ? data[0] : data;
+        if (row) {
+          totalKm2 = Number(row.total_km2 ?? 0) || 0;
+          availableKm2 = Number(row.available_km2 ?? 0) || 0;
+          geojson = row.geojson ?? null;
+          ewkt = row.ewkt ?? null;
+          reason = row.reason ?? reason;
+        }
+      }
+    } catch {
+      // ignore preview failures
+    }
+
+    // If DB says purchasable, never show sold_out.
+    const soldOut = !canPurchase;
+
+    // If purchasable but preview returned 0, give it a tiny non-zero so UI doesn’t block.
+    if (!soldOut && (!Number.isFinite(availableKm2) || availableKm2 <= EPS)) {
+      availableKm2 = Math.max(0.01, availableKm2 || 0); // 0.01 km² placeholder
+    }
 
     const ratePerKm2 =
       Number(
@@ -86,14 +141,14 @@ export default async (req) => {
 
     return json(200, {
       ok: true,
+      zone_id: zoneId,
       total_km2: totalKm2,
       available_km2: availableKm2,
       sold_out: soldOut,
-      reason: row.reason ?? (soldOut ? "no_remaining" : "ok"),
+      reason: soldOut ? "cannot_purchase" : reason,
 
-      // ✅ these now match your updated SQL function output
-      geojson: row.geojson ?? null,
-      ewkt: row.ewkt ?? null,
+      geojson,
+      ewkt,
 
       rate_per_km2: ratePerKm2,
       price_cents: priceCents,
