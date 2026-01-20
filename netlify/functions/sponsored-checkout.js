@@ -87,16 +87,18 @@ export default async (req) => {
 
     // 1) Block if already sponsored by someone else (same area+slot) (UI uses this for “Manage”)
     const { data: rows, error: takenErr } = await sb
-      .from("sponsored_subscriptions")
-      .select("business_id, status, stripe_subscription_id, created_at")
-      .eq("area_id", areaId)
-      .eq("slot", slot)
-      .order("created_at", { ascending: false });
+  .from("sponsored_subscriptions")
+  .select("business_id, status, stripe_subscription_id, created_at")
+  .eq("area_id", areaId)
+  .eq("slot", slot)
+  .eq("category_id", categoryId) // ✅ IMPORTANT: industry-specific
+  .order("created_at", { ascending: false });
+
 
     if (takenErr) throw takenErr;
 
     const latestBlocking =
-      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) || null;
+  (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) || null;
 
     const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
@@ -157,50 +159,49 @@ export default async (req) => {
     // 2b) ENSURE lock exists and stores EXACT purchasable geojson
     let ensuredLockId = incomingLockId;
 
-    const lockGeo = firstNonNull(
-      row?.gj, // ✅ your wrapper returns gj
-      row?.geojson,
-      row?.sponsored_geojson,
-      row?.final_geojson,
-      row?.geometry,
-      row?.geom
-    );
+// ✅ Canonical: preview must return the purchasable slice as `geojson`
+const lockGeo = row?.geojson ?? null;
 
-    if (!lockGeo) {
-      return json(
-        {
-          ok: false,
-          error:
-            "Preview did not return geometry (expected row.gj/geojson). Fix area_remaining_preview to return gj.",
-        },
-        500
-      );
-    }
+if (!lockGeo) {
+  return json(
+    {
+      ok: false,
+      error:
+        "Preview did not return purchasable geojson. Ensure area_remaining_preview returns `geojson` as the available slice.",
+    },
+    500
+  );
+}
+
 
     if (ensuredLockId) {
       // Update existing lock by id (also ensure it matches current category)
       const { error: upErr } = await sb
         .from("sponsored_locks")
         .update({
-          business_id: cleanerId,
-          category_id: categoryId,
-          is_active: true,
-          geojson: lockGeo,
-        })
+  business_id: cleanerId,
+  category_id: categoryId,
+  is_active: true,
+  geojson: lockGeo,
+  final_geojson: lockGeo,
+})
+
         .eq("id", ensuredLockId);
 
       if (upErr) throw upErr;
     } else {
       // ✅ CORRECT: upsert lock per (area_id, slot, category_id)
       // REQUIRE DB UNIQUE(area_id, slot, category_id)
-      const payload = {
-        area_id: areaId,
-        slot,
-        category_id: categoryId,
-        business_id: cleanerId,
-        is_active: true,
-        geojson: lockGeo,
-      };
+     const payload = {
+  area_id: areaId,
+  slot,
+  category_id: categoryId,
+  business_id: cleanerId,
+  is_active: true,
+  geojson: lockGeo,
+  final_geojson: lockGeo,
+};
+
 
       const { data: lockRow, error: lockErr } = await sb
         .from("sponsored_locks")
