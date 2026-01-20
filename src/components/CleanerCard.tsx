@@ -10,6 +10,7 @@ type Cleaner = {
   website: string | null;
   phone: string | null;
   whatsapp?: string | null;
+  distance_m?: number | null;
 
   area_id?: string | null;
   area_name?: string | null;
@@ -73,7 +74,7 @@ function formatUkPhoneForDisplay(raw: string) {
     return "0" + s.slice(3);
   }
 
-  // 44XXXXXXXXXX -> 0XXXXXXXXXX
+  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some store without +)
   if (s.startsWith("44") && s.length >= 11) {
     return "0" + s.slice(2);
   }
@@ -221,19 +222,17 @@ export default function CleanerCard({
 
   async function sendEnquiryEmail() {
     setEnqSent(false);
-    setEnqError(null);
+    setLastChannel(null);
 
     if (!validateOrSetError()) return;
 
-    setLastChannel("email");
     setEnqSending(true);
-
     try {
       await postEnquiry("email");
+      setLastChannel("email");
       setEnqSent(true);
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
-      setLastChannel(null);
     } finally {
       setEnqSending(false);
     }
@@ -241,7 +240,7 @@ export default function CleanerCard({
 
   async function sendViaWhatsApp() {
     setEnqSent(false);
-    setEnqError(null);
+    setLastChannel(null);
 
     if (!validateOrSetError()) return;
 
@@ -250,11 +249,13 @@ export default function CleanerCard({
       return;
     }
 
-    setLastChannel("whatsapp");
     setEnqSending(true);
-
     try {
+      // 1) Store in DB (via same endpoint)
       await postEnquiry("whatsapp");
+
+      // 2) Open WhatsApp
+      setLastChannel("whatsapp");
       setEnqSent(true);
       window.open(
         buildWhatsAppUrl(whatsapp, whatsappPrefill),
@@ -263,7 +264,6 @@ export default function CleanerCard({
       );
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong.");
-      setLastChannel(null);
     } finally {
       setEnqSending(false);
     }
@@ -301,18 +301,7 @@ export default function CleanerCard({
 
   return (
     <>
-      <div
-        className={`relative rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4 ${
-          featured ? "ring-2 ring-amber-300 bg-amber-50/40" : ""
-        }`}
-      >
-        {/* ✅ Sponsored badge for ALL sponsored */}
-        {featured && (
-          <div className="absolute top-3 right-3 rounded-full bg-amber-400 px-3 py-1 text-[11px] font-semibold text-white shadow">
-            Sponsored
-          </div>
-        )}
-
+      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
         {/* Logo */}
         <div className={logoBoxClass}>
           {cleaner.logo_url ? (
@@ -337,6 +326,12 @@ export default function CleanerCard({
                   {typeof (cleaner as any).google_reviews_count === "number"
                     ? `(${(cleaner as any).google_reviews_count} reviews)`
                     : ""}
+                </div>
+              )}
+
+              {typeof cleaner.distance_m === "number" && (
+                <div className="text-xs text-gray-500 mt-1">
+                  {(cleaner.distance_m / 1000).toFixed(1)} km
                 </div>
               )}
 
@@ -591,42 +586,43 @@ export default function CleanerCard({
                       onChange={(e) => setEnqAccepted(e.target.checked)}
                     />
                     <span>
-                      I have read and understand that my details and message will be shared with
-                      the business I am contacting so they can respond. We also store this
-                      information securely in Kleanly’s database for up to 24 months for
-                      record-keeping, support and service improvement. I may be contacted for
+                      I have read and understand that my details and message will be shared with the business I am
+                      contacting so they can respond. We also store this information securely in Kleanly’s database for
+                      up to 24 months for record-keeping, support and service improvement. I may be contacted for
                       feedback about my experience. No marketing.
                     </span>
                   </label>
 
-                  {/* ✅ MOBILE ONLY: WhatsApp button */}
-                  {whatsapp && (
-                    <button
-                      type="button"
-                      disabled={!canSend}
-                      className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
-                      onClick={() => {
-                        logClick("click_message");
-                        void sendViaWhatsApp();
-                      }}
-                      title={
-                        !canSend
-                          ? "Please complete all fields and confirm you have read and understood the information above"
-                          : "Send via WhatsApp"
-                      }
-                    >
-                      {enqSending && lastChannel === "whatsapp"
-                        ? "Saving…"
-                        : enqSent && lastChannel === "whatsapp"
-                        ? "Opened ✓"
-                        : "Send via WhatsApp"}
-                    </button>
-                  )}
+                  {/* MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
+{whatsapp && (
+  <button
+    type="button"
+    disabled={!canSend}
+    className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+    onClick={() => {
+      logClick("click_message");
+      void sendViaWhatsApp();
+    }}
+    title={
+      !canSend
+        ? "Please complete all fields and confirm you have read and understood the information above"
+        : "Send via WhatsApp"
+    }
+  >
+    {enqSending && lastChannel === "whatsapp"
+      ? "Saving…"
+      : enqSent && lastChannel === "whatsapp"
+        ? "Opened ✓"
+        : "Send via WhatsApp"}
+  </button>
+)}
 
-                  {/* ✅ EMAIL */}
+
+                  {/* EMAIL: always visible (desktop should only see this) */}
                   <button
                     type="button"
                     onClick={() => {
+                      setLastChannel("email");
                       void sendEnquiryEmail();
                     }}
                     disabled={!canSend}
@@ -640,14 +636,14 @@ export default function CleanerCard({
                     {enqSending && lastChannel === "email"
                       ? "Sending…"
                       : enqSent && lastChannel === "email"
-                      ? "Sent ✓"
-                      : "Send Enquiry"}
+                        ? "Sent ✓"
+                        : "Send Enquiry"}
                   </button>
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  Your enquiry won’t send until all required fields are completed and you confirm
-                  you have read the information above.
+                  Your enquiry won’t send until all required fields are completed and you confirm you have read the
+                  information above.
                 </p>
               </div>
             </div>
