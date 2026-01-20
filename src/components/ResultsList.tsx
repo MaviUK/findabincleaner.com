@@ -24,10 +24,8 @@ function truthy(v: any) {
 }
 
 function isSponsored(c: any) {
-  // Primary flag from RPC
   if (truthy(c?.is_covering_sponsor)) return true;
 
-  // Back-compat fallbacks
   return !!(
     truthy(c?.is_sponsored) ||
     truthy(c?.sponsored) ||
@@ -105,7 +103,6 @@ export default function ResultsList({
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    // Sponsors always first, then shuffled organic
     return [...sponsored, ...shuffled];
   }, [cleaners, postcode]);
 
@@ -115,10 +112,6 @@ export default function ResultsList({
     <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
       {ordered.map((c: any, idx: number) => {
         const cleanerId = c.cleaner_id ?? c.id;
-
-        // ✅ compute sponsorship ONCE
-        const sponsored = isSponsored(c);
-        const isFirstSponsored = sponsored && idx === firstSponsoredIndex;
 
         const cleaner = {
           cleaner_id: cleanerId,
@@ -141,10 +134,9 @@ export default function ResultsList({
 
           area_id: c.area_id ?? null,
           category_id: c.category_id ?? null,
-
-          // ✅ carry flag into the object for card/debugging
-          is_covering_sponsor: sponsored,
         };
+
+        const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
 
         const card = (
           <CleanerCard
@@ -155,11 +147,10 @@ export default function ResultsList({
             position={idx + 1}
             areaId={areaId ?? c.area_id ?? null}
             categoryId={categoryId ?? c.category_id ?? null}
-            featured={sponsored} // ✅ ALL sponsored are visually marked
+            featured={isFirstSponsored}
           />
         );
 
-        // ✅ First sponsored gets the extra-wide featured wrapper
         if (isFirstSponsored) {
           return (
             <div
