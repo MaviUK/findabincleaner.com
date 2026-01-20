@@ -545,34 +545,64 @@ useEffect(() => {
         return false;
       }
 
-// ✅ Resolve sponsor zone for this area (DB is source of truth)
-// Supabase RPC returns either a scalar uuid OR an object/row depending on how the function was created.
-// This handles both safely.
-const { data: zoneOut, error: zoneErr } = await supabase.rpc(
-  "get_sponsor_zone_id_for_area",
-  {
-    p_area_id: areaId,
-    p_category_id: categoryId,
-  }
+// ✅ Purchase-rule guard (uses preview endpoint as source of truth)
+const guardCanPurchaseSponsor = useCallback(
+  async (areaId: string) => {
+    if (!myBusinessId) {
+      setError("Please log in to sponsor an area.");
+      return false;
+    }
+    if (!categoryId) {
+      setError("Please select an industry first.");
+      return false;
+    }
+
+    try {
+      // Ask the same endpoint the modal uses
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId: myBusinessId,
+          cleanerId: myBusinessId,
+          areaId,
+          slot: 1,
+          categoryId,
+        }),
+      });
+
+      if (!res.ok) {
+        setError("Could not check sponsorship availability. Please try again.");
+        return false;
+      }
+
+      const j = await res.json();
+
+      if (!j?.ok) {
+        setError(j?.reason || "This sponsorship is not available.");
+        return false;
+      }
+
+      // If the preview says sold out / no remaining purchasable area, block
+      const soldOut = Boolean(j?.sold_out);
+      const km2 = Number(j?.available_km2 ?? j?.remaining_km2 ?? j?.area_km2 ?? 0);
+      const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
+
+      if (!hasRemaining) {
+        setError("No purchasable region available (sold out).");
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      console.warn("[guardCanPurchaseSponsor] preview check failed:", e);
+      setError("Could not check sponsorship availability. Please try again.");
+      return false;
+    }
+  },
+  [myBusinessId, categoryId]
 );
 
-if (zoneErr) {
-  setError(zoneErr.message || "Failed to look up sponsor zone.");
-  return false;
-}
-
-// support either: "uuid-string" OR { zone_id: "uuid-string" } OR [{ zone_id: "..." }]
-const zoneIdResolved =
-  typeof zoneOut === "string"
-    ? zoneOut
-    : Array.isArray(zoneOut)
-      ? (zoneOut?.[0]?.zone_id as string | undefined)
-      : (zoneOut as any)?.zone_id;
-
-if (!zoneIdResolved) {
-  setError("No sponsor zone found for this area.");
-  return false;
-}
 
 
 
