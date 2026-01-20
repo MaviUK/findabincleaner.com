@@ -20,22 +20,11 @@ export type FindCleanersProps = {
 type RpcRow = {
   cleaner_id: string;
   business_name: string | null;
-
   area_id: string | null;
   area_name: string | null;
-
-  // ✅ sponsor flag (now returned by the fixed RPC)
   is_covering_sponsor: boolean | null;
 
-  // optional fields (RPC may or may not return these)
-  website?: string | null;
-  phone?: string | null;
-  whatsapp?: string | null;
-  rating_avg?: number | null;
-  rating_count?: number | null;
-  distance_meters?: number | null;
-
-  // optional google fields
+  // (optional) if RPC returns these, fine; if not, we still pull from cleaners table
   google_rating?: number | null;
   google_reviews_count?: number | null;
 };
@@ -187,14 +176,13 @@ export default function FindCleaners({
         geo.result.region ||
         "";
 
-      // 2) ✅ Use the correct RPC (returns is_covering_sponsor properly)
+      // 2) RPC returns eligible cleaners + sponsor flags + matched area
       const { data: rpcRows, error: rpcErr } = await supabase.rpc(
-        "search_cleaners_by_location",
+        "search_cleaners",
         {
           p_category_slug: serviceSlug,
           p_lat: lat,
           p_lng: lng,
-          p_limit: 50,
         }
       );
 
@@ -375,3 +363,5 @@ export default function FindCleaners({
     </div>
   );
 }
+
+

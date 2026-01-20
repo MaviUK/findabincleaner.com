@@ -10,7 +10,6 @@ type Cleaner = {
   website: string | null;
   phone: string | null;
   whatsapp?: string | null;
-  distance_m?: number | null;
 
   area_id?: string | null;
   area_name?: string | null;
@@ -222,17 +221,20 @@ export default function CleanerCard({
 
   async function sendEnquiryEmail() {
     setEnqSent(false);
-    setLastChannel(null);
+    setEnqError(null);
 
     if (!validateOrSetError()) return;
 
+    // ✅ set channel BEFORE sending so button text shows "Sending…"
+    setLastChannel("email");
     setEnqSending(true);
+
     try {
       await postEnquiry("email");
-      setLastChannel("email");
       setEnqSent(true);
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong sending your enquiry.");
+      setLastChannel(null);
     } finally {
       setEnqSending(false);
     }
@@ -240,7 +242,7 @@ export default function CleanerCard({
 
   async function sendViaWhatsApp() {
     setEnqSent(false);
-    setLastChannel(null);
+    setEnqError(null);
 
     if (!validateOrSetError()) return;
 
@@ -249,13 +251,15 @@ export default function CleanerCard({
       return;
     }
 
+    // ✅ set channel BEFORE sending so button text shows "Saving…"
+    setLastChannel("whatsapp");
     setEnqSending(true);
+
     try {
       // 1) Store in DB (via same endpoint)
       await postEnquiry("whatsapp");
 
       // 2) Open WhatsApp
-      setLastChannel("whatsapp");
       setEnqSent(true);
       window.open(
         buildWhatsAppUrl(whatsapp, whatsappPrefill),
@@ -264,6 +268,7 @@ export default function CleanerCard({
       );
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong.");
+      setLastChannel(null);
     } finally {
       setEnqSending(false);
     }
@@ -297,7 +302,9 @@ export default function CleanerCard({
     ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-  const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
+  const logoImgClass = featured
+    ? "h-full w-full object-contain"
+    : "h-full w-full object-cover";
 
   return (
     <>
@@ -317,7 +324,9 @@ export default function CleanerCard({
           <div className="flex items-start justify-between gap-3">
             {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
+              <div className="text-lg font-bold text-gray-900 truncate">
+                {name}
+              </div>
 
               {/* Google rating */}
               {typeof (cleaner as any).google_rating === "number" && (
@@ -326,12 +335,6 @@ export default function CleanerCard({
                   {typeof (cleaner as any).google_reviews_count === "number"
                     ? `(${(cleaner as any).google_reviews_count} reviews)`
                     : ""}
-                </div>
-              )}
-
-              {typeof cleaner.distance_m === "number" && (
-                <div className="text-xs text-gray-500 mt-1">
-                  {(cleaner.distance_m / 1000).toFixed(1)} km
                 </div>
               )}
 
@@ -438,7 +441,9 @@ export default function CleanerCard({
               <div className="px-5 pt-5 pb-3 border-b border-black/5 shrink-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
+                    <h2 className="text-xl font-bold truncate">
+                      Enquiry to {name}
+                    </h2>
                     <p className="text-sm text-gray-600 mt-1">
                       Address, phone and email are required.
                     </p>
@@ -460,8 +465,12 @@ export default function CleanerCard({
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
                     ✅ Enquiry saved.
-                    {lastChannel === "email" ? " A copy has been emailed to you." : null}
-                    {lastChannel === "whatsapp" ? " WhatsApp opened in a new tab." : null}
+                    {lastChannel === "email"
+                      ? " A copy has been emailed to you."
+                      : null}
+                    {lastChannel === "whatsapp"
+                      ? " WhatsApp opened in a new tab."
+                      : null}
                   </div>
                 )}
 
@@ -486,7 +495,8 @@ export default function CleanerCard({
                       onPlaceChanged={() => {
                         try {
                           const place = ac?.getPlace?.();
-                          const value = place?.formatted_address || place?.name || "";
+                          const value =
+                            place?.formatted_address || place?.name || "";
                           if (value) {
                             setEnqAddress(value);
                             setEnqSent(false);
@@ -521,7 +531,9 @@ export default function CleanerCard({
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
+                  <p className="text-xs text-gray-500">
+                    Pick from suggestions for best results.
+                  </p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -551,7 +563,9 @@ export default function CleanerCard({
                     required
                   />
                   {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
-                    <p className="text-xs text-red-600">Enter a valid email address.</p>
+                    <p className="text-xs text-red-600">
+                      Enter a valid email address.
+                    </p>
                   ) : null}
                 </Field>
 
@@ -586,43 +600,43 @@ export default function CleanerCard({
                       onChange={(e) => setEnqAccepted(e.target.checked)}
                     />
                     <span>
-                      I have read and understand that my details and message will be shared with the business I am
-                      contacting so they can respond. We also store this information securely in Kleanly’s database for
-                      up to 24 months for record-keeping, support and service improvement. I may be contacted for
+                      I have read and understand that my details and message will
+                      be shared with the business I am contacting so they can
+                      respond. We also store this information securely in
+                      Kleanly’s database for up to 24 months for record-keeping,
+                      support and service improvement. I may be contacted for
                       feedback about my experience. No marketing.
                     </span>
                   </label>
 
-                  {/* MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
-{whatsapp && (
-  <button
-    type="button"
-    disabled={!canSend}
-    className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
-    onClick={() => {
-      logClick("click_message");
-      void sendViaWhatsApp();
-    }}
-    title={
-      !canSend
-        ? "Please complete all fields and confirm you have read and understood the information above"
-        : "Send via WhatsApp"
-    }
-  >
-    {enqSending && lastChannel === "whatsapp"
-      ? "Saving…"
-      : enqSent && lastChannel === "whatsapp"
-        ? "Opened ✓"
-        : "Send via WhatsApp"}
-  </button>
-)}
+                  {/* ✅ MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
+                  {whatsapp && (
+                    <button
+                      type="button"
+                      disabled={!canSend}
+                      className="sm:hidden inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-[#25D366] text-white hover:bg-[#20bd59] disabled:opacity-40 disabled:cursor-not-allowed"
+                      onClick={() => {
+                        logClick("click_message");
+                        void sendViaWhatsApp();
+                      }}
+                      title={
+                        !canSend
+                          ? "Please complete all fields and confirm you have read and understood the information above"
+                          : "Send via WhatsApp"
+                      }
+                    >
+                      {enqSending && lastChannel === "whatsapp"
+                        ? "Saving…"
+                        : enqSent && lastChannel === "whatsapp"
+                        ? "Opened ✓"
+                        : "Send via WhatsApp"}
+                    </button>
+                  )}
 
-
-                  {/* EMAIL: always visible (desktop should only see this) */}
+                  {/* ✅ EMAIL: always visible (desktop should effectively only use this) */}
                   <button
                     type="button"
                     onClick={() => {
-                      setLastChannel("email");
                       void sendEnquiryEmail();
                     }}
                     disabled={!canSend}
@@ -636,14 +650,14 @@ export default function CleanerCard({
                     {enqSending && lastChannel === "email"
                       ? "Sending…"
                       : enqSent && lastChannel === "email"
-                        ? "Sent ✓"
-                        : "Send Enquiry"}
+                      ? "Sent ✓"
+                      : "Send Enquiry"}
                   </button>
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  Your enquiry won’t send until all required fields are completed and you confirm you have read the
-                  information above.
+                  Your enquiry won’t send until all required fields are completed
+                  and you confirm you have read the information above.
                 </p>
               </div>
             </div>
