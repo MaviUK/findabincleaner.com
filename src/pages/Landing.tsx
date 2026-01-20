@@ -1,10 +1,10 @@
 // src/pages/Landing.tsx
 import { useEffect, useMemo, useState } from "react";
-import FindCleaners, { type MatchOut, type ServiceSlug } from "../components/FindCleaners";
+import FindCleaners, { type ServiceSlug } from "../components/FindCleaners";
 import ResultsList from "../components/ResultsList";
 import { supabase } from "../lib/supabase";
 
-type Cleaner = MatchOut;
+type Cleaner = any;
 
 const SERVICE_BUTTONS: {
   slug: ServiceSlug;
@@ -48,10 +48,12 @@ export default function Landing() {
   const [searchLat, setSearchLat] = useState<number | null>(null);
   const [searchLng, setSearchLng] = useState<number | null>(null);
 
-  // ✅ categories lookup so we can map slug -> category_id (kept for future use)
-  const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>([]);
+  // ✅ NEW: categories lookup so we can log category_id correctly
+  const [serviceCategories, setServiceCategories] = useState<ServiceCategory[]>(
+    []
+  );
 
-  // ✅ current search “context” ids (kept for future use)
+  // ✅ NEW: current search “context” ids passed down for analytics attribution
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [activeAreaId, setActiveAreaId] = useState<string | null>(null);
 
@@ -90,7 +92,8 @@ export default function Landing() {
   }, [categoryIdForSlug]);
 
   const activeService = useMemo(
-    () => SERVICE_BUTTONS.find((s) => s.slug === serviceSlug) ?? SERVICE_BUTTONS[0],
+    () =>
+      SERVICE_BUTTONS.find((s) => s.slug === serviceSlug) ?? SERVICE_BUTTONS[0],
     [serviceSlug]
   );
 
@@ -101,7 +104,9 @@ export default function Landing() {
       <section className="container mx-auto max-w-5xl px-4 py-10 sm:py-12">
         {/* Hero */}
         <div className="text-center">
-          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">Welcome to</h1>
+          <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight">
+            Welcome to
+          </h1>
           <div className="mt-2 text-5xl sm:text-6xl font-extrabold tracking-tight">
             <span className="bg-clip-text text-transparent bg-gradient-to-r from-blue-400 via-cyan-300 via-emerald-400 to-yellow-300 bg-[length:200%_200%] animate-klean-gradient">
               Klean.ly
@@ -109,7 +114,8 @@ export default function Landing() {
           </div>
 
           <p className="text-gray-600 mt-4 max-w-2xl mx-auto">
-            Pick a service, enter your postcode, and contact trusted local cleaners in minutes.
+            Pick a service, enter your postcode, and contact trusted local
+            cleaners in minutes.
           </p>
         </div>
 
@@ -120,8 +126,12 @@ export default function Landing() {
             {/* Service picker */}
             <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
               <div>
-                <div className="text-sm font-semibold text-gray-900">Service</div>
-                <div className="text-xs text-gray-500 mt-1">{activeService.blurb}</div>
+                <div className="text-sm font-semibold text-gray-900">
+                  Service
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {activeService.blurb}
+                </div>
               </div>
 
               <div className="inline-flex flex-wrap justify-center sm:justify-end gap-2">
@@ -140,13 +150,19 @@ export default function Landing() {
                       className={[
                         "px-4 py-2 rounded-xl border text-sm font-semibold transition",
                         "focus:outline-none focus:ring-2 focus:ring-emerald-500/40",
-                        "flex items-center justify-center gap-2",
+                        "flex items-center justify-center gap-2", // ✅ icon+label layout
                         active
                           ? "bg-emerald-700 text-white border-emerald-700 shadow-sm"
                           : "bg-white text-gray-900 border-gray-200 hover:border-gray-300",
                       ].join(" ")}
                     >
-                      <img src={b.icon} alt="" className="h-5 w-5 shrink-0" aria-hidden="true" />
+                      {/* ✅ render image icon instead of printing the string */}
+                      <img
+                        src={b.icon}
+                        alt=""
+                        className="h-5 w-5 shrink-0"
+                        aria-hidden="true"
+                      />
                       <span>{b.label}</span>
                     </button>
                   );
@@ -163,7 +179,7 @@ export default function Landing() {
                   setActiveAreaId(null);
                 }}
                 onSearchComplete={(results, pc, town, lat, lng) => {
-                  const next = (results || []) as Cleaner[];
+                  const next = results || [];
                   setCleaners(next);
 
                   setPostcode(pc || "");
@@ -172,11 +188,10 @@ export default function Landing() {
                   setSearchLat(typeof lat === "number" ? lat : null);
                   setSearchLng(typeof lng === "number" ? lng : null);
 
-                  // keep these for future click attribution if needed elsewhere
+                  // ✅ Set active area from the results (first result’s area_id)
+                  // This is used so "Stats by Area" + click attribution has an area_id to group against.
                   const firstAreaId = (next?.[0] as any)?.area_id ?? null;
                   setActiveAreaId(firstAreaId);
-
-                  // activeCategoryId stays synced by effect (categoryIdForSlug)
                 }}
               />
             </div>
@@ -195,9 +210,12 @@ export default function Landing() {
             <div className="mt-6">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-xs tracking-widest text-gray-500">RESULTS</div>
+                  <div className="text-xs tracking-widest text-gray-500">
+                    RESULTS
+                  </div>
                   <div className="text-lg font-bold text-gray-900 truncate">
-                    {cleaners.length} {cleaners.length === 1 ? "business" : "businesses"}{" "}
+                    {cleaners.length}{" "}
+                    {cleaners.length === 1 ? "business" : "businesses"}{" "}
                     {postcode ? `near ${postcode.toUpperCase()}` : "near you"}
                     {locality ? ` • ${locality}` : ""}
                   </div>
@@ -205,6 +223,7 @@ export default function Landing() {
 
                 <div className="shrink-0">
                   <span className="inline-flex items-center gap-2 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-100 px-3 py-1 text-sm">
+                    {/* ✅ render image icon here too */}
                     <img
                       src={activeService.icon}
                       alt=""
@@ -217,8 +236,14 @@ export default function Landing() {
               </div>
 
               <div className="mt-4">
-                {/* ✅ Updated to match ResultsList props (fixes the build) */}
-                <ResultsList results={cleaners} postcode={postcode} serviceSlug={serviceSlug} />
+                <ResultsList
+                  cleaners={cleaners}
+                  postcode={postcode}
+                  locality={locality}
+                  // ✅ crucial: ensures clicks log with correct ids
+                  categoryId={activeCategoryId}
+                  areaId={activeAreaId}
+                />
               </div>
             </div>
           )}

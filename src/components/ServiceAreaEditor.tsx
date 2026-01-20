@@ -1061,35 +1061,29 @@ if (!zoneIdResolved) {
                   : "Sponsor (Featured)";
 
                 const onClick = async () => {
-  if (disabled) return;
+                  if (disabled) return;
 
-  // ✅ clear any old “not available” message from previous clicks
-  setError(null);
+                  if (mine) {
+                    if (onSlotAction) await onSlotAction({ id: a.id, name: a.name }, 1);
+                    else {
+                      setManageAreaId(a.id);
+                      setManageOpen(true);
+                    }
+                    return;
+                  }
 
-  if (mine) {
-    if (onSlotAction) await onSlotAction({ id: a.id, name: a.name }, 1);
-    else {
-      setManageAreaId(a.id);
-      setManageOpen(true);
-    }
-    return;
-  }
+                 if (!categoryId) {
+  setError("Please select an industry first (Bin Cleaner / Domestic / Window Cleaner).");
+  return;
+}
 
-  if (!categoryId) {
-    setError("Please select an industry first (Bin Cleaner / Domestic / Window Cleaner).");
-    return;
-  }
+const ok = await guardCanPurchaseSponsor(a.id);
+if (!ok) return;
 
-  const ok = await guardCanPurchaseSponsor(a.id);
-  if (!ok) return;
+setSponsorAreaId(a.id);
+setSponsorOpen(true);
 
-  // ✅ clear again (guard may have set an error previously)
-  setError(null);
-
-  setSponsorAreaId(a.id);
-  setSponsorOpen(true);
-};
-
+                };
 
                 return (
                   <li
@@ -1103,16 +1097,15 @@ if (!zoneIdResolved) {
                     }`}
                   >
                     <button
-  type="button"
-  onClick={() => {
-    setError(null); // ✅ clears stale sponsor error when switching areas
-    zoomToArea(a);
-    window.setTimeout(() => scrollToMapOnMobile(), 300);
-  }}
-  className="text-left w-full group"
-  title="Click to zoom to this area"
->
+                      type="button"
+                      onClick={() => {
+  zoomToArea(a);
+  window.setTimeout(() => scrollToMapOnMobile(), 300);
+}}
 
+                      className="text-left w-full group"
+                      title="Click to zoom to this area"
+                    >
                       <div className="font-medium truncate group-hover:underline">{a.name}</div>
 
                       <div className="text-xs text-gray-500 mt-1">

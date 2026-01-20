@@ -41,7 +41,7 @@ export type MatchOut = {
   rating_avg: number | null;
   rating_count: number | null;
 
-  // ✅ google rating fields
+  // ✅ NEW: google rating fields
   google_rating?: number | null;
   google_reviews_count?: number | null;
 
@@ -202,7 +202,7 @@ export default function FindCleaners({
       }
 
       // 3) Fetch full cleaner details for eligible IDs
-      // ✅ include google fields
+      // ✅ IMPORTANT: include google fields here
       const { data: cleaners, error: cleanersErr } = await supabase
         .from("cleaners")
         .select(
@@ -326,6 +326,7 @@ export default function FindCleaners({
 
     setPostcode(pc); // keep input synced
     void lookup(undefined, pc);
+    // intentionally only depends on serviceSlug
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceSlug]);
 
@@ -362,3 +363,5 @@ export default function FindCleaners({
     </div>
   );
 }
+
+
