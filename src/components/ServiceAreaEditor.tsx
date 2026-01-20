@@ -533,18 +533,6 @@ useEffect(() => {
   })();
 }, [categoryId, sponsorshipVersion]);
 
-  // ✅ Purchase-rule guard (DB is source of truth)
-  const guardCanPurchaseSponsor = useCallback(
-    async (areaId: string) => {
-      if (!myBusinessId) {
-        setError("Please log in to sponsor an area.");
-        return false;
-      }
-      if (!categoryId) {
-        setError("Please select an industry first.");
-        return false;
-      }
-
 // ✅ Purchase-rule guard (uses preview endpoint as source of truth)
 const guardCanPurchaseSponsor = useCallback(
   async (areaId: string) => {
@@ -558,7 +546,6 @@ const guardCanPurchaseSponsor = useCallback(
     }
 
     try {
-      // Ask the same endpoint the modal uses
       const res = await fetch("/.netlify/functions/sponsored-preview", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -583,7 +570,6 @@ const guardCanPurchaseSponsor = useCallback(
         return false;
       }
 
-      // If the preview says sold out / no remaining purchasable area, block
       const soldOut = Boolean(j?.sold_out);
       const km2 = Number(j?.available_km2 ?? j?.remaining_km2 ?? j?.area_km2 ?? 0);
       const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
@@ -602,9 +588,6 @@ const guardCanPurchaseSponsor = useCallback(
   },
   [myBusinessId, categoryId]
 );
-
-
-
 
       const { data, error } = await supabase.rpc("can_purchase_sponsor_slot", {
         p_zone_id: zoneIdResolved,
