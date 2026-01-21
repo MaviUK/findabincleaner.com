@@ -86,13 +86,13 @@ export default async (req) => {
     const sb = getSupabaseAdmin();
 
     // 1) Block if already sponsored by someone else (same area+slot) (UI uses this for “Manage”)
-    const { data: rows, error: takenErr } = await sb
-  .from("sponsored_subscriptions")
-  .select("business_id, status, stripe_subscription_id, created_at")
-  .eq("area_id", areaId)
-  .eq("slot", slot)
-  .eq("category_id", categoryId) // ✅ IMPORTANT: industry-specific
-  .order("created_at", { ascending: false });
+        const { data: rows, error: takenErr } = await sb
+      .from("sponsored_subscriptions")
+      .select("business_id, status, stripe_subscription_id, created_at, category_id")
+      .eq("area_id", areaId)
+      .eq("slot", slot)
+      .eq("category_id", categoryId)   // ✅ category-specific
+      .order("created_at", { ascending: false });
 
 
     if (takenErr) throw takenErr;
