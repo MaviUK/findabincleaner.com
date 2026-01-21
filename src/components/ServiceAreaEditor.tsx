@@ -228,11 +228,6 @@ function geoToPaths(geoInput: any): { paths: { lat: number; lng: number }[][] }[
 
 /** area size helper for sorting (km²) */
 function geoMultiPolygonAreaKm2(gjInput: any): number {
-function areaKm2(a: ServiceAreaRow): number {
-  const db = Number(a?.km2);
-  if (Number.isFinite(db) && db > 0) return db;
-  return geoMultiPolygonAreaKm2(a.gj);
-}
 
   const gj = maybeParseGeo(gjInput);
   if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
@@ -252,6 +247,13 @@ function areaKm2(a: ServiceAreaRow): number {
   }
   return Math.max(0, totalM2) / 1_000_000;
 }
+
+function areaKm2(a: ServiceAreaRow): number {
+  const db = Number(a?.km2);
+  if (Number.isFinite(db) && db > 0) return db;
+  return geoMultiPolygonAreaKm2(a.gj);
+}
+
 
 function getScrollParent(el: HTMLElement | null): HTMLElement | null {
   if (!el) return null;
