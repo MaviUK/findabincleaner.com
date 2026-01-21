@@ -20,9 +20,7 @@ export interface ServiceAreaRow {
   name: string;
   gj: any; // GeoJSON MultiPolygon
   created_at: string;
-
-  // ✅ NEW: server-calculated area in km² (PostGIS ST_Area(geom::geography)/1e6)
-  km2?: number | null;
+  km2?: number | null; // ✅ DB-calculated km² from PostGIS
 
   // lock info (from RPC)
   is_sponsored_locked?: boolean;
@@ -228,8 +226,14 @@ function geoToPaths(geoInput: any): { paths: { lat: number; lng: number }[][] }[
   return [];
 }
 
-/** ⚠️ Client area calc is NOT source-of-truth. Only used as a fallback if km2 missing. */
+/** area size helper for sorting (km²) */
 function geoMultiPolygonAreaKm2(gjInput: any): number {
+function areaKm2(a: ServiceAreaRow): number {
+  const db = Number(a?.km2);
+  if (Number.isFinite(db) && db > 0) return db;
+  return geoMultiPolygonAreaKm2(a.gj);
+}
+
   const gj = maybeParseGeo(gjInput);
   if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
 
@@ -268,6 +272,7 @@ function getScrollParent(el: HTMLElement | null): HTMLElement | null {
   return document.scrollingElement as HTMLElement; // fallback
 }
 
+
 type Props = {
   businessId?: string;
   cleanerId?: string;
@@ -303,7 +308,7 @@ export default function ServiceAreaEditor({
   const [serviceAreas, setServiceAreas] = useState<ServiceAreaRow[]>([]);
   const [sponsorship, setSponsorship] = useState<SponsorshipMap>({});
   // ✅ Category-wide sponsored polygons (other businesses)
-  const [categorySponsored, setCategorySponsored] = useState<any[]>([]);
+const [categorySponsored, setCategorySponsored] = useState<any[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -340,17 +345,7 @@ export default function ServiceAreaEditor({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyErr, setCopyErr] = useState<string | null>(null);
 
-  // ✅ helper: source-of-truth km² display
-  const areaKm2 = useCallback(
-    (a: ServiceAreaRow) => {
-      const dbKm2 = Number(a.km2);
-      if (Number.isFinite(dbKm2) && dbKm2 > 0) return dbKm2;
-      // fallback only (should disappear once list_service_areas returns km2)
-      if (!isLoaded) return 0;
-      return geoMultiPolygonAreaKm2(a.gj);
-    },
-    [isLoaded]
-  );
+  
 
   // categories (only meaningful when logged in / myBusinessId known)
   useEffect(() => {
@@ -397,6 +392,8 @@ export default function ServiceAreaEditor({
   }, [draftPolys]);
 
   const fetchAreas = useCallback(async () => {
+    // NOTE: your original code required myBusinessId to list areas.
+    // If your public business page uses this component, it must pass businessId/cleanerId.
     if (!myBusinessId) return;
 
     setLoading(true);
@@ -407,7 +404,7 @@ export default function ServiceAreaEditor({
         p_category_id: categoryId,
       });
       if (error) throw error;
-      setServiceAreas((data as any) || []);
+      setServiceAreas(data || []);
     } catch (e: any) {
       setError(e.message || "Failed to load service areas");
     } finally {
@@ -440,12 +437,15 @@ export default function ServiceAreaEditor({
   function ownedPaintFor(slot: SingleSlotState | null, bizId: string) {
     if (!isOwnedSlot(slot)) return undefined;
 
+    // If we don't know bizId (public/other business pages), treat as "other" => red.
     if (!bizId) return OWNED_BY_OTHER_PAINT;
 
     const isMine = slot?.owner_business_id === bizId;
     return isMine ? OWNED_BY_ME_PAINT : OWNED_BY_OTHER_PAINT;
   }
 
+  // ✅ IMPORTANT FIX:
+  // Fetch sponsorship even when myBusinessId is empty, so other business pages can still show "owned" (red)
   const fetchSponsorship = useCallback(
     async (areaIds: string[]) => {
       if (!areaIds.length) return;
@@ -514,87 +514,91 @@ export default function ServiceAreaEditor({
     fetchSponsorship(ids);
   }, [fetchSponsorship, serviceAreas, sponsorshipVersion]);
 
-  useEffect(() => {
-    if (!categoryId) {
+  // ✅ fetch ALL active sponsored polygons for this category (all businesses)
+useEffect(() => {
+  if (!categoryId) {
+    setCategorySponsored([]);
+    return;
+  }
+
+  (async () => {
+    try {
+      const res = await fetch("/.netlify/functions/category-sponsored-geo", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ categoryId }),
+      });
+
+      if (!res.ok) throw new Error(`category-sponsored-geo ${res.status}`);
+
+      const j = await res.json();
+      setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+    } catch (e) {
+      console.warn("[ServiceAreaEditor] category-sponsored-geo failed:", e);
       setCategorySponsored([]);
-      return;
+    }
+  })();
+}, [categoryId, sponsorshipVersion]);
+
+// ✅ Purchase-rule guard (uses preview endpoint as source of truth)
+const guardCanPurchaseSponsor = useCallback(
+  async (areaId: string) => {
+    if (!myBusinessId) {
+      setError("Please log in to sponsor an area.");
+      return false;
+    }
+    if (!categoryId) {
+      setError("Please select an industry first.");
+      return false;
     }
 
-    (async () => {
-      try {
-        const res = await fetch("/.netlify/functions/category-sponsored-geo", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ categoryId }),
-        });
+    try {
+      const res = await fetch("/.netlify/functions/sponsored-preview", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          businessId: myBusinessId,
+          cleanerId: myBusinessId,
+          areaId,
+          slot: 1,
+          categoryId,
+        }),
+      });
 
-        if (!res.ok) throw new Error(`category-sponsored-geo ${res.status}`);
-
-        const j = await res.json();
-        setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
-      } catch (e) {
-        console.warn("[ServiceAreaEditor] category-sponsored-geo failed:", e);
-        setCategorySponsored([]);
-      }
-    })();
-  }, [categoryId, sponsorshipVersion]);
-
-  const guardCanPurchaseSponsor = useCallback(
-    async (areaId: string) => {
-      if (!myBusinessId) {
-        setError("Please log in to sponsor an area.");
-        return false;
-      }
-      if (!categoryId) {
-        setError("Please select an industry first.");
-        return false;
-      }
-
-      try {
-        const res = await fetch("/.netlify/functions/sponsored-preview", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            businessId: myBusinessId,
-            cleanerId: myBusinessId,
-            areaId,
-            slot: 1,
-            categoryId,
-          }),
-        });
-
-        if (!res.ok) {
-          setError("Could not check sponsorship availability. Please try again.");
-          return false;
-        }
-
-        const j = await res.json();
-
-        if (!j?.ok) {
-          setError(j?.reason || "This sponsorship is not available.");
-          return false;
-        }
-
-        const soldOut = Boolean(j?.sold_out);
-        const km2 = Number(j?.available_km2 ?? j?.remaining_km2 ?? j?.area_km2 ?? 0);
-        const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
-
-        if (!hasRemaining) {
-          setError("No purchasable region available (sold out).");
-          return false;
-        }
-
-        return true;
-      } catch (e) {
-        console.warn("[guardCanPurchaseSponsor] preview check failed:", e);
+      if (!res.ok) {
         setError("Could not check sponsorship availability. Please try again.");
         return false;
       }
-    },
-    [myBusinessId, categoryId]
-  );
 
-  const computeAvailabilityForArea = useCallback(
+      const j = await res.json();
+
+      if (!j?.ok) {
+        setError(j?.reason || "This sponsorship is not available.");
+        return false;
+      }
+
+      const soldOut = Boolean(j?.sold_out);
+      const km2 = Number(j?.available_km2 ?? j?.remaining_km2 ?? j?.area_km2 ?? 0);
+      const hasRemaining = !soldOut && Number.isFinite(km2) ? km2 > 0 : false;
+
+      if (!hasRemaining) {
+        setError("No purchasable region available (sold out).");
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      console.warn("[guardCanPurchaseSponsor] preview check failed:", e);
+      setError("Could not check sponsorship availability. Please try again.");
+      return false;
+    }
+  },
+  [myBusinessId, categoryId]
+);
+
+
+  // availability is only meaningful when user can actually purchase (needs myBusinessId)
+ const computeAvailabilityForArea = useCallback(
     async (areaId: string) => {
       if (!areaId || !myBusinessId) return;
 
@@ -644,31 +648,34 @@ export default function ServiceAreaEditor({
     mapRef.current = map;
   }, []);
 
-  const scrollToMapOnMobile = useCallback(() => {
-    if (typeof window === "undefined") return;
+ const scrollToMapOnMobile = useCallback(() => {
+  if (typeof window === "undefined") return;
 
-    const isMobile = window.matchMedia("(max-width: 767px)").matches;
-    if (!isMobile) return;
+  const isMobile = window.matchMedia("(max-width: 767px)").matches;
+  if (!isMobile) return;
 
-    const target = mapWrapRef.current;
-    if (!target) return;
+  const target = mapWrapRef.current;
+  if (!target) return;
 
-    window.setTimeout(() => {
-      const scroller = getScrollParent(target);
+  // Let fitBounds/layout settle first
+  window.setTimeout(() => {
+    const scroller = getScrollParent(target);
 
-      if (scroller && scroller !== document.scrollingElement) {
-        const scrollerRect = scroller.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
+    // If we found a scrollable container (not the page)
+    if (scroller && scroller !== document.scrollingElement) {
+      const scrollerRect = scroller.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
 
-        const top = targetRect.top - scrollerRect.top + scroller.scrollTop;
-        scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "smooth" });
-        return;
-      }
+      const top = targetRect.top - scrollerRect.top + scroller.scrollTop;
+      scroller.scrollTo({ top: Math.max(0, top - 80), behavior: "smooth" });
+      return;
+    }
 
-      const pageTop = window.scrollY + target.getBoundingClientRect().top;
-      window.scrollTo({ top: Math.max(0, pageTop - 80), behavior: "smooth" });
-    }, 350);
-  }, []);
+    // Fallback: scroll the page
+    const pageTop = window.scrollY + target.getBoundingClientRect().top;
+    window.scrollTo({ top: Math.max(0, pageTop - 80), behavior: "smooth" });
+  }, 350);
+}, []);
 
   const zoomToArea = useCallback(
     (area: ServiceAreaRow) => {
@@ -874,15 +881,70 @@ export default function ServiceAreaEditor({
       return !!slot && slot.taken && isBlockingStatus(slot.status);
     };
 
+    const sizeKm2 = (a: ServiceAreaRow) => geoMultiPolygonAreaKm2(a.gj);
+
     return [...serviceAreas].sort((a, b) => {
       const aS = isSponsored(a.id);
       const bS = isSponsored(b.id);
       if (aS !== bS) return aS ? -1 : 1;
-      return areaKm2(b) - areaKm2(a);
+      return sizeKm2(b) - sizeKm2(a);
     });
-  }, [isLoaded, serviceAreas, sponsorship, areaKm2]);
+  }, [isLoaded, serviceAreas, sponsorship]);
 
-  // ...rest of file unchanged EXCEPT: display km² uses areaKm2(a)
+  const openCopyModal = useCallback(
+    (area: ServiceAreaRow) => {
+      setCopyErr(null);
+
+      if (!categories.length) {
+        setCopyErr("Industries couldn't load. Fix Supabase RLS on the categories table.");
+        setCopyOpen(true);
+        setCopyArea(area);
+        setCopyTargetCategoryId("");
+        setCopyName(area.name ? `${area.name} (copy)` : "");
+        return;
+      }
+
+      setCopyArea(area);
+      setCopyOpen(true);
+
+      const firstOther = categories.find((c) => c.id !== (categoryId ?? ""));
+      setCopyTargetCategoryId(firstOther?.id || "");
+      setCopyName(area.name ? `${area.name} (copy)` : "");
+    },
+    [categories, categoryId]
+  );
+
+  const doCopyToIndustry = useCallback(async () => {
+    if (!copyArea || !copyTargetCategoryId || !myBusinessId) return;
+
+    setCopyBusy(true);
+    setCopyErr(null);
+
+    try {
+      const { error } = await supabase.rpc("clone_service_area_to_category", {
+        p_area_id: copyArea.id,
+        p_cleaner_id: myBusinessId,
+        p_target_category_id: copyTargetCategoryId,
+        p_new_name: copyName?.trim() || null,
+      });
+      if (error) throw error;
+
+      setCopyOpen(false);
+      setCopyArea(null);
+      setCopyTargetCategoryId("");
+      setCopyName("");
+      await fetchAreas();
+    } catch (e: any) {
+      const msg = String(e?.message || "");
+      if (msg.includes("uix_service_areas_cleaner_category_name")) {
+        setCopyErr("This area already exists in the selected industry. Try using a different name.");
+      } else {
+        setCopyErr("Failed to copy area. Please try again.");
+      }
+    } finally {
+      setCopyBusy(false);
+    }
+  }, [copyArea, copyTargetCategoryId, myBusinessId, copyName, fetchAreas]);
 
   if (loadError) {
     return <div className="card card-pad text-red-600">Failed to load Google Maps.</div>;
@@ -890,9 +952,634 @@ export default function ServiceAreaEditor({
 
   return (
     <>
-      {/* ... */}
-      {/* In your list item display, replace km² line with: */}
-      {/* {areaKm2(a).toFixed(2)} km² */}
+      <div className="grid md:grid-cols-12 gap-6">
+        {/* Left panel */}
+        <div className="md:col-span-4 space-y-4">
+          <div className="card card-pad">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="font-semibold text-lg">Service Areas</h3>
+              <button className="btn" onClick={startNewArea} disabled={!isLoaded || loading}>
+                + New Area
+              </button>
+            </div>
+
+            {loading && <div className="text-sm text-gray-500 mb-2">Working…</div>}
+
+            {error && (
+              <div className="mb-2 text-sm text-red-600 bg-red-50 rounded p-2 border border-red-200">
+                {error}
+              </div>
+            )}
+
+            {(creating || activeAreaId !== null || draftPolys.length > 0) && (
+              <div className="border rounded-lg p-3 mb-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    className="input w-full"
+                    value={draftName}
+                    onChange={(e) => setDraftName(e.target.value)}
+                    placeholder="Area name"
+                  />
+                </div>
+
+                {creating && draftPolys.length === 0 && (
+                  <div className="text-xs text-gray-600 mb-2">
+                    Drawing mode is ON — click on the map to add vertices, double-click to finish.
+                  </div>
+                )}
+
+                <div className="text-sm text-gray-600 mb-2">
+                  Polygons: {draftPolys.length} • Coverage: {fmtArea(totalDraftArea)}
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button className="btn" onClick={saveDraft} disabled={loading}>
+                    {activeAreaId ? "Save Changes" : "Save Area"}
+                  </button>
+                  <button className="btn" onClick={cancelDraft} disabled={loading}>
+                    Cancel
+                  </button>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      draftPolys.forEach((p) => p.setMap(null));
+                      setDraftPolys([]);
+                    }}
+                    disabled={loading || draftPolys.length === 0}
+                  >
+                    Clear Polygons
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <ul className="space-y-2">
+              {sortedServiceAreas.map((a) => {
+                const s = getAreaSlotState(a.id);
+
+                const mine =
+                  !!s &&
+                  isBlockingStatus(s.status) &&
+                  !!myBusinessId &&
+                  s.owner_business_id === myBusinessId;
+
+                const taken =
+                  !!s && s.taken && isBlockingStatus(s.status);
+
+                const takenByOther =
+                  taken && (!myBusinessId || s.owner_business_id !== myBusinessId);
+
+                const locked = isAreaLocked(a);
+                const until = lockedUntilLabel(a);
+
+                const hasGeo = avail[a.id] ?? true;
+                const busy = availLoading[a.id];
+
+                const disabled = takenByOther || (!mine && !takenByOther && hasGeo === false);
+
+                const title = mine
+                  ? "You sponsor this area"
+                  : takenByOther
+                  ? `Taken${s?.status ? ` (${s.status})` : ""}`
+                  : hasGeo === false
+                  ? "No purchasable region available"
+                  : busy
+                  ? "Checking availability…"
+                  : "Available";
+
+                const label = mine
+                  ? "Manage"
+                  : takenByOther
+                  ? "Taken"
+                  : hasGeo === false
+                  ? "Sold out"
+                  : "Sponsor (Featured)";
+
+                const onClick = async () => {
+                  if (disabled) return;
+
+                  if (mine) {
+                    if (onSlotAction) await onSlotAction({ id: a.id, name: a.name }, 1);
+                    else {
+                      setManageAreaId(a.id);
+                      setManageOpen(true);
+                    }
+                    return;
+                  }
+
+                 if (!categoryId) {
+  setError("Please select an industry first (Bin Cleaner / Domestic / Window Cleaner).");
+  return;
+}
+
+const ok = await guardCanPurchaseSponsor(a.id);
+if (!ok) return;
+
+setSponsorAreaId(a.id);
+setSponsorOpen(true);
+
+                };
+
+                return (
+                  <li
+                    key={a.id}
+                    className={`border rounded-lg p-3 transition-colors ${
+                      mine
+                        ? "border-amber-300 bg-amber-50"
+                        : takenByOther
+                        ? "border-red-300 bg-red-50"
+                        : "border-gray-200 bg-white"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+  zoomToArea(a);
+  window.setTimeout(() => scrollToMapOnMobile(), 300);
+}}
+
+                      className="text-left w-full group"
+                      title="Click to zoom to this area"
+                    >
+                      <div className="font-medium truncate group-hover:underline">{a.name}</div>
+
+                      <div className="text-xs text-gray-500 mt-1">
+                        {new Date(a.created_at).toLocaleString()} •{" "}
+                        {isLoaded ? areaKm2(a).toFixed(2) : "—"} km²
+                        {locked && until ? (
+                          <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+                            Locked until {until}
+                          </span>
+                        ) : null}
+                      </div>
+                    </button>
+
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (locked) return;
+                          editArea(a);
+                        }}
+                        disabled={loading || locked}
+                        title={locked ? "Sponsored areas are locked" : "Edit"}
+                        className={["btn", locked ? "opacity-40 cursor-not-allowed grayscale" : ""].join(" ")}
+                      >
+                        Edit
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteArea(a);
+                        }}
+                        disabled={loading}
+                      >
+                        Delete
+                      </button>
+
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          openCopyModal(a);
+                        }}
+                        disabled={loading}
+                        title="Copy this exact area to another industry"
+                      >
+                        Copy
+                      </button>
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2 items-center">
+                      <button
+                        className={`btn ${disabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onClick();
+                        }}
+                        disabled={disabled}
+                        title={title}
+                      >
+                        {label}
+                      </button>
+
+                      {busy && <div className="text-[10px] text-gray-500 mt-1">Checking availability…</div>}
+                    </div>
+                  </li>
+                );
+              })}
+
+              {!serviceAreas.length && !loading && (
+                <li className="text-sm text-gray-500">No service areas yet. Click “New Area” to draw one.</li>
+              )}
+            </ul>
+          </div>
+
+          <div className="card card-pad text-sm text-gray-600">
+            <div className="font-semibold mb-1">Map Key</div>
+            <div className="flex items-center gap-4 mb-3">
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(245,158,11,0.28)", border: "2px solid #f59e0b" }}
+                />
+                Sponsored by you
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "rgba(239,68,68,0.30)", border: "2px solid #dc2626" }}
+                />
+                Owned / Taken
+              </span>
+              <span className="inline-flex items-center gap-1">
+                <i
+                  className="inline-block w-4 h-4 rounded"
+                  style={{ background: "transparent", border: "2px solid #555" }}
+                />
+                Outline
+              </span>
+            </div>
+            <div className="border-t pt-3 mt-2 space-y-2 text-xs text-gray-600">
+  <div className="font-semibold text-sm text-gray-700">
+    How to use the map
+  </div>
+
+  <ul className="list-disc pl-5 space-y-1">
+    <li>
+      <strong>Zoom to an area:</strong> click a service area name in the list.
+    </li>
+    <li>
+      <strong>Draw a new area:</strong> click <strong>+ New Area</strong>, then click around the map. Double-click to finish.
+    </li>
+    <li>
+      <strong>Edit an area:</strong> click <strong>Edit</strong> (sponsored areas are locked).
+    </li>
+    <li>
+      <strong>Sponsor an area:</strong> click <strong>Sponsor (Featured)</strong> to preview what’s available.
+    </li>
+    <li>
+      <strong>Colours:</strong> amber = yours, red = already taken, black = boundary.
+    </li>
+  </ul>
+
+  <div className="text-[11px] text-gray-500">
+    Tip: Zoom in closely for more accurate drawing and previews.
+  </div>
+</div>
+
+          </div>
+        </div>
+
+        {/* Map */}
+        <div ref={mapWrapRef} className="md:col-span-8" id="service-area-map">
+          {isLoaded ? (
+            <GoogleMap
+              mapContainerStyle={MAP_CONTAINER}
+              center={DEFAULT_CENTER}
+              zoom={DEFAULT_ZOOM}
+              options={{ mapTypeControl: false, streetViewControl: false }}
+              onLoad={onMapLoad}
+            >
+              <DrawingManager
+                onLoad={onDrawingLoad}
+                onPolygonComplete={onPolygonComplete}
+                options={{
+                  drawingMode: null,
+                  drawingControl: true,
+                  drawingControlOptions: {
+                    drawingModes: [google.maps.drawing.OverlayType.POLYGON],
+                  },
+                  polygonOptions: polyStyle,
+                }}
+              />
+
+{/* ✅ Category sponsored overlays (OTHER businesses too) */}
+{activeAreaId === null &&
+  categorySponsored.flatMap((feature, idx) => {
+    const ownerId = feature?.properties?.owner_business_id || null;
+
+    // amber if mine, red if others
+    const isMine =
+      !!myBusinessId && ownerId && String(ownerId) === String(myBusinessId);
+
+    const paths = geoToPaths(feature);
+    if (!paths.length) return [];
+
+    return paths.map((p, i) => (
+      <Polygon
+        key={`cat-sponsored-${idx}-${i}`}
+        paths={p.paths}
+        options={{
+          strokeOpacity: 0,
+          strokeWeight: 0,
+          fillColor: isMine
+            ? "rgba(245, 158, 11, 0.28)" // mine (amber)
+            : "rgba(239, 68, 68, 0.30)", // others (red)
+          fillOpacity: 0.35,
+          clickable: false,
+          editable: false,
+          draggable: false,
+          zIndex: 40, // ✅ under outline
+        }}
+      />
+    ));
+  })}
+
+              
+              {/* Outlines (always visible when not editing) */}
+              {activeAreaId === null &&
+                sortedServiceAreas.flatMap((a) => {
+                  const gj = maybeParseGeo(a.gj);
+                  if (!gj) return [];
+
+                  const outlinePaths = geoToPaths(gj);
+                  return outlinePaths.map((p, i) => (
+                    <Polygon
+                      key={`outline-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeWeight: 2,
+                        strokeOpacity: 1,
+                        strokeColor: "#000",
+                        fillOpacity: 0,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 200,
+                      }}
+                    />
+                  ));
+                })}
+
+              {/* Sponsored fills: ONLY the purchased portion */}
+              {activeAreaId === null &&
+                sortedServiceAreas.flatMap((a) => {
+                  const slot = sponsorship[a.id]?.slot;
+                  if (!slot || !slot.taken || !isBlockingStatus(slot.status)) return [];
+
+                  // ✅ ONLY use sponsored_geojson (no fallback)
+                  const sponsored =
+                    slot.sponsored_geojson ?? sponsorship[a.id]?.sponsored_geojson ?? null;
+
+                  const sponsoredPaths = geoToPaths(sponsored);
+                  if (!sponsoredPaths.length) return [];
+
+                  // ✅ on pages where myBusinessId is unknown => always red
+                  const isMine =
+                    !!myBusinessId && slot.owner_business_id === myBusinessId;
+
+                  const fill = isMine
+                    ? "rgba(245, 158, 11, 0.28)" // mine (amber)
+                    : "rgba(239, 68, 68, 0.30)"; // owned/taken (red)
+
+                  return sponsoredPaths.map((p, i) => (
+                    <Polygon
+                      key={`sponsored-${a.id}-${i}`}
+                      paths={p.paths}
+                      options={{
+                        strokeOpacity: 0,
+                        strokeWeight: 0,
+                        fillColor: fill,
+                        fillOpacity: 0.35,
+                        clickable: false,
+                        editable: false,
+                        draggable: false,
+                        zIndex: 50,
+                      }}
+                    />
+                  ));
+                })}
+
+              {/* Preview overlay */}
+              {previewPolys.map((p, i) => (
+                <Polygon
+                  key={`preview-${i}`}
+                  paths={p.paths}
+                 options={{
+  // ✅ no preview border (prevents green outline)
+  strokeOpacity: 0,
+  strokeWeight: 0,
+
+  // ✅ preview fill only
+  fillColor: "#14b8a6",
+  fillOpacity: 0.22,
+
+  clickable: false,
+  editable: false,
+  draggable: false,
+
+  // ✅ keep it above base map but below your black outline if you want
+  zIndex: 150,
+}}
+
+                />
+              ))}
+            </GoogleMap>
+          ) : (
+            <div className="card card-pad">Loading map…</div>
+          )}
+        </div>
+      </div>
+
+      {/* Sponsor modal */}
+      {sponsorOpen && sponsorAreaId && categoryId && (
+  <AreaSponsorModal
+    open={sponsorOpen}
+    onClose={() => {
+      setSponsorOpen(false);
+      clearPreview();
+    }}
+    businessId={myBusinessId}
+    categoryId={categoryId} // now guaranteed string
+    areaId={sponsorAreaId}
+    areaName={serviceAreas.find((x) => x.id === sponsorAreaId)?.name}
+    onPreviewGeoJSON={(multi) => drawPreview(multi)}
+    onClearPreview={() => clearPreview()}
+  />
+)}
+
+      {/* Manage modal */}
+      {manageOpen && manageAreaId && (
+        <AreaManageModal
+          open={manageOpen}
+          onClose={() => setManageOpen(false)}
+          cleanerId={myBusinessId}
+          areaId={manageAreaId}
+          slot={1}
+        />
+      )}
+
+      {/* Copy modal (unchanged) */}
+      {copyOpen && copyArea && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
+          <div className="w-full max-w-lg rounded-xl bg-white shadow-xl border border-amber-200">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+              <div>
+                <div className="font-semibold">Copy area to another industry</div>
+                <div className="text-xs text-gray-500">
+                  Copying: <span className="font-medium">{copyArea.name}</span>
+                </div>
+              </div>
+              <button
+                className="text-sm opacity-70 hover:opacity-100"
+                onClick={() => {
+                  setCopyOpen(false);
+                  setCopyArea(null);
+                  setCopyErr(null);
+                }}
+                disabled={copyBusy}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="px-4 py-4 space-y-3">
+              {copyErr && (
+                <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                  {copyErr}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <div className="text-sm font-medium">Target industry</div>
+                <select
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={copyTargetCategoryId}
+                  onChange={(e) => setCopyTargetCategoryId(e.target.value)}
+                  disabled={copyBusy}
+                >
+                  <option value="">Select...</option>
+                  {categories
+                    .filter((c) => c.id !== (categoryId ?? ""))
+                    .map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                </select>
+                <div className="text-[11px] text-gray-500">
+                  This will create a new service area with the exact same polygon.
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-sm font-medium">New area name (optional)</div>
+                <input
+                  className="w-full rounded-lg border px-3 py-2 text-sm"
+                  value={copyName}
+                  onChange={(e) => setCopyName(e.target.value)}
+                  placeholder="e.g. Bangor (Window Cleaning)"
+                  disabled={copyBusy}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 px-4 py-3 border-t">
+              <button
+                className="btn"
+                onClick={() => {
+                  setCopyOpen(false);
+                  setCopyArea(null);
+                  setCopyErr(null);
+                }}
+                disabled={copyBusy}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn"
+                onClick={doCopyToIndustry}
+                disabled={copyBusy || !copyTargetCategoryId}
+                title={!copyTargetCategoryId ? "Select a target industry" : "Copy"}
+              >
+                {copyBusy ? "Copying…" : "Copy"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete modal */}
+      {deleteOpen && deleteAreaId && (
+        <DeleteAreaModal
+          open={deleteOpen}
+          onClose={() => setDeleteOpen(false)}
+          areaId={deleteAreaId}
+          areaName={deleteAreaName}
+          cleanerId={myBusinessId}
+          isSponsoredByMe={deleteIsSponsoredByMe}
+          onDeleted={async () => {
+            if (activeAreaId === deleteAreaId) resetDraft();
+
+            // remove from list immediately
+            setServiceAreas((prev) => prev.filter((x) => x.id !== deleteAreaId));
+
+            // remove cached per-area state immediately
+            setSponsorship((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
+
+            setAvail((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
+
+            setAvailLoading((prev) => {
+              const next = { ...prev };
+              delete next[deleteAreaId];
+              return next;
+            });
+
+            // clear preview overlay
+            setPreviewGeo(null);
+
+            // category-wide overlay is what causes the lingering “yellow”
+            setCategorySponsored([]);
+
+            // refresh source of truth
+            await fetchAreas();
+
+            // re-fetch category sponsored overlay
+            if (categoryId) {
+              try {
+                const res = await fetch("/.netlify/functions/category-sponsored-geo", {
+                  method: "POST",
+                  headers: { "content-type": "application/json" },
+                  body: JSON.stringify({ categoryId }),
+                });
+
+                const j = await res.json().catch(() => null);
+                setCategorySponsored(Array.isArray(j?.features) ? j.features : []);
+              } catch {
+                // ignore; overlay will repopulate next time effect runs
+              }
+            }
+          }}
+        />
+      )}
+
+      {/*
+        IMPORTANT BACKEND NOTE:
+        For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
+        slot.sponsored_geojson (GeoJSON of the purchased area).
+      */}
     </>
   );
 }
+
+
+{/*
+IMPORTANT BACKEND NOTE:
+For correct "only purchased portion" coloring, /.netlify/functions/area-sponsorship must return
+slot.sponsored_geojson (GeoJSON of the purchased area). If it is missing, the UI cannot know the
+exact purchased sub-region and may fall back to showing broader fills.
+*/}
