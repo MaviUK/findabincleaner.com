@@ -291,12 +291,21 @@ export default function AreaSponsorModal({
             </div>
 
             <button
-              className="text-sm opacity-70 hover:opacity-100"
-              onClick={handleClose}
-              disabled={checkingOut}
-            >
-              Close
-            </button>
+  type="button"
+  className="text-sm opacity-70 hover:opacity-100"
+  onPointerDown={(e) => {
+    // stop the drag bar from capturing the pointer
+    e.stopPropagation();
+  }}
+  onClick={(e) => {
+    e.stopPropagation();
+    handleClose();
+  }}
+  disabled={checkingOut}
+>
+  Close
+</button>
+
           </div>
 
           <div className="px-4 py-4 space-y-3">
