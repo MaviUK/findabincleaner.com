@@ -248,11 +248,29 @@ function geoMultiPolygonAreaKm2(gjInput: any): number {
   return Math.max(0, totalM2) / 1_000_000;
 }
 
-function areaKm2(a: ServiceAreaRow): number {
-  const db = Number(a?.km2);
-  if (Number.isFinite(db) && db > 0) return db;
-  return geoMultiPolygonAreaKm2(a.gj);
+/** area size helper for sorting (km²) */
+function geoMultiPolygonAreaKm2(gjInput: any): number {
+  const gj = maybeParseGeo(gjInput);
+  if (!gj || gj.type !== "MultiPolygon" || !Array.isArray(gj.coordinates)) return 0;
+
+  let totalM2 = 0;
+
+  for (const poly of gj.coordinates as number[][][][]) {
+    for (let ringIndex = 0; ringIndex < poly.length; ringIndex++) {
+      const ring = poly[ringIndex];
+      const path = ring
+        .map((pair: any) => pairToLatLng(pair))
+        .filter(Boolean)
+        .map((p) => new google.maps.LatLng(p!.lat, p!.lng));
+
+      const ringM2 = google.maps.geometry.spherical.computeArea(path);
+      totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
+    }
+  }
+
+  return Math.max(0, totalM2) / 1_000_000;
 }
+
 
 
 function getScrollParent(el: HTMLElement | null): HTMLElement | null {
