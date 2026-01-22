@@ -417,30 +417,34 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
   // Insert invoice row if missing
   if (!existing?.id) {
     const { error } = await supabase.from("invoices").insert({
-      cleaner_id: subRow.business_id,
-      area_id: subRow.area_id,
-      stripe_invoice_id: inv.id,
-      stripe_payment_intent_id: inv.payment_intent || null,
-      invoice_number: invoiceNumber,
-      status: inv.status || "paid",
-      subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
-      tax_cents: vatCents,
-      total_cents: totalCents,
-      currency: String(inv.currency || "gbp").toUpperCase(),
-      billing_period_start: billingPeriodStart,
-      billing_period_end: billingPeriodEnd,
-      supplier_name: supplier.name,
-      supplier_address: supplier.address,
-      supplier_email: supplier.email,
-      supplier_vat: supplier.vat,
-      customer_name: cleaner?.business_name || "Customer",
-      customer_email: customerEmail,
-      customer_address: cleaner?.address || "",
-      area_km2: Number(areaCoveredKm2 || 0),
-      rate_per_km2_cents: ratePerKm2Cents,
-      // If you have a column for industry/category on invoices, add it here:
-      // industry_name: industryName,
-    });
+  cleaner_id: subRow.business_id,
+  area_id: subRow.area_id,
+
+  // ✅ snapshot fields so UI never loses them
+  area_name: areaName,
+  category_name: industryName,
+
+  stripe_invoice_id: inv.id,
+  stripe_payment_intent_id: inv.payment_intent || null,
+  invoice_number: invoiceNumber,
+  status: inv.status || "paid",
+  subtotal_cents: Number(inv.subtotal ?? lineAmountCents),
+  tax_cents: vatCents,
+  total_cents: totalCents,
+  currency: String(inv.currency || "gbp").toUpperCase(),
+  billing_period_start: billingPeriodStart,
+  billing_period_end: billingPeriodEnd,
+  supplier_name: supplier.name,
+  supplier_address: supplier.address,
+  supplier_email: supplier.email,
+  supplier_vat: supplier.vat,
+  customer_name: cleaner?.business_name || "Customer",
+  customer_email: customerEmail,
+  customer_address: cleaner?.address || "",
+  area_km2: Number(areaCoveredKm2 || 0),
+  rate_per_km2_cents: ratePerKm2Cents,
+});
+
 
     if (error) throw error;
   }
