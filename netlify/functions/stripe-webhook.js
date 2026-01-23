@@ -204,11 +204,11 @@ function normalizeSponsoredRowFromSubscription(subscription) {
       ? new Date(periodEndFromSub * 1000).toISOString()
       : null;
 
-  // ✅ NEVER force DB to "active" from subscription events
-  // Map Stripe state -> DB "incomplete-ish" states, and let invoice.paid activation set "active".
-  let safeStatus = "incomplete";
-  if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
-  if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
+// NEVER set DB 'active' from subscription events
+let safeStatus = "incomplete";
+if (["trialing", "past_due", "unpaid"].includes(status)) safeStatus = status;
+if (["canceled", "incomplete_expired"].includes(status)) safeStatus = "canceled";
+
 
   return {
     business_id,
@@ -421,14 +421,35 @@ exports.handler = async (event) => {
       if (actErr) {
         console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
 
-        if (isOverlapDbError(actErr)) {
-          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
-          await markDbCanceled(sb, subscriptionId, "overlap_activation");
-          return ok(200, { ok: true, canceled: true });
-        }
+    if (isOverlapDbError(actErr)) {
+  // 1) Cancel Stripe safely (idempotent)
+  await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
 
-        return ok(200, { ok: false, error: "activate failed" });
-      }
+  // 2) HARD clean DB row so nothing lingers
+  await sb
+    .from("sponsored_subscriptions")
+    .update({
+      status: "canceled",
+      cancel_at_period_end: true,
+      updated_at: new Date().toISOString(),
+
+      // 🔒 critical: clear any geo that could trigger overlaps later
+      geom: null,
+      sponsored_geom: null,
+      sponsored_geojson: null,
+      final_geojson: null,
+      area_km2: null,
+    })
+    .eq("stripe_subscription_id", subscriptionId);
+
+  // 3) Exit cleanly so Stripe doesn't retry
+  return ok(200, {
+    ok: true,
+    canceled: true,
+    reason: "overlap_sold_out",
+  });
+}
+
 
       // optional debug
       try {
