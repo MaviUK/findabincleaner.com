@@ -68,16 +68,15 @@ function numOrNull(v) {
 
 // ---- Stripe/Supabase error classifiers ----
 function isOverlapDbError(err) {
-  const code = err?.code || err?.cause?.code;
   const msg = String(err?.message || err?.cause?.message || "").toLowerCase();
   return (
-    code === "P0001" ||
+    msg.includes("sponsored geom overlaps another sponsored area") ||
     msg.includes("area overlaps an existing sponsored area") ||
-    msg.includes("sponsorship exceeds available remaining area") ||
-    msg.includes("overlaps") ||
-    msg.includes("remaining area") ||
+    msg.includes("selected area is not available") ||
+    msg.includes("exceeds available remaining area") ||
     msg.includes("sold out") ||
-    msg.includes("available remaining area")
+    msg.includes("remaining area") ||
+    msg.includes("available sponsorship area remaining")
   );
 }
 
