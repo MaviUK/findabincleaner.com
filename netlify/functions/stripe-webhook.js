@@ -206,8 +206,9 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 
 // NEVER set DB 'active' from subscription events
 let safeStatus = "incomplete";
-if (["trialing", "past_due", "unpaid"].includes(status)) safeStatus = status;
-if (["canceled", "incomplete_expired"].includes(status)) safeStatus = "canceled";
+if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
+if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
+
 
 
   return {
@@ -418,36 +419,31 @@ exports.handler = async (event) => {
         p_current_period_end: current_period_end,
       });
 
-      if (actErr) {
-        console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
+if (actErr) {
+  console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
 
-    if (isOverlapDbError(actErr)) {
-  // 1) Cancel Stripe safely (idempotent)
-  await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+  if (isOverlapDbError(actErr)) {
+    await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
 
-  // 2) HARD clean DB row so nothing lingers
-  await sb
-    .from("sponsored_subscriptions")
-    .update({
-      status: "canceled",
-      cancel_at_period_end: true,
-      updated_at: new Date().toISOString(),
+    await sb
+      .from("sponsored_subscriptions")
+      .update({
+        status: "canceled",
+        cancel_at_period_end: true,
+        updated_at: new Date().toISOString(),
+        geom: null,
+        sponsored_geom: null,
+        sponsored_geojson: null,
+        final_geojson: null,
+        area_km2: null,
+      })
+      .eq("stripe_subscription_id", subscriptionId);
 
-      // 🔒 critical: clear any geo that could trigger overlaps later
-      geom: null,
-      sponsored_geom: null,
-      sponsored_geojson: null,
-      final_geojson: null,
-      area_km2: null,
-    })
-    .eq("stripe_subscription_id", subscriptionId);
+    return ok(200, { ok: true, canceled: true, reason: "overlap_sold_out" });
+  }
 
-  // 3) Exit cleanly so Stripe doesn't retry
-  return ok(200, {
-    ok: true,
-    canceled: true,
-    reason: "overlap_sold_out",
-  });
+  // ✅ non-overlap activation error
+  return ok(200, { ok: false, error: "activate failed" });
 }
 
 
