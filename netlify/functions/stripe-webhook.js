@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-16-ACTIVATE-USING-LOCK-GEOM+PARSE-FIX");
+console.log("LOADED stripe-webhook v2026-01-23-HARDEN-STATUS+CANCEL-DB");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -81,10 +81,21 @@ function isOverlapDbError(err) {
   );
 }
 
+// ---- Stripe cancel (safe/idempotent) ----
 async function safeCancelSubscription(subId, why) {
   if (!subId) return { ok: false, reason: "no-sub-id" };
   try {
     console.warn("[webhook] canceling subscription:", subId, why);
+
+    // retrieve first to avoid "cancelled subscription can only update metadata" errors
+    let sub = null;
+    try {
+      sub = await stripe.subscriptions.retrieve(subId);
+    } catch (_) {}
+
+    if (sub && sub.status === "canceled") {
+      return { ok: true, alreadyCanceled: true };
+    }
 
     if (stripe.subscriptions?.cancel) await stripe.subscriptions.cancel(subId);
     else if (stripe.subscriptions?.del) await stripe.subscriptions.del(subId);
@@ -102,11 +113,68 @@ async function safeCancelSubscription(subId, why) {
   }
 }
 
+// ---- DB helpers ----
+async function upsertByStripeSubscriptionId(sb, row) {
+  return sb
+    .from("sponsored_subscriptions")
+    .upsert(row, { onConflict: "stripe_subscription_id" })
+    .select("id, business_id, status, stripe_subscription_id, current_period_end")
+    .maybeSingle();
+}
+
+async function fetchExistingBySubId(sb, stripe_subscription_id) {
+  if (!stripe_subscription_id) return { data: null, error: null };
+  return sb
+    .from("sponsored_subscriptions")
+    .select("id, status, current_period_end")
+    .eq("stripe_subscription_id", stripe_subscription_id)
+    .maybeSingle();
+}
+
+function normalizeStatus(s) {
+  return String(s || "").trim().toLowerCase();
+}
+
+/**
+ * IMPORTANT RULE:
+ * - Only invoice.paid activation RPC is allowed to make DB status "active".
+ * - Subscription events should never force "active" into DB, because activation may fail (overlap).
+ */
+function preserveActive(existing, incoming) {
+  if (normalizeStatus(existing?.status) === "active") {
+    incoming.status = "active";
+    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
+  }
+  return incoming;
+}
+
+async function markDbCanceled(sb, stripeSubId, reason) {
+  if (!stripeSubId) return;
+
+  // best effort: mark any row for this subscription as canceled
+  const { error } = await sb
+    .from("sponsored_subscriptions")
+    .update({
+      status: "canceled",
+      cancel_at_period_end: true,
+      updated_at: new Date().toISOString(),
+      // if you have a column for it, keep this; otherwise harmless if column doesn't exist? (it WILL error)
+      // activation_error: reason,
+    })
+    .eq("stripe_subscription_id", stripeSubId);
+
+  if (error) {
+    // If you don't have cancel_at_period_end/status columns exactly, you'll see it here.
+    // Still don't fail the webhook.
+    console.warn("[webhook] markDbCanceled update failed (non-fatal):", error?.message || error);
+  }
+}
+
 // ---- Normalize helpers ----
 // NOTE: subscription events should NOT try to use invoice-derived periods.
 // invoice.paid will pass the real current_period_end to the activation RPC.
 function normalizeSponsoredRowFromSubscription(subscription) {
-  const status = String(subscription?.status || "").toLowerCase();
+  const stripeStatus = normalizeStatus(subscription?.status);
   const meta = subscription?.metadata || {};
 
   const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
@@ -136,8 +204,11 @@ function normalizeSponsoredRowFromSubscription(subscription) {
       ? new Date(periodEndFromSub * 1000).toISOString()
       : null;
 
-  // ✅ allow Stripe to be active, but still rely on invoice.paid for geometry/lock
-  const safeStatus = status === "active" ? "active" : "incomplete";
+  // ✅ NEVER force DB to "active" from subscription events
+  // Map Stripe state -> DB "incomplete-ish" states, and let invoice.paid activation set "active".
+  let safeStatus = "incomplete";
+  if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
+  if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
 
   return {
     business_id,
@@ -188,32 +259,6 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
   };
 }
 
-// ---- DB ops ----
-async function upsertByStripeSubscriptionId(sb, row) {
-  return sb
-    .from("sponsored_subscriptions")
-    .upsert(row, { onConflict: "stripe_subscription_id" })
-    .select("id, business_id, status, stripe_subscription_id, current_period_end")
-    .maybeSingle();
-}
-
-async function fetchExistingBySubId(sb, stripe_subscription_id) {
-  if (!stripe_subscription_id) return { data: null, error: null };
-  return sb
-    .from("sponsored_subscriptions")
-    .select("id, status, current_period_end")
-    .eq("stripe_subscription_id", stripe_subscription_id)
-    .maybeSingle();
-}
-
-function preserveActive(existing, incoming) {
-  if (existing?.status === "active") {
-    incoming.status = "active";
-    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
-  }
-  return incoming;
-}
-
 // ---- handler ----
 exports.handler = async (event) => {
   try {
@@ -244,7 +289,6 @@ exports.handler = async (event) => {
     }
 
     // 0) invoice.finalized -> optional invoice email creation (non-blocking)
-    // (You can remove this if you only want to run it on invoice.paid)
     if (type === "invoice.finalized") {
       const inv = obj;
       try {
@@ -252,7 +296,6 @@ exports.handler = async (event) => {
         console.log("[webhook] invoice.finalized -> created invoice/email", inv.id);
       } catch (e) {
         console.error("[webhook] invoice.finalized -> createInvoiceAndEmail failed", inv.id, e?.message || e);
-        // don't fail the webhook
       }
       return ok(200, { ok: true, handled: "invoice.finalized" });
     }
@@ -280,9 +323,16 @@ exports.handler = async (event) => {
       return ok(200, { ok: true, wroteDraft: true, id: data?.id || null, status: data?.status || null });
     }
 
-    // 2) customer.subscription.* → upsert row, but ALWAYS keep it non-blocking here
+    // 2) customer.subscription.* → upsert row (NEVER force active here)
     if (type.startsWith("customer.subscription.")) {
       const sub = obj;
+
+      // If Stripe says deleted, mark DB canceled and return
+      if (type === "customer.subscription.deleted") {
+        const sid = sub?.id || null;
+        if (sid) await markDbCanceled(sb, sid, "stripe_deleted");
+        return ok(200, { ok: true, handled: "subscription.deleted" });
+      }
 
       const row = normalizeSponsoredRowFromSubscription(sub);
       if (!row.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
@@ -297,10 +347,13 @@ exports.handler = async (event) => {
       const { data, error } = await upsertByStripeSubscriptionId(sb, row);
       if (error) {
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
+
         if (isOverlapDbError(error)) {
-          await safeCancelSubscription(sub.id, "Overlap/Sold-out violation");
+          await safeCancelSubscription(sub.id, "Overlap/Sold-out violation (subscription event)");
+          await markDbCanceled(sb, sub.id, "overlap_subscription_event");
           return ok(200, { ok: true, canceled: true });
         }
+
         return ok(200, { ok: false, error: "DB write failed" });
       }
 
@@ -310,7 +363,6 @@ exports.handler = async (event) => {
     // 3) invoice.paid → ACTIVATE USING LOCK GEOMETRY
     if (type === "invoice.paid") {
       const inv = obj;
-
 
       let fullInv = inv;
       try {
@@ -356,6 +408,7 @@ exports.handler = async (event) => {
           metadata: sub?.metadata || {},
         });
         await safeCancelSubscription(subscriptionId, "Missing lock_id metadata");
+        await markDbCanceled(sb, subscriptionId, "missing_lock_id");
         return ok(200, { ok: false, error: "missing lock_id" });
       }
 
@@ -366,20 +419,18 @@ exports.handler = async (event) => {
       });
 
       if (actErr) {
-        console.error("[webhook] invoice.paid activate error:", actErr, {
-          subscriptionId,
-          lockId,
-        });
+        console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
 
         if (isOverlapDbError(actErr)) {
           await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+          await markDbCanceled(sb, subscriptionId, "overlap_activation");
           return ok(200, { ok: true, canceled: true });
         }
 
         return ok(200, { ok: false, error: "activate failed" });
       }
 
-      // optional debug (safe)
+      // optional debug
       try {
         const { data: chk, error: chkErr } = await sb
           .from("sponsored_subscriptions")
@@ -401,10 +452,10 @@ exports.handler = async (event) => {
     return ok(200, { ok: true, ignored: type });
   } catch (err) {
     console.error("[webhook] fatal error:", err);
-    // Stripe expects 2xx to stop retries ONLY if you're sure it's not recoverable.
-    // But signature/parse issues should be 400 so you notice.
     const msg = String(err?.message || err || "");
-    const isSig = msg.toLowerCase().includes("no signatures found") || msg.toLowerCase().includes("signature");
+    const isSig =
+      msg.toLowerCase().includes("no signatures found") ||
+      msg.toLowerCase().includes("signature");
     return ok(isSig ? 400 : 500, { ok: false, error: msg });
   }
 };
