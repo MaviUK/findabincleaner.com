@@ -1,5 +1,5 @@
 // netlify/functions/stripe-webhook.js
-console.log("LOADED stripe-webhook v2026-01-23-HARDEN-STATUS+CANCEL-DB");
+console.log("LOADED stripe-webhook v2026-01-25-FIX-FINAL-GEOJSON-PREACTIVATE");
 
 const Stripe = require("stripe");
 const { createClient } = require("@supabase/supabase-js");
@@ -40,7 +40,9 @@ function ok(statusCode, body) {
 function isUuid(s) {
   return (
     typeof s === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      s
+    )
   );
 }
 function uuidOrNull(v) {
@@ -56,7 +58,8 @@ function assertUuidOrNull(name, v) {
 function metaGet(meta, ...keys) {
   if (!meta) return null;
   for (const k of keys) {
-    if (meta[k] != null && String(meta[k]).trim() !== "") return String(meta[k]).trim();
+    if (meta[k] != null && String(meta[k]).trim() !== "")
+      return String(meta[k]).trim();
   }
   return null;
 }
@@ -115,7 +118,8 @@ async function safeCancelSubscription(subId, why) {
 
     if (stripe.subscriptions?.cancel) await stripe.subscriptions.cancel(subId);
     else if (stripe.subscriptions?.del) await stripe.subscriptions.del(subId);
-    else await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
+    else
+      await stripe.subscriptions.update(subId, { cancel_at_period_end: true });
 
     return { ok: true };
   } catch (e) {
@@ -159,7 +163,8 @@ function normalizeStatus(s) {
 function preserveActive(existing, incoming) {
   if (normalizeStatus(existing?.status) === "active") {
     incoming.status = "active";
-    if (!incoming.current_period_end) incoming.current_period_end = existing.current_period_end || null;
+    if (!incoming.current_period_end)
+      incoming.current_period_end = existing.current_period_end || null;
   }
   return incoming;
 }
@@ -179,7 +184,10 @@ async function markDbCanceled(sb, stripeSubId, reason) {
     .eq("stripe_subscription_id", stripeSubId);
 
   if (error) {
-    console.warn("[webhook] markDbCanceled update failed (non-fatal):", error?.message || error);
+    console.warn(
+      "[webhook] markDbCanceled update failed (non-fatal):",
+      error?.message || error
+    );
   }
 }
 
@@ -190,7 +198,9 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const stripeStatus = normalizeStatus(subscription?.status);
   const meta = subscription?.metadata || {};
 
-  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
+  const business_id = uuidOrNull(
+    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
+  );
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -201,15 +211,25 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const item = subscription?.items?.data?.[0] || null;
   const unitAmount = item?.price?.unit_amount ?? item?.plan?.amount ?? null;
 
-  const metaAmount = metaGet(meta, "price_monthly_pennies", "price_monthly_pence", "amount_pennies");
+  const metaAmount = metaGet(
+    meta,
+    "price_monthly_pennies",
+    "price_monthly_pence",
+    "amount_pennies"
+  );
 
   const priceParsed =
-    (typeof unitAmount === "number" && Number.isFinite(unitAmount) ? unitAmount : null) ??
-    (metaAmount && Number.isFinite(Number(metaAmount)) ? Number(metaAmount) : null) ??
+    (typeof unitAmount === "number" && Number.isFinite(unitAmount)
+      ? unitAmount
+      : null) ??
+    (metaAmount && Number.isFinite(Number(metaAmount))
+      ? Number(metaAmount)
+      : null) ??
     100;
 
   const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
-  const currency = (item?.price?.currency || subscription?.currency || "gbp").toLowerCase();
+  const currency = (item?.price?.currency || subscription?.currency || "gbp")
+    .toLowerCase();
 
   const periodEndFromSub = subscription?.current_period_end ?? null;
   const current_period_end =
@@ -219,8 +239,10 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 
   // NEVER set DB 'active' from subscription events
   let safeStatus = "incomplete";
-  if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
-  if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
+  if (["trialing", "past_due", "unpaid"].includes(stripeStatus))
+    safeStatus = stripeStatus;
+  if (["canceled", "incomplete_expired"].includes(stripeStatus))
+    safeStatus = "canceled";
 
   return {
     business_id,
@@ -240,7 +262,9 @@ function normalizeSponsoredRowFromSubscription(subscription) {
 function normalizeSponsoredRowFromCheckoutSession(session) {
   const meta = session?.metadata || {};
 
-  const business_id = uuidOrNull(metaGet(meta, "business_id", "cleaner_id", "cleanerId"));
+  const business_id = uuidOrNull(
+    metaGet(meta, "business_id", "cleaner_id", "cleanerId")
+  );
   const area_id = uuidOrNull(metaGet(meta, "area_id", "areaId"));
   const category_id = uuidOrNull(metaGet(meta, "category_id", "categoryId"));
 
@@ -249,11 +273,13 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
   const slot = slotNum && slotNum > 0 ? Math.floor(slotNum) : 1;
 
   const amountTotal = numOrNull(session?.amount_total);
-  const price_monthly_pennies = amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
+  const price_monthly_pennies =
+    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
-  const stripe_subscription_id = typeof session?.subscription === "string" ? session.subscription : null;
+  const stripe_subscription_id =
+    typeof session?.subscription === "string" ? session.subscription : null;
 
   return {
     business_id,
@@ -273,7 +299,8 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 // ---- handler ----
 exports.handler = async (event) => {
   try {
-    const sig = event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
+    const sig =
+      event.headers["stripe-signature"] || event.headers["Stripe-Signature"];
     const webhookSecret = requireEnv("STRIPE_WEBHOOK_SECRET");
     if (!sig) {
       console.error("[webhook] missing stripe-signature header");
@@ -282,9 +309,13 @@ exports.handler = async (event) => {
 
     const rawBody = event.isBase64Encoded
       ? Buffer.from(event.body || "", "base64").toString("utf8")
-      : (event.body || "");
+      : event.body || "";
 
-    const stripeEvent = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
+    const stripeEvent = stripe.webhooks.constructEvent(
+      rawBody,
+      sig,
+      webhookSecret
+    );
     const sb = getSupabaseAdmin();
 
     const type = stripeEvent.type;
@@ -306,7 +337,11 @@ exports.handler = async (event) => {
         await createInvoiceAndEmailByStripeInvoiceId(inv.id);
         console.log("[webhook] invoice.finalized -> created invoice/email", inv.id);
       } catch (e) {
-        console.error("[webhook] invoice.finalized -> createInvoiceAndEmail failed", inv.id, e?.message || e);
+        console.error(
+          "[webhook] invoice.finalized -> createInvoiceAndEmail failed",
+          inv.id,
+          e?.message || e
+        );
       }
       return ok(200, { ok: true, handled: "invoice.finalized" });
     }
@@ -316,18 +351,22 @@ exports.handler = async (event) => {
       const session = obj;
       const draft = normalizeSponsoredRowFromCheckoutSession(session);
 
-      if (!draft.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
+      if (!draft.stripe_subscription_id)
+        return ok(200, { ok: true, skipped: "no-sub-id" });
 
       assertUuidOrNull("business_id", draft.business_id);
       assertUuidOrNull("area_id", draft.area_id);
       assertUuidOrNull("category_id", draft.category_id);
 
-      const { data: existing } = await fetchExistingBySubId(sb, draft.stripe_subscription_id);
+      const { data: existing } = await fetchExistingBySubId(
+        sb,
+        draft.stripe_subscription_id
+      );
       preserveActive(existing, draft);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, draft);
       if (error) {
-        // ✅ NEW: if area has been deleted, ignore draft upsert
+        // ✅ if area has been deleted, ignore draft upsert
         if (isAreaMissingFkError(error)) {
           console.warn("[webhook] checkout draft upsert skipped: area deleted", {
             area_id: draft.area_id,
@@ -340,7 +379,12 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "DB write failed (draft)" });
       }
 
-      return ok(200, { ok: true, wroteDraft: true, id: data?.id || null, status: data?.status || null });
+      return ok(200, {
+        ok: true,
+        wroteDraft: true,
+        id: data?.id || null,
+        status: data?.status || null,
+      });
     }
 
     // 2) customer.subscription.* → upsert row (NEVER force active here)
@@ -355,25 +399,32 @@ exports.handler = async (event) => {
       }
 
       const row = normalizeSponsoredRowFromSubscription(sub);
-      if (!row.stripe_subscription_id) return ok(200, { ok: true, skipped: "no-sub-id" });
+      if (!row.stripe_subscription_id)
+        return ok(200, { ok: true, skipped: "no-sub-id" });
 
       assertUuidOrNull("business_id", row.business_id);
       assertUuidOrNull("area_id", row.area_id);
       assertUuidOrNull("category_id", row.category_id);
 
-      const { data: existing } = await fetchExistingBySubId(sb, row.stripe_subscription_id);
+      const { data: existing } = await fetchExistingBySubId(
+        sb,
+        row.stripe_subscription_id
+      );
       preserveActive(existing, row);
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, row);
       if (error) {
-        // ✅ NEW: if area has been deleted, ignore subscription upsert
+        // ✅ if area has been deleted, ignore subscription upsert
         if (isAreaMissingFkError(error)) {
           console.warn("[webhook] subscription upsert skipped: area deleted", {
             area_id: row.area_id,
             stripe_subscription_id: row.stripe_subscription_id,
             event: type,
           });
-          return ok(200, { ok: true, skipped: "area_deleted_subscription_event" });
+          return ok(200, {
+            ok: true,
+            skipped: "area_deleted_subscription_event",
+          });
         }
 
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
@@ -442,6 +493,35 @@ exports.handler = async (event) => {
         return ok(200, { ok: false, error: "missing lock_id" });
       }
 
+      // ✅ NEW: ensure final_geojson exists before activation (trigger requires it)
+      const { data: ssRow, error: ssRowErr } = await sb
+        .from("sponsored_subscriptions")
+        .select("id, final_geojson, sponsored_geojson")
+        .eq("stripe_subscription_id", subscriptionId)
+        .maybeSingle();
+
+      if (ssRowErr) {
+        console.error("[webhook] pre-activate load sponsored_subscriptions failed", ssRowErr);
+        // throw to trigger Stripe retry (better than leaving incomplete forever)
+        throw ssRowErr;
+      }
+
+      if (ssRow && !ssRow.final_geojson && ssRow.sponsored_geojson) {
+        const { error: fillErr } = await sb
+          .from("sponsored_subscriptions")
+          .update({
+            final_geojson: ssRow.sponsored_geojson,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("stripe_subscription_id", subscriptionId);
+
+        if (fillErr) {
+          console.error("[webhook] pre-activate set final_geojson failed", fillErr);
+          // throw so Stripe retries
+          throw fillErr;
+        }
+      }
+
       const { error: actErr } = await sb.rpc("activate_sponsored_subscription_from_lock", {
         p_stripe_subscription_id: subscriptionId,
         p_lock_id: lockId,
@@ -471,15 +551,15 @@ exports.handler = async (event) => {
           return ok(200, { ok: true, canceled: true, reason: "overlap_sold_out" });
         }
 
-        // ✅ non-overlap activation error
-        return ok(200, { ok: false, error: "activate failed" });
+        // 🔥 throw so Stripe retries; prevents "stuck incomplete" forever
+        throw actErr;
       }
 
       // optional debug
       try {
         const { data: chk, error: chkErr } = await sb
           .from("sponsored_subscriptions")
-          .select("id,status,current_period_end")
+          .select("id,status,current_period_end,final_geojson")
           .eq("stripe_subscription_id", subscriptionId)
           .maybeSingle();
 
