@@ -80,6 +80,23 @@ function isOverlapDbError(err) {
   );
 }
 
+/**
+ * FK area missing (hard-deleted service_areas row)
+ * Supabase/Postgres: code 23503, fk_sponsored_subscriptions_area, "Key (area_id)=... not present in service_areas"
+ */
+function isAreaMissingFkError(err) {
+  const code = String(err?.code || "");
+  const msg = String(err?.message || "").toLowerCase();
+  const details = String(err?.details || "").toLowerCase();
+  return (
+    code === "23503" &&
+    (msg.includes("fk_sponsored_subscriptions_area") ||
+      msg.includes("foreign key constraint") ||
+      details.includes("service_areas") ||
+      msg.includes("service_areas"))
+  );
+}
+
 // ---- Stripe cancel (safe/idempotent) ----
 async function safeCancelSubscription(subId, why) {
   if (!subId) return { ok: false, reason: "no-sub-id" };
@@ -157,14 +174,11 @@ async function markDbCanceled(sb, stripeSubId, reason) {
       status: "canceled",
       cancel_at_period_end: true,
       updated_at: new Date().toISOString(),
-      // if you have a column for it, keep this; otherwise harmless if column doesn't exist? (it WILL error)
-      // activation_error: reason,
+      // activation_error: reason, // only if column exists
     })
     .eq("stripe_subscription_id", stripeSubId);
 
   if (error) {
-    // If you don't have cancel_at_period_end/status columns exactly, you'll see it here.
-    // Still don't fail the webhook.
     console.warn("[webhook] markDbCanceled update failed (non-fatal):", error?.message || error);
   }
 }
@@ -203,12 +217,10 @@ function normalizeSponsoredRowFromSubscription(subscription) {
       ? new Date(periodEndFromSub * 1000).toISOString()
       : null;
 
-// NEVER set DB 'active' from subscription events
-let safeStatus = "incomplete";
-if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
-if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
-
-
+  // NEVER set DB 'active' from subscription events
+  let safeStatus = "incomplete";
+  if (["trialing", "past_due", "unpaid"].includes(stripeStatus)) safeStatus = stripeStatus;
+  if (["canceled", "incomplete_expired"].includes(stripeStatus)) safeStatus = "canceled";
 
   return {
     business_id,
@@ -241,8 +253,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
-  const stripe_subscription_id =
-    typeof session?.subscription === "string" ? session.subscription : null;
+  const stripe_subscription_id = typeof session?.subscription === "string" ? session.subscription : null;
 
   return {
     business_id,
@@ -316,6 +327,15 @@ exports.handler = async (event) => {
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, draft);
       if (error) {
+        // ✅ NEW: if area has been deleted, ignore draft upsert
+        if (isAreaMissingFkError(error)) {
+          console.warn("[webhook] checkout draft upsert skipped: area deleted", {
+            area_id: draft.area_id,
+            stripe_subscription_id: draft.stripe_subscription_id,
+          });
+          return ok(200, { ok: true, skipped: "area_deleted_draft" });
+        }
+
         console.error("[webhook] upsert checkout draft error:", error, draft);
         return ok(200, { ok: false, error: "DB write failed (draft)" });
       }
@@ -346,6 +366,16 @@ exports.handler = async (event) => {
 
       const { data, error } = await upsertByStripeSubscriptionId(sb, row);
       if (error) {
+        // ✅ NEW: if area has been deleted, ignore subscription upsert
+        if (isAreaMissingFkError(error)) {
+          console.warn("[webhook] subscription upsert skipped: area deleted", {
+            area_id: row.area_id,
+            stripe_subscription_id: row.stripe_subscription_id,
+            event: type,
+          });
+          return ok(200, { ok: true, skipped: "area_deleted_subscription_event" });
+        }
+
         console.error("[webhook] upsert sponsored_subscriptions error:", error, row);
 
         if (isOverlapDbError(error)) {
@@ -418,33 +448,32 @@ exports.handler = async (event) => {
         p_current_period_end: current_period_end,
       });
 
-if (actErr) {
-  console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
+      if (actErr) {
+        console.error("[webhook] invoice.paid activate error:", actErr, { subscriptionId, lockId });
 
-  if (isOverlapDbError(actErr)) {
-    await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
+        if (isOverlapDbError(actErr)) {
+          await safeCancelSubscription(subscriptionId, "Activation overlap/sold-out");
 
-    await sb
-      .from("sponsored_subscriptions")
-      .update({
-        status: "canceled",
-        cancel_at_period_end: true,
-        updated_at: new Date().toISOString(),
-        geom: null,
-        sponsored_geom: null,
-        sponsored_geojson: null,
-        final_geojson: null,
-        area_km2: null,
-      })
-      .eq("stripe_subscription_id", subscriptionId);
+          await sb
+            .from("sponsored_subscriptions")
+            .update({
+              status: "canceled",
+              cancel_at_period_end: true,
+              updated_at: new Date().toISOString(),
+              geom: null,
+              sponsored_geom: null,
+              sponsored_geojson: null,
+              final_geojson: null,
+              area_km2: null,
+            })
+            .eq("stripe_subscription_id", subscriptionId);
 
-    return ok(200, { ok: true, canceled: true, reason: "overlap_sold_out" });
-  }
+          return ok(200, { ok: true, canceled: true, reason: "overlap_sold_out" });
+        }
 
-  // ✅ non-overlap activation error
-  return ok(200, { ok: false, error: "activate failed" });
-}
-
+        // ✅ non-overlap activation error
+        return ok(200, { ok: false, error: "activate failed" });
+      }
 
       // optional debug
       try {
