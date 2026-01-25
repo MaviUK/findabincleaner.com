@@ -2,7 +2,9 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log("LOADED sponsored-checkout v2026-01-14-LOCK-UPSERT-BY-CATEGORY+HASH-RETURN+URL-FIELD");
+console.log(
+  "LOADED sponsored-checkout v2026-01-25-PREVIEW_INTERNAL+LOCK-GEOJSON-CANON"
+);
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
   apiVersion: "2024-06-20",
@@ -19,7 +21,7 @@ const json = (body, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: corsHeaders });
 
 const EPS = 1e-6;
-const BLOCKING = new Set(["active", "trialing", "past_due"]);
+const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
 function requireEnv(name) {
   const val = process.env[name];
@@ -43,15 +45,11 @@ function getSupabaseAdmin() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
-function firstNonNull(...vals) {
-  for (const v of vals) if (v != null) return v;
-  return null;
-}
-
 export default async (req) => {
   try {
     if (req.method === "OPTIONS") return json({ ok: true }, 200);
-    if (req.method !== "POST") return json({ ok: false, error: "Method not allowed" }, 405);
+    if (req.method !== "POST")
+      return json({ ok: false, error: "Method not allowed" }, 405);
 
     let body;
     try {
@@ -72,35 +70,41 @@ export default async (req) => {
     const slot = Number(body.slot ?? 1);
     const categoryId = String(body.categoryId || body.category_id || "").trim();
 
-    const incomingLockId = String(body.lockId || body.lock_id || "").trim() || null;
+    const incomingLockId =
+      String(body.lockId || body.lock_id || "").trim() || null;
     const allowTopUp = Boolean(body.allowTopUp);
 
     if (!cleanerId) return json({ ok: false, error: "Missing cleanerId" }, 400);
     if (!areaId) return json({ ok: false, error: "Missing areaId" }, 400);
-    if (!categoryId) return json({ ok: false, error: "Missing categoryId" }, 400);
-    if (!Number.isFinite(slot) || slot !== 1) return json({ ok: false, error: "Invalid slot" }, 400);
+    if (!categoryId)
+      return json({ ok: false, error: "Missing categoryId" }, 400);
+    if (!Number.isFinite(slot) || slot !== 1)
+      return json({ ok: false, error: "Invalid slot" }, 400);
 
     requireEnv("STRIPE_SECRET_KEY");
     requireEnv("PUBLIC_SITE_URL");
 
     const sb = getSupabaseAdmin();
 
-    // 1) Block if already sponsored by someone else (same area+slot) (UI uses this for “Manage”)
-        const { data: rows, error: takenErr } = await sb
+    // 1) Block if this specific area+slot+category is already sponsored by someone else
+    const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
       .select("business_id, status, stripe_subscription_id, created_at, category_id")
       .eq("area_id", areaId)
       .eq("slot", slot)
-      .eq("category_id", categoryId)   // ✅ category-specific
+      .eq("category_id", categoryId)
       .order("created_at", { ascending: false });
-
 
     if (takenErr) throw takenErr;
 
     const latestBlocking =
-  (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) || null;
+      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) ||
+      null;
 
-    const ownerBusinessId = latestBlocking?.business_id ? String(latestBlocking.business_id) : null;
+    const ownerBusinessId = latestBlocking?.business_id
+      ? String(latestBlocking.business_id)
+      : null;
+
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
     const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
@@ -129,12 +133,15 @@ export default async (req) => {
       );
     }
 
-    // 2) Remaining area preview (category-aware)
-    const { data: previewData, error: prevErr } = await sb.rpc("area_remaining_preview", {
-      p_area_id: areaId,
-      p_category_id: categoryId,
-      p_slot: slot,
-    });
+    // 2) ✅ Call INTERNAL preview (buffered subtraction version)
+    const { data: previewData, error: prevErr } = await sb.rpc(
+      "area_remaining_preview_internal",
+      {
+        p_area_id: areaId,
+        p_category_id: categoryId,
+        p_slot: slot,
+      }
+    );
 
     if (prevErr) throw prevErr;
 
@@ -156,52 +163,45 @@ export default async (req) => {
       );
     }
 
-    // 2b) ENSURE lock exists and stores EXACT purchasable geojson
+    // 2b) Canonical: lock geojson MUST be the purchasable slice returned as `geojson`
+    const lockGeo = row?.geojson ?? null;
+    if (!lockGeo) {
+      return json(
+        {
+          ok: false,
+          error:
+            "Preview did not return purchasable geojson. Ensure area_remaining_preview_internal returns `geojson` as the available slice.",
+        },
+        500
+      );
+    }
+
+    // 2c) Ensure lock exists (unique by area_id+slot+category_id)
     let ensuredLockId = incomingLockId;
 
-// ✅ Canonical: preview must return the purchasable slice as `geojson`
-const lockGeo = row?.geojson ?? null;
-
-if (!lockGeo) {
-  return json(
-    {
-      ok: false,
-      error:
-        "Preview did not return purchasable geojson. Ensure area_remaining_preview returns `geojson` as the available slice.",
-    },
-    500
-  );
-}
-
-
     if (ensuredLockId) {
-      // Update existing lock by id (also ensure it matches current category)
       const { error: upErr } = await sb
         .from("sponsored_locks")
         .update({
-  business_id: cleanerId,
-  category_id: categoryId,
-  is_active: true,
-  geojson: lockGeo,
-  final_geojson: lockGeo,
-})
-
+          business_id: cleanerId,
+          category_id: categoryId,
+          is_active: true,
+          geojson: lockGeo,
+          final_geojson: lockGeo,
+        })
         .eq("id", ensuredLockId);
 
       if (upErr) throw upErr;
     } else {
-      // ✅ CORRECT: upsert lock per (area_id, slot, category_id)
-      // REQUIRE DB UNIQUE(area_id, slot, category_id)
-     const payload = {
-  area_id: areaId,
-  slot,
-  category_id: categoryId,
-  business_id: cleanerId,
-  is_active: true,
-  geojson: lockGeo,
-  final_geojson: lockGeo,
-};
-
+      const payload = {
+        area_id: areaId,
+        slot,
+        category_id: categoryId,
+        business_id: cleanerId,
+        is_active: true,
+        geojson: lockGeo,
+        final_geojson: lockGeo,
+      };
 
       const { data: lockRow, error: lockErr } = await sb
         .from("sponsored_locks")
@@ -213,11 +213,16 @@ if (!lockGeo) {
       ensuredLockId = lockRow?.id || null;
     }
 
-    if (!ensuredLockId) return json({ ok: false, error: "Failed to create lock" }, 500);
+    if (!ensuredLockId)
+      return json({ ok: false, error: "Failed to create lock" }, 500);
 
-    // 3) Price rate from env
+    // 3) Price rate
     const ratePerKm2 =
-      Number(process.env.RATE_GOLD_PER_KM2_PER_MONTH ?? process.env.RATE_PER_KM2_PER_MONTH ?? 0) || 0;
+      Number(
+        process.env.RATE_GOLD_PER_KM2_PER_MONTH ??
+          process.env.RATE_PER_KM2_PER_MONTH ??
+          0
+      ) || 0;
 
     if (!ratePerKm2 || ratePerKm2 <= 0) {
       return json(
@@ -276,8 +281,6 @@ if (!lockGeo) {
     };
 
     const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
-
-    // ✅ Stripe strips hash fragments, so use query params on "/" and let app route on load
     const successUrl = `${publicSite}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${publicSite}/?checkout=cancel`;
 
@@ -309,11 +312,10 @@ if (!lockGeo) {
       subscription_data: { metadata: meta },
     });
 
-    // ✅ IMPORTANT: the frontend expects j.url in your modal
     return json({
       ok: true,
-      url: session.url,            // ✅ so AreaSponsorModal works
-      checkout_url: session.url,   // ✅ keep for debugging/backcompat
+      url: session.url,
+      checkout_url: session.url,
       lock_id: ensuredLockId,
       amount_cents: amountCents,
       available_km2: availableKm2,
