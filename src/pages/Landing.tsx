@@ -197,10 +197,10 @@ export default function Landing() {
             </div>
 
             <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-              <span>Free listing for cleaners • No signup fees</span>
+              <span>Free listing for cleaners</span>
               <span className="inline-flex items-center gap-2">
                 <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-                Verified businesses only
+                Kleanly your Home Service Search
               </span>
             </div>
           </div>
