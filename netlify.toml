@@ -9,7 +9,7 @@
 # Single global functions table (NO DUPLICATES)
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf"]
+  external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf", "resend", "pdf-lib"]
   included_files = ["netlify/functions/**"]
 
 # Stripe webhook needs raw body for signature verification
@@ -26,11 +26,14 @@
   name = "sendRenewalNotices"
   cron = "0 * * * *" # every hour
 
+[[scheduled.functions]]
+  name = "billing-reminders"
+  cron = "0 9 * * *" # daily 09:00 UTC (adjust if you want)
+
 ########################
 # API / Functions redirects (FIRST)
 ########################
 
-# Areas & Geo endpoints
 [[redirects]]
   from = "/api/area/availability"
   to   = "/.netlify/functions/area-availability"
@@ -56,13 +59,11 @@
   to   = "/.netlify/functions/geo-available"
   status = 200
 
-# Sponsorship: availability / painting helper
 [[redirects]]
   from = "/api/area/sponsorship"
   to   = "/.netlify/functions/area-sponsorship"
   status = 200
 
-# Sponsorship checkout / preview
 [[redirects]]
   from = "/api/sponsored/purchase"
   to   = "/.netlify/functions/sponsored-purchase"
@@ -78,25 +79,21 @@
   to   = "/.netlify/functions/sponsored-checkout"
   status = 200
 
-# Stripe webhook endpoint (configured in Stripe)
 [[redirects]]
   from = "/api/stripe/webhook"
   to   = "/.netlify/functions/stripe-webhook"
   status = 200
 
-# Post-verify alias (dashboard UX)
 [[redirects]]
   from = "/api/stripe/postverify"
   to   = "/.netlify/functions/stripe-postverify"
   status = 200
 
-# Billing Portal
 [[redirects]]
   from = "/api/billing/portal"
   to   = "/.netlify/functions/billing-portal"
   status = 200
 
-# Subscription management
 [[redirects]]
   from = "/api/subscription/get"
   to   = "/.netlify/functions/subscription-get"
@@ -107,7 +104,6 @@
   to   = "/.netlify/functions/subscription-cancel"
   status = 200
 
-# Analytics
 [[redirects]]
   from = "/api/record_event"
   to   = "/.netlify/functions/record_event"
@@ -123,7 +119,6 @@
     Pragma        = "no-cache"
     Expires       = "0"
 
-# Direct function calls
 [[headers]]
   for = "/.netlify/functions/*"
   [headers.values]
@@ -138,11 +133,3 @@
   from = "/*"
   to   = "/index.html"
   status = 200
-
-[functions."billing-reminders"]
-  schedule = "@daily"
-
-
-
-  external_node_modules = ["stripe", "@supabase/supabase-js", "@turf/turf", "resend", "pdf-lib"]
-
