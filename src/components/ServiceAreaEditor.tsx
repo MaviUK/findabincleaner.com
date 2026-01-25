@@ -249,6 +249,51 @@ function geoMultiPolygonAreaKm2(gjInput: any): number {
   return Math.max(0, totalM2) / 1_000_000;
 }
 
+function geoAnyAreaKm2(geoInput: any): number {
+  const geo = maybeParseGeo(geoInput);
+  if (!geo) return 0;
+
+  // FeatureCollection
+  if (geo.type === "FeatureCollection" && Array.isArray(geo.features)) {
+    return geo.features.reduce(
+      (sum: number, f: any) => sum + geoAnyAreaKm2(f),
+      0
+    );
+  }
+
+  // Feature
+  if (geo.type === "Feature" && geo.geometry) {
+    return geoAnyAreaKm2(geo.geometry);
+  }
+
+  // Polygon
+  if (geo.type === "Polygon" && Array.isArray(geo.coordinates)) {
+    let totalM2 = 0;
+
+    for (let ringIndex = 0; ringIndex < geo.coordinates.length; ringIndex++) {
+      const ring = geo.coordinates[ringIndex];
+
+      const path = ring
+        .map((pair: any) => pairToLatLng(pair))
+        .filter(Boolean)
+        .map((p: any) => new google.maps.LatLng(p.lat, p.lng));
+
+      const ringM2 = google.maps.geometry.spherical.computeArea(path);
+      totalM2 += ringIndex === 0 ? Math.abs(ringM2) : -Math.abs(ringM2);
+    }
+
+    return Math.max(0, totalM2) / 1_000_000;
+  }
+
+  // MultiPolygon
+  if (geo.type === "MultiPolygon") {
+    return geoMultiPolygonAreaKm2(geo);
+  }
+
+  return 0;
+}
+
+
 function areaKm2(a: ServiceAreaRow): number {
   const db = Number(a?.km2);
   if (Number.isFinite(db) && db > 0) return db;
