@@ -3,6 +3,12 @@ import React, { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
+type LegalTab = "terms" | "privacy" | "cookies" | "sponsored";
+
+function openLegal(tab: LegalTab) {
+  window.dispatchEvent(new CustomEvent("open-legal", { detail: { tab } }));
+}
+
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [authed, setAuthed] = useState(false);
   const location = useLocation();
@@ -96,13 +102,53 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
       {/* Footer */}
       <footer className="border-t border-black/5 bg-white">
-        <div
-          className={`${WRAP} py-6 flex flex-col sm:flex-row gap-2 sm:gap-0 items-center justify-between text-sm text-gray-500`}
-        >
-          <span>© {new Date().getFullYear()} Klean.ly</span>
-          <span>
-            Built with <span className="text-rose-600">❤</span>
-          </span>
+        <div className={`${WRAP} py-6`}>
+          <div className="flex flex-col sm:flex-row gap-3 sm:gap-0 items-center justify-between text-sm text-gray-500">
+            <span>© {new Date().getFullYear()} Klean.ly</span>
+            <span>
+              Built with <span className="text-rose-600">❤</span>
+            </span>
+          </div>
+
+          {/* ✅ Legal links row */}
+          <div className="mt-3 flex flex-wrap items-center justify-center sm:justify-between gap-x-4 gap-y-2 text-xs text-gray-500">
+            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
+              <button
+                type="button"
+                onClick={() => openLegal("terms")}
+                className="hover:text-gray-900 underline underline-offset-4 decoration-gray-300"
+              >
+                Terms
+              </button>
+              <button
+                type="button"
+                onClick={() => openLegal("privacy")}
+                className="hover:text-gray-900 underline underline-offset-4 decoration-gray-300"
+              >
+                Privacy
+              </button>
+              <button
+                type="button"
+                onClick={() => openLegal("cookies")}
+                className="hover:text-gray-900 underline underline-offset-4 decoration-gray-300"
+              >
+                Cookies
+              </button>
+              <button
+                type="button"
+                onClick={() => openLegal("sponsored")}
+                className="hover:text-gray-900 underline underline-offset-4 decoration-gray-300"
+              >
+                Sponsored Listing Terms
+              </button>
+            </div>
+
+            <div className="text-center sm:text-right">
+              <span className="text-gray-400">
+                Questions? Contact support via your dashboard.
+              </span>
+            </div>
+          </div>
         </div>
       </footer>
     </div>
