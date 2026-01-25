@@ -56,43 +56,43 @@ export default function LegalModal({
       />
 
       {/* Panel */}
-      <div className="relative mx-auto mt-10 w-[min(980px,92vw)] rounded-2xl border border-white/10 bg-[#0b0b0b] shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
-          <div>
-            <div className="text-lg font-semibold text-white">Legal</div>
-            <div className="text-sm text-white/60">
-              {brandName} policies and terms
-            </div>
-          </div>
+      <div className="relative mx-auto mt-10 w-[min(980px,92vw)] rounded-2xl border border-gray-200 bg-white shadow-xl">
+        <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-6 py-4">
+  <div>
+    <div className="text-lg font-semibold text-gray-900">Legal</div>
+    <div className="text-sm text-gray-500">
+      {brandName} policies and terms
+    </div>
+  </div>
 
-          <button
-            onClick={onClose}
-            className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm text-white hover:bg-white/10"
-          >
-            Close
-          </button>
-        </div>
+  <button
+    onClick={onClose}
+    className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+  >
+    Close
+  </button>
+</div>
 
         {/* Tabs */}
         <div className="flex flex-wrap gap-2 border-b border-white/10 px-5 py-3">
           {tabs.map((t) => (
             <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              className={classNames(
-                "rounded-full px-4 py-2 text-sm transition",
-                tab === t.key
-                  ? "bg-white text-black"
-                  : "bg-white/5 text-white hover:bg-white/10"
-              )}
-            >
-              {t.label}
-            </button>
+  key={t.key}
+  onClick={() => setTab(t.key)}
+  className={classNames(
+    "rounded-full px-4 py-2 text-sm font-medium transition",
+    tab === t.key
+      ? "bg-gray-900 text-white"
+      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+  )}
+>
+  {t.label}
+</button>
           ))}
         </div>
 
         {/* Content */}
-        <main className="max-h-[70vh] overflow-y-auto px-5 py-5">
+        <main className="max-h-[70vh] overflow-y-auto px-6 py-6 text-gray-800">
           {tab === "terms" && <TermsContent brandName={brandName} />}
           {tab === "privacy" && <PrivacyContent brandName={brandName} />}
           {tab === "cookies" && <CookieContent brandName={brandName} />}
@@ -120,7 +120,7 @@ export default function LegalModal({
 
 function TermsContent({ brandName }: { brandName: string }) {
   return (
-    <article className="prose prose-invert max-w-none">
+    <article className="prose max-w-none prose-gray">
       <h2>1. About {brandName}</h2>
       <p>
         {brandName} operates an online directory platform that allows users to
@@ -253,7 +253,7 @@ function TermsContent({ brandName }: { brandName: string }) {
 
 function PrivacyContent({ brandName }: { brandName: string }) {
   return (
-    <article className="prose prose-invert max-w-none">
+    <article className="prose max-w-none prose-gray">
       <h2>1. Who we are</h2>
       <p>
         {brandName} operates an online business directory that helps users find
@@ -421,7 +421,7 @@ function PrivacyContent({ brandName }: { brandName: string }) {
 
 function CookieContent({ brandName }: { brandName: string }) {
   return (
-    <article className="prose prose-invert max-w-none">
+    <article className="prose max-w-none prose-gray">
       <h2>1. What cookies are</h2>
       <p>
         Cookies are small text files placed on your device when you visit a
@@ -533,7 +533,7 @@ function CookieContent({ brandName }: { brandName: string }) {
 
 function SponsoredContent({ brandName }: { brandName: string }) {
   return (
-    <article className="prose prose-invert max-w-none">
+    <article className="prose max-w-none prose-gray">
       <h2>1. What Sponsored Listings are</h2>
       <p>
         Sponsored Listings on {brandName} are paid advertising placements that
