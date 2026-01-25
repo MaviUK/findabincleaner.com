@@ -1,5 +1,5 @@
 // src/App.tsx
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode, useCallback } from "react";
 import {
   HashRouter as Router,
   Routes,
@@ -20,6 +20,12 @@ import Settings from "./pages/Settings";
 import Onboarding from "./pages/Onboarding";
 import Analytics from "./pages/Analytics";
 import Invoices from "./pages/Invoices";
+
+// ✅ Legal modal
+import LegalModal from "./components/LegalModal";
+// If your LegalModal exports a type for tabs, you can import it.
+// If not, we’ll just use string literals.
+// import type { LegalTab } from "./components/LegalModal";
 
 // Bump when you change the legal text to force re-acceptance
 const TERMS_VERSION = "2025-09-29";
@@ -104,9 +110,35 @@ function NotFound() {
   );
 }
 
+type LegalTab = "terms" | "privacy" | "cookies" | "sponsored";
+
 export default function App() {
   // undefined = still checking session, null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
+
+  // ✅ Legal modal state (root-mounted)
+  const [legalOpen, setLegalOpen] = useState(false);
+  const [legalTab, setLegalTab] = useState<LegalTab>("terms");
+
+  const openLegal = useCallback((tab: LegalTab) => {
+    setLegalTab(tab);
+    setLegalOpen(true);
+  }, []);
+
+  const closeLegal = useCallback(() => setLegalOpen(false), []);
+
+  // ✅ Allow opening the modal from anywhere via event
+  // window.dispatchEvent(new CustomEvent("open-legal", { detail: { tab: "privacy" } }))
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const ce = e as CustomEvent<{ tab?: LegalTab }>;
+      const tab = ce?.detail?.tab;
+      openLegal((tab as LegalTab) || "terms");
+    };
+
+    window.addEventListener("open-legal", handler as EventListener);
+    return () => window.removeEventListener("open-legal", handler as EventListener);
+  }, [openLegal]);
 
   // ✅ Stripe return bridge for HashRouter
   // Stripe strips hashes, so it returns to "/?checkout=success".
@@ -131,7 +163,6 @@ export default function App() {
 
   // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
   // Keep this AFTER Stripe bridge
- 
 
   useEffect(() => {
     // initial check
@@ -211,6 +242,9 @@ export default function App() {
 
           <Route path="*" element={<NotFound />} />
         </Routes>
+
+        {/* ✅ Mount the LegalModal once at the app root */}
+        <LegalModal open={legalOpen} onClose={closeLegal} defaultTab={legalTab} />
       </Layout>
     </Router>
   );
