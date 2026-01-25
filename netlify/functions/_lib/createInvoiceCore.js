@@ -1,5 +1,5 @@
 // netlify/functions/_lib/createInvoiceCore.js
-console.log("LOADED createInvoiceCore v2026-01-06-FIX-SUPABASE-CALLS");
+console.log("LOADED createInvoiceCore v2026-01-25-SNAPSHOT-AREA+CATEGORY");
 
 const Stripe = require("stripe");
 const { getSupabaseAdmin } = require("./supabase");
@@ -389,7 +389,6 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
 
   const inv = await stripe.invoices.retrieve(stripe_invoice_id);
 
-  // ✅ FIX: supabase() everywhere
   const { data: existing } = await supabase()
     .from("invoices")
     .select("id, invoice_number, emailed_at")
@@ -493,10 +492,15 @@ async function createInvoiceAndEmailByStripeInvoiceId(stripe_invoice_id, opts = 
     totalCents,
   });
 
-  // Upsert invoice record
+  // ✅ Upsert invoice record (NOW includes snapshot fields)
   const invoiceRow = {
     cleaner_id: subRow.business_id,
     area_id: subRow.area_id,
+
+    // ✅ snapshot fields so billing/history never loses them
+    area_name: areaName,
+    category_name: industryName,
+
     stripe_invoice_id: inv.id,
     stripe_payment_intent_id: inv.payment_intent || null,
     invoice_number: invoiceNumber,
