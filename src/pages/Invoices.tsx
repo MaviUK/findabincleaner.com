@@ -1,6 +1,5 @@
 // src/pages/Invoices.tsx
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
 type ServiceCategoryRow = {
@@ -19,6 +18,10 @@ type InvoiceDbRow = {
   id: string;
   cleaner_id: string | null;
   area_id: string | null;
+
+  // ✅ snapshot fields (persist even if area/category later deleted)
+  area_name: string | null;
+  category_name: string | null;
 
   stripe_invoice_id: string | null;
   stripe_payment_intent_id: string | null;
@@ -148,7 +151,7 @@ export default function Invoices() {
         if (!alive) return;
         setCleanerId(cid);
 
-        // 1) Load invoices from public.invoices (this is the correct table)
+        // 1) Load invoices from public.invoices (includes snapshot fields)
         const { data: invData, error: invErr } = await supabase
           .from("invoices")
           .select(
@@ -156,6 +159,8 @@ export default function Invoices() {
             id,
             cleaner_id,
             area_id,
+            area_name,
+            category_name,
             stripe_invoice_id,
             stripe_payment_intent_id,
             invoice_number,
@@ -178,6 +183,8 @@ export default function Invoices() {
 
         const normalizedInvoices: InvoiceDbRow[] = (invData || []).map((r: any) => ({
           ...r,
+          area_name: r.area_name ?? null,
+          category_name: r.category_name ?? null,
         }));
 
         // 2) Load service areas referenced by these invoices
@@ -208,6 +215,8 @@ export default function Invoices() {
         }
 
         // 3) Load categories for dropdown/display based on those areas
+        //    NOTE: If areas were deleted, dropdown will only include categories from remaining areas.
+        //    Invoices will still DISPLAY properly via snapshot fallbacks.
         const catIds = Array.from(
           new Set(
             Array.from(areaMap.values())
@@ -276,7 +285,13 @@ export default function Invoices() {
       list = list.filter((inv) => {
         const area = inv.area_id ? areasById.get(inv.area_id) : null;
         const catId = area?.category_id || null;
-        return catId === industryFilter;
+
+        // Primary path: match by category id from live area
+        if (catId) return catId === industryFilter;
+
+        // Fallback: match by snapshot name (industryFilter is an id)
+        const selectedCatName = categoryNameById.get(industryFilter) || "";
+        return !!selectedCatName && inv.category_name === selectedCatName;
       });
     }
 
@@ -285,7 +300,7 @@ export default function Invoices() {
     }
 
     return list;
-  }, [invoices, industryFilter, monthFilter, areasById]);
+  }, [invoices, industryFilter, monthFilter, areasById, categoryNameById]);
 
   const clearFilters = () => {
     setIndustryFilter("all");
@@ -373,7 +388,13 @@ export default function Invoices() {
                   {filtered.map((inv) => {
                     const area = inv.area_id ? areasById.get(inv.area_id) : null;
                     const catId = area?.category_id || null;
-                    const industry = catId ? categoryNameById.get(catId) : null;
+
+                    const industry =
+                      (catId ? categoryNameById.get(catId) : null) ||
+                      inv.category_name ||
+                      "—";
+
+                    const areaLabel = area?.name || inv.area_name || "—";
 
                     const periodStart = inv.billing_period_start
                       ? fmtDateOnlyFromDateString(inv.billing_period_start)
@@ -387,8 +408,8 @@ export default function Invoices() {
                     return (
                       <tr key={inv.id} className="border-b border-ink-50">
                         <td className="py-3 pr-3 font-medium">{inv.stripe_invoice_id || "—"}</td>
-                        <td className="py-3 pr-3">{industry || "—"}</td>
-                        <td className="py-3 pr-3">{area?.name || "—"}</td>
+                        <td className="py-3 pr-3">{industry}</td>
+                        <td className="py-3 pr-3">{areaLabel}</td>
                         <td className="py-3 pr-3">{periodStart}</td>
                         <td className="py-3 pr-3">{statusLabel}</td>
                         <td className="py-3 pr-3">
