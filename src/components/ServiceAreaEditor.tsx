@@ -1107,15 +1107,29 @@ setSponsorOpen(true);
                       <div className="font-medium truncate group-hover:underline">{a.name}</div>
 
                       <div className="text-xs text-gray-500 mt-1">
-                        {new Date(a.created_at).toLocaleString()} •{" "}
-Total: {isLoaded ? areaKm2(a).toFixed(2) : "—"} km² •{" "}
-Sponsored: {isLoaded ? sponsoredKm2.toFixed(2) : "—"} km²
-                        {locked && until ? (
-                          <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
-                            Locked until {until}
-                          </span>
-                        ) : null}
-                      </div>
+  <span>{new Date(a.created_at).toLocaleString()}</span>
+  <span className="mx-1">•</span>
+
+  <span>
+    Total: {isLoaded ? `${areaKm2(a).toFixed(2)} km²` : "—"}
+  </span>
+
+  <span className="mx-1">•</span>
+
+  <span>
+    Sponsored: {isLoaded ? `${sponsoredKm2.toFixed(2)} km²` : "—"}
+  </span>
+
+  {locked && until ? (
+    <>
+      <span className="mx-2">•</span>
+      <span className="inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
+        Locked until {until}
+      </span>
+    </>
+  ) : null}
+</div>
+
                     </button>
 
                     <div className="mt-2 flex items-center gap-2">
