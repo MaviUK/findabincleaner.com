@@ -1108,7 +1108,8 @@ setSponsorOpen(true);
 
                       <div className="text-xs text-gray-500 mt-1">
                         {new Date(a.created_at).toLocaleString()} •{" "}
-                        {isLoaded ? areaKm2(a).toFixed(2) : "—"} km²
+Total: {isLoaded ? areaKm2(a).toFixed(2) : "—"} km² •{" "}
+Sponsored: {isLoaded ? sponsoredKm2.toFixed(2) : "—"} km²
                         {locked && until ? (
                           <span className="ml-2 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] text-amber-800 border border-amber-200">
                             Locked until {until}
