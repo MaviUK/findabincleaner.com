@@ -50,7 +50,8 @@ export default function DeleteAreaModal({
 
         <div className="px-4 py-4 space-y-3">
           <div className="text-sm">
-            You are about to delete: <span className="font-semibold">{areaName}</span>
+            You are about to delete:{" "}
+            <span className="font-semibold">{areaName}</span>
           </div>
 
           {isSponsoredByMe ? (
@@ -58,8 +59,12 @@ export default function DeleteAreaModal({
               <div className="font-semibold mb-1">This area is sponsored.</div>
               <div>
                 Deleting it will also{" "}
-                <span className="font-semibold">cancel your subscription at the period end</span>,
-                so it <span className="font-semibold">will not renew</span> on the next renewal date.
+                <span className="font-semibold">
+                  cancel your subscription at the period end
+                </span>
+                , so it{" "}
+                <span className="font-semibold">will not renew</span> on the
+                next renewal date.
               </div>
             </div>
           ) : (
@@ -111,45 +116,39 @@ export default function DeleteAreaModal({
 
               try {
                 if (isSponsoredByMe) {
-                  const session = (await supabase.auth.getSession())?.data?.session;
+                  const session = (await supabase.auth.getSession())?.data
+                    ?.session;
                   const token = session?.access_token;
                   if (!token) throw new Error("You must be logged in.");
 
-                  const res = await fetch("/.netlify/functions/cancel-sponsored-area", {
-                    method: "POST",
-                    headers: {
-                      "content-type": "application/json",
-                      Authorization: `Bearer ${token}`,
-                    },
-                    body: JSON.stringify({
-                      areaId,
-                      cleanerId,
-                      slot: 1,
-                      mode: "cancel_at_period_end", // remove this if your function doesn't support it
-                    }),
-                  });
+                  const res = await fetch(
+                    "/.netlify/functions/cancel-sponsored-area",
+                    {
+                      method: "POST",
+                      headers: {
+                        "content-type": "application/json",
+                        Authorization: `Bearer ${token}`,
+                      },
+                      body: JSON.stringify({
+                        areaId,
+                        cleanerId,
+                        slot: 1,
+                      }),
+                    }
+                  );
 
                   const j = await res.json().catch(() => ({}));
-                  if (!res.ok || !j?.ok) throw new Error(j?.error || `Failed (${res.status})`);
+                  if (!res.ok || !j?.ok)
+                    throw new Error(j?.error || `Failed (${res.status})`);
 
-                  // ✅ ensure polygon is deleted (even if the function only cancels)
-                  const del = await supabase.rpc("delete_service_area", {
-  p_area_id: areaId,
-  p_cleaner_id: cleanerId,
-});
-                  if (del.error) {
-                    // ignore "already deleted" / "not found" style errors
-                    const msg = String(del.error.message || "");
-                    if (!msg.toLowerCase().includes("not") && !msg.toLowerCase().includes("found")) {
-                      throw del.error;
-                    }
-                  }
+                  // ✅ IMPORTANT:
+                  // Do NOT call delete_service_area from the client here.
+                  // The Netlify function already cancels + deletes server-side.
                 } else {
                   const { error } = await supabase.rpc("delete_service_area", {
-  p_area_id: areaId,
-  p_cleaner_id: cleanerId,
-});
-
+                    p_area_id: areaId,
+                    p_cleaner_id: cleanerId,
+                  });
                   if (error) throw error;
                 }
 
