@@ -143,11 +143,17 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </button>
             </div>
 
-            <div className="text-center sm:text-right">
-              <span className="text-gray-400">
-                Questions? Contact support via your dashboard.
-              </span>
-            </div>
+            <div className="text-xs text-gray-500">
+  Questions?{" "}
+  <button
+    type="button"
+    onClick={() => setSupportOpen(true)}
+    className="font-semibold text-gray-900 underline underline-offset-2 hover:opacity-80"
+  >
+    Contact support
+  </button>
+</div>
+
           </div>
         </div>
       </footer>
@@ -156,3 +162,4 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
