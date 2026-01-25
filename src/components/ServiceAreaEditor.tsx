@@ -1020,6 +1020,15 @@ const guardCanPurchaseSponsor = useCallback(
               {sortedServiceAreas.map((a) => {
                 const s = getAreaSlotState(a.id);
 
+                const sponsoredGeo =
+  sponsorship[a.id]?.slot?.sponsored_geojson ??
+  sponsorship[a.id]?.sponsored_geojson ??
+  null;
+
+const sponsoredKm2 =
+  isLoaded && sponsoredGeo ? geoAnyAreaKm2(sponsoredGeo) : 0;
+
+
                 const mine =
                   !!s &&
                   isBlockingStatus(s.status) &&
