@@ -605,3 +605,204 @@ function SponsoredContent({ brandName }: { brandName: string }) {
     </article>
   );
 }
+
+function SupportModal({
+  open,
+  onClose,
+  brandName,
+}: {
+  open: boolean;
+  onClose: () => void;
+  brandName: string;
+}) {
+  const [role, setRole] = useState<"user" | "business">("user");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setSent(false);
+    setErr(null);
+  }, [open]);
+
+  if (!open) return null;
+
+  const submit = async () => {
+    setErr(null);
+
+    if (!email.trim() || !message.trim()) {
+      setErr("Please enter your email and a message.");
+      return;
+    }
+
+    setSending(true);
+    try {
+      const res = await fetch("/.netlify/functions/sendSupportEmail", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role,
+          name: name.trim(),
+          email: email.trim(),
+          message: message.trim(),
+          source: "legal_modal",
+        }),
+      });
+
+      if (!res.ok) {
+        const txt = await res.text().catch(() => "");
+        throw new Error(txt || "Failed to send support request.");
+      }
+
+      setSent(true);
+      setName("");
+      setEmail("");
+      setMessage("");
+    } catch (e: any) {
+      setErr(e?.message || "Failed to send support request.");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[110]">
+      <button
+        aria-label="Close support modal"
+        className="absolute inset-0 bg-black/60"
+        onClick={onClose}
+      />
+
+      <div
+        className="relative mx-auto w-[min(680px,92vw)] rounded-2xl bg-white shadow-xl
+                   mt-6 sm:mt-20"
+        style={{
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        <div className="flex items-start justify-between gap-4 border-b border-gray-200 px-5 py-4">
+          <div>
+            <div className="text-lg font-semibold text-gray-900">
+              Contact Support
+            </div>
+            <div className="text-sm text-gray-500">
+              Send a message to {brandName} support
+            </div>
+          </div>
+
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 hover:bg-gray-100"
+          >
+            Close
+          </button>
+        </div>
+
+        <div className="px-5 py-5 space-y-4">
+          {sent ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+              ✅ Thanks — your message has been sent. We’ll reply by email.
+            </div>
+          ) : (
+            <>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRole("user")}
+                  className={classNames(
+                    "rounded-full px-4 py-2 text-sm font-medium transition",
+                    role === "user"
+                      ? "bg-gray-900 text-white"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  )}
+                >
+                  I’m a user
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRole("business")}
+                  className={classNames(
+                    "rounded-full px-4 py-2 text-sm font-medium transition",
+                    role === "business"
+                      ? "bg-gray-900 text-white"
+                      : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+                  )}
+                >
+                  I’m a business
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Name (optional)
+                  </label>
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-4 focus:ring-black/10"
+                    placeholder="Your name"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700">
+                    Email
+                  </label>
+                  <input
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-4 focus:ring-black/10"
+                    placeholder="you@email.com"
+                    inputMode="email"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
+                  Message
+                </label>
+                <textarea
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                  className="mt-1 w-full min-h-[120px] rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-4 focus:ring-black/10"
+                  placeholder="Tell us what you need help with…"
+                />
+              </div>
+
+              {err && (
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900">
+                  {err}
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={submit}
+                  className="rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
+                >
+                  {sending ? "Sending…" : "Send"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
