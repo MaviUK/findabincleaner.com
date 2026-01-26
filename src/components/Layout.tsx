@@ -332,7 +332,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             aria-label="Close support"
             onClick={closeSupport}
           />
-          <div className="relative mx-auto mt-6 sm:mt-16 w-[min(720px,92vw)] max-h-[92vh] rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
+          <div className="relative mx-auto mt-6 w-[min(720px,92vw)] max-h-[92vh] rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
             <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
               <div>
                 <div className="text-lg font-semibold text-gray-900">
@@ -350,7 +350,14 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </button>
             </div>
 
-            <form className="px-5 py-5 space-y-4" onSubmit={submitSupport} autoComplete="on">
+            <form
+  onSubmit={submitSupport}
+  className="px-5 py-5 space-y-4 overflow-y-auto pb-32"
+  style={{
+    WebkitOverflowScrolling: "touch",
+    paddingBottom: "calc(8rem + env(safe-area-inset-bottom))",
+  }}
+>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
@@ -490,22 +497,18 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               )}
 
              <div className="sticky bottom-0 -mx-5 mt-2 border-t border-gray-200 bg-white px-5 py-3">
-  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2">
-    <button
-      type="button"
-      onClick={closeSupport}
-      className="w-full sm:w-auto rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
-    >
+  <div className="sticky bottom-0 border-t border-gray-200 bg-white px-5 py-3"
+     style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
+  <div className="flex flex-col gap-2">
+    <button type="button" onClick={closeSupport} className="w-full rounded-xl border px-4 py-2">
       Cancel
     </button>
-    <button
-      type="submit"
-      disabled={supportSending}
-      className="w-full sm:w-auto rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
-    >
+    <button type="submit" disabled={supportSending} className="w-full rounded-xl bg-gray-900 px-4 py-2 text-white">
       {supportSending ? "Sending…" : "Send"}
     </button>
   </div>
+</div>
+
 </div>
 
 
@@ -521,4 +524,5 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
