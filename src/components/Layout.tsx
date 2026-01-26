@@ -1,5 +1,5 @@
 // src/components/Layout.tsx
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 
@@ -9,17 +9,46 @@ function openLegal(tab: LegalTab) {
   window.dispatchEvent(new CustomEvent("open-legal", { detail: { tab } }));
 }
 
+type SupportType = "user" | "business";
+
+type Attachment = {
+  id: string;
+  file: File;
+  previewUrl: string;
+};
+
+const MAX_FILES = 5;
+const MAX_FILE_MB = 5; // per file
+const MAX_TOTAL_MB = 15; // total
+const ACCEPTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+  "image/gif",
+]);
+
+function bytesToMb(n: number) {
+  return n / (1024 * 1024);
+}
+
+function uid() {
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
+}
+
 const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   const [authed, setAuthed] = useState(false);
-  const [supportOpen, setSupportOpen] = useState(false);
+  const location = useLocation();
 
-  const [supportType, setSupportType] = useState<"user" | "business">("user");
+  // Support modal state
+  const [supportOpen, setSupportOpen] = useState(false);
+  const [supportType, setSupportType] = useState<SupportType>("user");
   const [supportEmail, setSupportEmail] = useState("");
+  const [supportSubject, setSupportSubject] = useState("");
   const [supportMessage, setSupportMessage] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [supportSending, setSupportSending] = useState(false);
   const [supportSent, setSupportSent] = useState<null | "ok" | "error">(null);
-
-  const location = useLocation();
+  const [supportErr, setSupportErr] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -43,31 +72,83 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
   const hideCta = location.pathname === "/login";
 
-  // ✅ One wrapper used everywhere (header + footer should match body rails)
   const WRAP = "mx-auto w-full max-w-7xl px-4 sm:px-6";
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
   };
 
+  const totalBytes = useMemo(
+    () => attachments.reduce((sum, a) => sum + a.file.size, 0),
+    [attachments]
+  );
+
   const closeSupport = () => {
     setSupportOpen(false);
-    // reset UI state after close (small delay so it doesn't flash)
-    setTimeout(() => {
-      setSupportSent(null);
-      setSupportSending(false);
-    }, 150);
+    // leave values so user can reopen without losing work if they accidentally close
+    // (if you want full reset on close, tell me)
   };
 
   const openSupport = () => {
     setSupportOpen(true);
     setSupportSent(null);
+    setSupportErr(null);
 
-    // best-effort: prefill email from authed user (if available)
+    // best-effort prefill email from authed user
     supabase.auth.getUser().then(({ data }) => {
       const em = data?.user?.email;
       if (em && !supportEmail) setSupportEmail(em);
     });
+  };
+
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const next = prev.filter((a) => a.id !== id);
+      const removed = prev.find((a) => a.id === id);
+      if (removed) URL.revokeObjectURL(removed.previewUrl);
+      return next;
+    });
+  };
+
+  const onPickFiles = (files: FileList | null) => {
+    setSupportErr(null);
+    if (!files) return;
+
+    const incoming = Array.from(files);
+
+    // Enforce count
+    if (attachments.length + incoming.length > MAX_FILES) {
+      setSupportErr(`You can attach up to ${MAX_FILES} images.`);
+      return;
+    }
+
+    // Validate type + size, and total size
+    let nextBytes = totalBytes;
+    const nextAttachments: Attachment[] = [];
+
+    for (const f of incoming) {
+      if (!ACCEPTED_IMAGE_TYPES.has(f.type)) {
+        setSupportErr("Only image files are allowed (JPG, PNG, WebP, GIF).");
+        return;
+      }
+      if (bytesToMb(f.size) > MAX_FILE_MB) {
+        setSupportErr(`Each image must be under ${MAX_FILE_MB}MB.`);
+        return;
+      }
+      nextBytes += f.size;
+      if (bytesToMb(nextBytes) > MAX_TOTAL_MB) {
+        setSupportErr(`Total attachments must be under ${MAX_TOTAL_MB}MB.`);
+        return;
+      }
+
+      nextAttachments.push({
+        id: uid(),
+        file: f,
+        previewUrl: URL.createObjectURL(f),
+      });
+    }
+
+    setAttachments((prev) => [...prev, ...nextAttachments]);
   };
 
   const submitSupport = async (e: React.FormEvent) => {
@@ -76,22 +157,58 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
     setSupportSending(true);
     setSupportSent(null);
+    setSupportErr(null);
 
     try {
-      // ✅ TODO: wire this to your Netlify function
-      // e.g. POST /.netlify/functions/sendSupportEmail
-      // For now this just simulates a send.
-      await new Promise((r) => setTimeout(r, 500));
+      // Build multipart form-data so you can receive attachments server-side
+      const fd = new FormData();
+      fd.append("type", supportType);
+      fd.append("email", supportEmail.trim());
+      fd.append("subject", supportSubject.trim());
+      fd.append("message", supportMessage.trim());
+
+      attachments.forEach((a, i) => {
+        fd.append(`attachment_${i + 1}`, a.file, a.file.name);
+      });
+
+      // ✅ You need to create this Netlify function:
+      // /.netlify/functions/support-ticket
+      const res = await fetch("/.netlify/functions/support-ticket", {
+        method: "POST",
+        body: fd,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || `Support request failed (${res.status})`);
+      }
 
       setSupportSent("ok");
       setSupportMessage("");
-    } catch (err) {
+      setSupportSubject("");
+      // clear attachments
+      setAttachments((prev) => {
+        prev.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+        return [];
+      });
+    } catch (err: any) {
       console.error(err);
       setSupportSent("error");
+      setSupportErr(
+        err?.message || "Sorry — something went wrong. Please try again."
+      );
     } finally {
       setSupportSending(false);
     }
   };
+
+  // Cleanup previews on unmount
+  useEffect(() => {
+    return () => {
+      attachments.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -161,7 +278,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             </span>
           </div>
 
-          {/* Legal links row */}
           <div className="mt-3 flex flex-wrap items-center justify-center sm:justify-between gap-x-4 gap-y-2 text-xs text-gray-500">
             <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-2">
               <button
@@ -216,7 +332,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             aria-label="Close support"
             onClick={closeSupport}
           />
-          <div className="relative mx-auto mt-10 sm:mt-16 w-[min(640px,92vw)] rounded-2xl bg-white shadow-xl">
+          <div className="relative mx-auto mt-10 sm:mt-16 w-[min(720px,92vw)] rounded-2xl bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
               <div>
                 <div className="text-lg font-semibold text-gray-900">
@@ -246,9 +362,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                   </label>
                   <select
                     value={supportType}
-                    onChange={(e) =>
-                      setSupportType(e.target.value as "user" | "business")
-                    }
+                    onChange={(e) => setSupportType(e.target.value as SupportType)}
                     className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
                   >
                     <option value="user">User</option>
@@ -273,6 +387,20 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
               <div>
                 <label className="block text-sm font-medium text-gray-700">
+                  Subject
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={supportSubject}
+                  onChange={(e) => setSupportSubject(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
+                  placeholder="E.g. I can’t access my dashboard"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700">
                   Message
                 </label>
                 <textarea
@@ -285,13 +413,80 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 />
               </div>
 
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <label className="block text-sm font-medium text-gray-700">
+                    Attach images (optional)
+                  </label>
+                  <div className="text-xs text-gray-500">
+                    Up to {MAX_FILES} · {MAX_FILE_MB}MB each · {MAX_TOTAL_MB}MB total
+                  </div>
+                </div>
+
+                <div className="mt-2 flex flex-col sm:flex-row gap-2 sm:items-center">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={(e) => {
+                      onPickFiles(e.target.files);
+                      // allow re-selecting same file
+                      e.currentTarget.value = "";
+                    }}
+                    className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-black"
+                  />
+                </div>
+
+                {attachments.length > 0 && (
+                  <div className="mt-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {attachments.map((a) => (
+                      <div
+                        key={a.id}
+                        className="rounded-xl border border-gray-200 bg-gray-50 p-2"
+                      >
+                        <div className="aspect-square w-full overflow-hidden rounded-lg bg-white">
+                          <img
+                            src={a.previewUrl}
+                            alt={a.file.name}
+                            className="h-full w-full object-cover"
+                          />
+                        </div>
+                        <div className="mt-2 flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="truncate text-xs font-medium text-gray-700">
+                              {a.file.name}
+                            </div>
+                            <div className="text-[11px] text-gray-500">
+                              {bytesToMb(a.file.size).toFixed(2)} MB
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeAttachment(a.id)}
+                            className="shrink-0 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs text-gray-700 hover:bg-gray-100"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {supportErr && (
+                  <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                    {supportErr}
+                  </div>
+                )}
+              </div>
+
               {supportSent === "ok" && (
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
                   Thanks — your message has been sent.
                 </div>
               )}
 
-              {supportSent === "error" && (
+              {supportSent === "error" && !supportErr && (
                 <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
                   Sorry — something went wrong. Please try again.
                 </div>
@@ -315,8 +510,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </div>
 
               <div className="text-xs text-gray-500">
-                Tip: include your postcode (users) or business name (businesses)
-                so we can help faster.
+                Tip: include your postcode (users) or business name (businesses) so we can help faster.
               </div>
             </form>
           </div>
