@@ -332,7 +332,7 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
             aria-label="Close support"
             onClick={closeSupport}
           />
-          <div className="relative mx-auto mt-10 sm:mt-16 w-[min(720px,92vw)] rounded-2xl bg-white shadow-xl">
+          <div className="relative mx-auto mt-6 sm:mt-16 w-[min(720px,92vw)] max-h-[92vh] rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
             <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
               <div>
                 <div className="text-lg font-semibold text-gray-900">
@@ -350,11 +350,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </button>
             </div>
 
-            <form
-              className="px-5 py-5 space-y-4"
-              onSubmit={submitSupport}
-              autoComplete="on"
-            >
+            <form className="px-5 py-5 space-y-4" onSubmit={submitSupport} autoComplete="on">
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -492,22 +489,25 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 </div>
               )}
 
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={closeSupport}
-                  className="w-full sm:w-auto rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={supportSending}
-                  className="w-full sm:w-auto rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
-                >
-                  {supportSending ? "Sending…" : "Send"}
-                </button>
-              </div>
+             <div className="sticky bottom-0 -mx-5 mt-2 border-t border-gray-200 bg-white px-5 py-3">
+  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-2">
+    <button
+      type="button"
+      onClick={closeSupport}
+      className="w-full sm:w-auto rounded-xl border border-gray-300 bg-white px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+    >
+      Cancel
+    </button>
+    <button
+      type="submit"
+      disabled={supportSending}
+      className="w-full sm:w-auto rounded-xl bg-gray-900 px-4 py-2 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
+    >
+      {supportSending ? "Sending…" : "Send"}
+    </button>
+  </div>
+</div>
+
 
               <div className="text-xs text-gray-500">
                 Tip: include your postcode (users) or business name (businesses) so we can help faster.
@@ -521,3 +521,4 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
