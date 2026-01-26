@@ -71,7 +71,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
   }, []);
 
   const hideCta = location.pathname === "/login";
-
   const WRAP = "mx-auto w-full max-w-7xl px-4 sm:px-6";
 
   const handleLogout = async () => {
@@ -85,8 +84,8 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
   const closeSupport = () => {
     setSupportOpen(false);
-    // leave values so user can reopen without losing work if they accidentally close
-    // (if you want full reset on close, tell me)
+    // We intentionally do NOT wipe the fields on close,
+    // so reopening doesn't lose text if they close by mistake.
   };
 
   const openSupport = () => {
@@ -116,13 +115,11 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 
     const incoming = Array.from(files);
 
-    // Enforce count
     if (attachments.length + incoming.length > MAX_FILES) {
       setSupportErr(`You can attach up to ${MAX_FILES} images.`);
       return;
     }
 
-    // Validate type + size, and total size
     let nextBytes = totalBytes;
     const nextAttachments: Attachment[] = [];
 
@@ -160,7 +157,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
     setSupportErr(null);
 
     try {
-      // Build multipart form-data so you can receive attachments server-side
       const fd = new FormData();
       fd.append("type", supportType);
       fd.append("email", supportEmail.trim());
@@ -171,8 +167,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
         fd.append(`attachment_${i + 1}`, a.file, a.file.name);
       });
 
-      // ✅ You need to create this Netlify function:
-      // /.netlify/functions/support-ticket
       const res = await fetch("/.netlify/functions/support-ticket", {
         method: "POST",
         body: fd,
@@ -186,7 +180,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       setSupportSent("ok");
       setSupportMessage("");
       setSupportSubject("");
-      // clear attachments
       setAttachments((prev) => {
         prev.forEach((a) => URL.revokeObjectURL(a.previewUrl));
         return [];
@@ -327,12 +320,16 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
       {/* Support modal */}
       {supportOpen && (
         <div className="fixed inset-0 z-[120]">
+          {/* backdrop */}
           <button
             className="absolute inset-0 bg-black/40"
             aria-label="Close support"
             onClick={closeSupport}
           />
-          <div className="relative mx-auto mt-6 w-[min(720px,92vw)] max-h-[92vh] rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
+
+          {/* panel */}
+          <div className="relative mx-auto mt-4 w-[min(720px,92vw)] max-h-[92vh] rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
+            {/* header stays visible */}
             <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
               <div>
                 <div className="text-lg font-semibold text-gray-900">
@@ -350,15 +347,12 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </button>
             </div>
 
+            {/* ONLY the form scrolls; buttons are inside form at bottom */}
             <form
-  onSubmit={submitSupport}
-  className="px-5 py-5 space-y-4 overflow-y-auto pb-32"
-  style={{
-    WebkitOverflowScrolling: "touch",
-    paddingBottom: "calc(8rem + env(safe-area-inset-bottom))",
-  }}
->
-
+              onSubmit={submitSupport}
+              className="flex-1 overflow-y-auto px-5 py-5 space-y-4"
+              style={{ WebkitOverflowScrolling: "touch" }}
+            >
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block text-sm font-medium text-gray-700">
@@ -366,7 +360,9 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                   </label>
                   <select
                     value={supportType}
-                    onChange={(e) => setSupportType(e.target.value as SupportType)}
+                    onChange={(e) =>
+                      setSupportType(e.target.value as SupportType)
+                    }
                     className="mt-1 w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm"
                   >
                     <option value="user">User</option>
@@ -418,23 +414,23 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
               </div>
 
               <div>
-                <div className="flex items-center justify-between gap-3">
+                <div className="flex items-start justify-between gap-3">
                   <label className="block text-sm font-medium text-gray-700">
                     Attach images (optional)
                   </label>
-                  <div className="text-xs text-gray-500">
-                    Up to {MAX_FILES} · {MAX_FILE_MB}MB each · {MAX_TOTAL_MB}MB total
+                  <div className="text-xs text-gray-500 text-right">
+                    Up to {MAX_FILES} · {MAX_FILE_MB}MB each · {MAX_TOTAL_MB}MB
+                    total
                   </div>
                 </div>
 
-                <div className="mt-2 flex flex-col sm:flex-row gap-2 sm:items-center">
+                <div className="mt-2">
                   <input
                     type="file"
                     accept="image/*"
                     multiple
                     onChange={(e) => {
                       onPickFiles(e.target.files);
-                      // allow re-selecting same file
                       e.currentTarget.value = "";
                     }}
                     className="block w-full text-sm file:mr-3 file:rounded-lg file:border-0 file:bg-gray-900 file:px-4 file:py-2 file:text-sm file:font-semibold file:text-white hover:file:bg-black"
@@ -496,60 +492,31 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 </div>
               )}
 
-             <div className="fixed inset-0 z-[100]">
-  <button className="absolute inset-0 bg-black/50" onClick={onClose} />
+              {/* buttons are inside the scroll area (NOT sticky) */}
+              <div className="pt-4 border-t border-gray-200 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={closeSupport}
+                  className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
 
-  <div className="relative mx-auto mt-6 w-[min(720px,92vw)] max-h-[92vh]
-                  rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
+                <button
+                  type="submit"
+                  disabled={supportSending}
+                  className="w-full rounded-xl bg-gray-900 px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
+                >
+                  {supportSending ? "Sending…" : "Send"}
+                </button>
 
-    {/* header stays visible */}
-    <div className="border-b border-gray-200 px-5 py-4 flex items-start justify-between gap-3">
-      <div>
-        <div className="text-lg font-semibold text-gray-900">Contact support</div>
-        <div className="text-sm text-gray-500">We’ll reply by email as soon as possible.</div>
-      </div>
-      <button onClick={onClose} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
-        Close
-      </button>
-    </div>
+                <div className="text-xs text-gray-500 pt-1">
+                  Tip: include your postcode (users) or business name (businesses)
+                  so we can help faster.
+                </div>
 
-    {/* ONLY this part scrolls */}
-    <form
-      onSubmit={submitSupport}
-      className="flex-1 overflow-y-auto px-5 py-5 space-y-4"
-      style={{ WebkitOverflowScrolling: "touch" }}
-    >
-      {/* ...fields... */}
-
-      {/* Attach images section */}
-      {/* ... */}
-
-      {/* buttons at bottom INSIDE scroll */}
-      <div className="pt-4 border-t border-gray-200 flex flex-col gap-2">
-        <button
-          type="button"
-          onClick={onClose}
-          className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold hover:bg-gray-50"
-        >
-          Cancel
-        </button>
-
-        <button
-          type="submit"
-          disabled={supportSending}
-          className="w-full rounded-xl bg-gray-900 px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
-        >
-          {supportSending ? "Sending…" : "Send"}
-        </button>
-      </div>
-    </form>
-  </div>
-</div>
-
-
-
-              <div className="text-xs text-gray-500">
-                Tip: include your postcode (users) or business name (businesses) so we can help faster.
+                {/* little spacer so iOS browser bars don't hide the last button */}
+                <div style={{ height: "env(safe-area-inset-bottom)" }} />
               </div>
             </form>
           </div>
@@ -560,6 +527,3 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
-
-
-
