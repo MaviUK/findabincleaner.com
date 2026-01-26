@@ -496,20 +496,56 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
                 </div>
               )}
 
-             <div className="sticky bottom-0 -mx-5 mt-2 border-t border-gray-200 bg-white px-5 py-3">
-  <div className="sticky bottom-0 border-t border-gray-200 bg-white px-5 py-3"
-     style={{ paddingBottom: "env(safe-area-inset-bottom)" }}>
-  <div className="flex flex-col gap-2">
-    <button type="button" onClick={closeSupport} className="w-full rounded-xl border px-4 py-2">
-      Cancel
-    </button>
-    <button type="submit" disabled={supportSending} className="w-full rounded-xl bg-gray-900 px-4 py-2 text-white">
-      {supportSending ? "Sending…" : "Send"}
-    </button>
+             <div className="fixed inset-0 z-[100]">
+  <button className="absolute inset-0 bg-black/50" onClick={onClose} />
+
+  <div className="relative mx-auto mt-6 w-[min(720px,92vw)] max-h-[92vh]
+                  rounded-2xl bg-white shadow-xl flex flex-col overflow-hidden">
+
+    {/* header stays visible */}
+    <div className="border-b border-gray-200 px-5 py-4 flex items-start justify-between gap-3">
+      <div>
+        <div className="text-lg font-semibold text-gray-900">Contact support</div>
+        <div className="text-sm text-gray-500">We’ll reply by email as soon as possible.</div>
+      </div>
+      <button onClick={onClose} className="rounded-lg border border-gray-300 px-3 py-2 text-sm">
+        Close
+      </button>
+    </div>
+
+    {/* ONLY this part scrolls */}
+    <form
+      onSubmit={submitSupport}
+      className="flex-1 overflow-y-auto px-5 py-5 space-y-4"
+      style={{ WebkitOverflowScrolling: "touch" }}
+    >
+      {/* ...fields... */}
+
+      {/* Attach images section */}
+      {/* ... */}
+
+      {/* buttons at bottom INSIDE scroll */}
+      <div className="pt-4 border-t border-gray-200 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={onClose}
+          className="w-full rounded-xl border border-gray-300 px-4 py-3 text-sm font-semibold hover:bg-gray-50"
+        >
+          Cancel
+        </button>
+
+        <button
+          type="submit"
+          disabled={supportSending}
+          className="w-full rounded-xl bg-gray-900 px-4 py-3 text-sm font-semibold text-white hover:bg-black disabled:opacity-60"
+        >
+          {supportSending ? "Sending…" : "Send"}
+        </button>
+      </div>
+    </form>
   </div>
 </div>
 
-</div>
 
 
               <div className="text-xs text-gray-500">
@@ -524,5 +560,6 @@ const Layout: React.FC<React.PropsWithChildren> = ({ children }) => {
 };
 
 export default Layout;
+
 
 
