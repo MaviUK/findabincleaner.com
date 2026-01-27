@@ -1,5 +1,5 @@
 export const config = {
-  schedule: "@daily",
+  schedule: "@houry",
 };
 
 export default async function handler() {
