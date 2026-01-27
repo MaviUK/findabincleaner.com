@@ -29,6 +29,10 @@ type Props = {
   categoryId?: string | null;
   position?: number;
   featured?: boolean;
+
+  // ✅ NEW: the search/user origin (the point used to decide nearby results)
+  originLat?: number | null;
+  originLng?: number | null;
 };
 
 function normalizeUrl(u: string) {
@@ -87,6 +91,8 @@ export default function CleanerCard({
   categoryId,
   position,
   featured,
+  originLat,
+  originLng,
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
@@ -135,10 +141,17 @@ export default function CleanerCard({
       void recordEventFetch({
         event,
         cleanerId: cleaner.cleaner_id,
+
+        // keep for backwards compat (server will ignore if it can compute)
         areaId: areaId ?? null,
+
         categoryId: categoryId ?? null,
         sessionId,
         meta: { position: position ?? null },
+
+        // ✅ NEW: send search origin so server can resolve correct polygon area
+        lat: originLat ?? null,
+        lng: originLng ?? null,
       });
     } catch (e) {
       console.warn("record click failed", e);
