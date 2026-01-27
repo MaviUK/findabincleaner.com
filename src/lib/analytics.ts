@@ -9,7 +9,14 @@ export type RecordEventPayload = {
   event: AnalyticsEvent;
   cleanerId: string;
   categoryId?: string | null;
+
+  // ⚠️ still accepted for backwards compatibility, but server prefers computed area_id
   areaId?: string | null;
+
+  // ✅ NEW: search/user origin point so server can resolve correct area_id
+  lat?: number | null;
+  lng?: number | null;
+
   sessionId?: string | null;
   meta?: Record<string, any>;
 };
@@ -33,7 +40,14 @@ function buildBody(payload: RecordEventPayload) {
     event: payload.event,
     cleaner_id: payload.cleanerId,
     category_id: payload.categoryId ?? null,
+
+    // still sent (fallback), but record_event will compute area_id if lat/lng provided
     area_id: payload.areaId ?? null,
+
+    // ✅ NEW: used by record_event -> area_for_point RPC
+    lat: payload.lat ?? null,
+    lng: payload.lng ?? null,
+
     session_id: payload.sessionId ?? null,
     meta: payload.meta ?? {},
   };
