@@ -59,7 +59,7 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
         setErr(null);
 
         /* ---------------------------------------------------------
-         * 1) Load ALL service areas for this cleaner (+ industry)
+         * 1) Load ALL service areas for this cleaner (filtered by category)
          * ------------------------------------------------------- */
         let areasQ = supabase
           .from("service_areas")
@@ -84,7 +84,7 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
         });
 
         /* ---------------------------------------------------------
-         * 2) Load overview totals (same logic as AnalyticsOverview)
+         * 2) Load overview totals (for this category)
          * ------------------------------------------------------- */
         async function countEvent(event: EventName) {
           let q = supabase
@@ -117,7 +117,7 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
         };
 
         /* ---------------------------------------------------------
-         * 3) Pull all area-attributed events and aggregate
+         * 3) Pull all area-attributed events and aggregate (for this category)
          * ------------------------------------------------------- */
         let evQ = supabase
           .from("analytics_events")
@@ -145,26 +145,39 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
         }
 
         /* ---------------------------------------------------------
-         * 4) Add Unattributed / Outside areas if needed
+         * 4) Compute "Unattributed / Outside areas" DIRECTLY (area_id IS NULL)
+         *    ✅ avoids fake unattributed caused by category mismatches
          * ------------------------------------------------------- */
-        const areaTotals = Array.from(areaMap.values()).reduce(
-          (acc, r) => {
-            acc.impressions += r.impressions;
-            acc.msg += r.clicks_message;
-            acc.web += r.clicks_website;
-            acc.phone += r.clicks_phone;
-            return acc;
-          },
-          { impressions: 0, msg: 0, web: 0, phone: 0 }
-        );
+        async function countUnattributed(event: EventName) {
+          let q = supabase
+            .from("analytics_events")
+            .select("id", { count: "exact", head: true })
+            .eq("cleaner_id", cleanerId)
+            .eq("event", event)
+            .gte("created_at", sinceIso)
+            .is("area_id", null);
+
+          if (categoryFilter) q = q.eq("category_id", categoryFilter);
+
+          const { count, error } = await q;
+          if (error) throw error;
+          return count ?? 0;
+        }
+
+        const [uImp, uMsg, uWeb, uPhone] = await Promise.all([
+          countUnattributed("impression"),
+          countUnattributed("click_message"),
+          countUnattributed("click_website"),
+          countUnattributed("click_phone"),
+        ]);
 
         const unattributed: AreaAgg = {
           area_id: "__unattributed__",
           area_name: "Unattributed / Outside areas",
-          impressions: Math.max(0, overviewTotals.impressions - areaTotals.impressions),
-          clicks_message: Math.max(0, overviewTotals.clicks_message - areaTotals.msg),
-          clicks_website: Math.max(0, overviewTotals.clicks_website - areaTotals.web),
-          clicks_phone: Math.max(0, overviewTotals.clicks_phone - areaTotals.phone),
+          impressions: uImp,
+          clicks_message: uMsg,
+          clicks_website: uWeb,
+          clicks_phone: uPhone,
         };
 
         const hasUnattributed =
@@ -298,7 +311,6 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
         </div>
       </div>
 
-      {/* History modal */}
       {histAreaId && (
         <AreaHistoryModal
           open={histOpen}
