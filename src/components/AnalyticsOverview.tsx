@@ -94,8 +94,11 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
 
   if (loading) return <div className="p-4 border rounded-xl">Loading analytics…</div>;
 
-  const totalClicks = totals.clicks_message + totals.clicks_website + totals.clicks_phone;
-  const ctr = totals.impressions ? `${((totalClicks / totals.impressions) * 100).toFixed(1)}%` : "—";
+  const totalClicks =
+    totals.clicks_message + totals.clicks_website + totals.clicks_phone;
+  const ctr = totals.impressions
+    ? `${((totalClicks / totals.impressions) * 100).toFixed(1)}%`
+    : "—";
 
   return (
     <div className="p-4 border rounded-xl">
@@ -107,13 +110,12 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mt-4">
-  <Stat label="Impressions" value={totals.impressions} />
-  <Stat label="Clicks (Message)" value={totals.clicks_message} />
-  <Stat label="Clicks (Website)" value={totals.clicks_website} />
-  <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
-  <Stat label="Total CTR" value={ctr} />
-</div>
-
+        <Stat label="Impressions" value={totals.impressions} />
+        <Stat label="Clicks (Message)" value={totals.clicks_message} />
+        <Stat label="Clicks (Website)" value={totals.clicks_website} />
+        <Stat label="Clicks (Phone)" value={totals.clicks_phone} />
+        <Stat label="Total CTR" value={ctr} />
+      </div>
 
       {/* ✅ Collapsible breakdown */}
       <details className="mt-4 rounded-lg border bg-white">
@@ -123,7 +125,11 @@ export default function AnalyticsOverview({ cleanerId, categoryId }: Props) {
         </summary>
 
         <div className="p-3 pt-0">
-          <AreaBreakdown30d cleanerId={cleanerId} categoryId={categoryFilter} />
+          <AreaBreakdown30d
+            key={`${cleanerId}:${categoryFilter || "all"}`}
+            cleanerId={cleanerId}
+            categoryId={categoryFilter}
+          />
         </div>
       </details>
     </div>
