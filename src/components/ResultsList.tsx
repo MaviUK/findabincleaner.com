@@ -139,16 +139,16 @@ export default function ResultsList({
         const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
 
         const card = (
-           <CleanerCard
-            key={cleanerId}
-            cleaner={cleaner as any}
-            postcodeHint={postcode}
-            showPayments
-            position={idx + 1}
-            areaId={areaId ?? c.area_id ?? null}
-            categoryId={categoryId ?? c.category_id ?? null}
-            featured={isFirstSponsored}
-          />
+          <CleanerCard
+  key={`${cleanerId}:${categoryId ?? "all"}:${areaId ?? "na"}:${idx}`}
+  cleaner={cleaner as any}
+  postcodeHint={postcode}
+  showPayments
+  position={idx + 1}
+  areaId={areaId ?? null}
+  categoryId={categoryId ?? null}
+  featured={isFirstSponsored}
+/>
         );
 
         if (isFirstSponsored) {
