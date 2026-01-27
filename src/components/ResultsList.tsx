@@ -145,8 +145,8 @@ export default function ResultsList({
   postcodeHint={postcode}
   showPayments
   position={idx + 1}
-  areaId={areaId ?? null}
-  categoryId={categoryId ?? null}
+areaId={c.area_id ?? null}
+categoryId={c.category_id ?? categoryId ?? null}
   featured={isFirstSponsored}
 />
         );
