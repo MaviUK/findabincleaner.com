@@ -43,6 +43,8 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
   const [histAreaName, setHistAreaName] = useState<string>("");
 
   const categoryFilter = (categoryId ?? "").trim() || null;
+  console.log("[AreaBreakdown30d]", { cleanerId, categoryId, categoryFilter });
+
 
   const sinceIso = useMemo(() => {
     const d = new Date();
