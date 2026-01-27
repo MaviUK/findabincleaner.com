@@ -139,7 +139,7 @@ export default function ResultsList({
         const isFirstSponsored = idx === firstSponsoredIndex && isSponsored(c);
 
         const card = (
-          <CleanerCard
+           <CleanerCard
             key={cleanerId}
             cleaner={cleaner as any}
             postcodeHint={postcode}
