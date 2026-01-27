@@ -136,27 +136,30 @@ export default function CleanerCard({
   // Keep a ref to the google autocomplete instance
   const [ac, setAc] = useState<any>(null);
 
-  function logClick(event: "click_message" | "click_phone" | "click_website") {
-    try {
-      void recordEventFetch({
-        event,
-        cleanerId: cleaner.cleaner_id,
+function logClick(event: "click_message" | "click_phone" | "click_website") {
+  try {
+    // ✅ Only log if we have a real DB cleaner id (prevents Settings preview from logging)
+    if (!cleaner.cleaner_id) return;
 
-        // keep for backwards compat (server will ignore if it can compute)
-        areaId: areaId ?? null,
+    const resolvedAreaId =
+      cleaner.area_id ?? areaId ?? null;
 
-        categoryId: categoryId ?? null,
-        sessionId,
-        meta: { position: position ?? null },
+    const resolvedCategoryId =
+      cleaner.category_id ?? categoryId ?? null;
 
-        // ✅ NEW: send search origin so server can resolve correct polygon area
-        lat: originLat ?? null,
-        lng: originLng ?? null,
-      });
-    } catch (e) {
-      console.warn("record click failed", e);
-    }
+    void recordEventFetch({
+      event,
+      cleanerId: cleaner.cleaner_id,
+      areaId: resolvedAreaId,
+      categoryId: resolvedCategoryId,
+      sessionId,
+      meta: { position: position ?? null },
+    });
+  } catch (e) {
+    console.warn("record click failed", e);
   }
+}
+
 
   const canSend =
     enqName.trim().length > 0 &&
