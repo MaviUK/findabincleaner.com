@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "../lib/supabase";
+import AreaHistoryModal from "./AreaHistoryModal";
 
 type Totals = {
   impressions: number;
@@ -35,6 +36,11 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
   });
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+
+  // history modal state
+  const [histOpen, setHistOpen] = useState(false);
+  const [histAreaId, setHistAreaId] = useState<string | null>(null);
+  const [histAreaName, setHistAreaName] = useState<string>("");
 
   const categoryFilter = (categoryId ?? "").trim() || null;
 
@@ -156,18 +162,9 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
           area_id: "__unattributed__",
           area_name: "Unattributed / Outside areas",
           impressions: Math.max(0, overviewTotals.impressions - areaTotals.impressions),
-          clicks_message: Math.max(
-            0,
-            overviewTotals.clicks_message - areaTotals.msg
-          ),
-          clicks_website: Math.max(
-            0,
-            overviewTotals.clicks_website - areaTotals.web
-          ),
-          clicks_phone: Math.max(
-            0,
-            overviewTotals.clicks_phone - areaTotals.phone
-          ),
+          clicks_message: Math.max(0, overviewTotals.clicks_message - areaTotals.msg),
+          clicks_website: Math.max(0, overviewTotals.clicks_website - areaTotals.web),
+          clicks_phone: Math.max(0, overviewTotals.clicks_phone - areaTotals.phone),
         };
 
         const hasUnattributed =
@@ -219,68 +216,99 @@ export default function AreaBreakdown30d({ cleanerId, categoryId }: Props) {
     return <div className="p-4 border rounded-xl bg-red-50 text-red-700">{err}</div>;
 
   return (
-    <div className="border rounded-xl overflow-hidden">
-      <div className="px-4 py-3 border-b bg-gray-50 font-semibold">
-        Stats by Area (Last 30 days)
+    <>
+      <div className="border rounded-xl overflow-hidden">
+        <div className="px-4 py-3 border-b bg-gray-50 font-semibold">
+          Stats by Area (Last 30 days)
+        </div>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead>
+              <tr className="border-b bg-white">
+                <th className="py-2 px-3 text-left">Area</th>
+                <th className="py-2 px-3">Impressions</th>
+                <th className="py-2 px-3">Clicks (Msg)</th>
+                <th className="py-2 px-3">Clicks (Web)</th>
+                <th className="py-2 px-3">Clicks (Phone)</th>
+                <th className="py-2 px-3">Total Clicks</th>
+                <th className="py-2 px-3">CTR</th>
+              </tr>
+            </thead>
+
+            <tbody>
+              {rows.map((r) => {
+                const total = r.clicks_message + r.clicks_website + r.clicks_phone;
+                const ctr = r.impressions
+                  ? `${((total / r.impressions) * 100).toFixed(1)}%`
+                  : "—";
+
+                const isUnattributed = r.area_id === "__unattributed__";
+
+                return (
+                  <tr
+                    key={r.area_id}
+                    className={isUnattributed ? "bg-amber-50 border-b" : "border-b"}
+                  >
+                    <td className="py-2 px-3">
+                      {isUnattributed ? (
+                        r.area_name
+                      ) : (
+                        <button
+                          type="button"
+                          className="underline underline-offset-2 hover:opacity-80 text-left"
+                          title="View month-by-month history"
+                          onClick={() => {
+                            setHistAreaId(r.area_id);
+                            setHistAreaName(r.area_name);
+                            setHistOpen(true);
+                          }}
+                        >
+                          {r.area_name}
+                        </button>
+                      )}
+                    </td>
+                    <td className="py-2 px-3">{r.impressions}</td>
+                    <td className="py-2 px-3">{r.clicks_message}</td>
+                    <td className="py-2 px-3">{r.clicks_website}</td>
+                    <td className="py-2 px-3">{r.clicks_phone}</td>
+                    <td className="py-2 px-3">{total}</td>
+                    <td className="py-2 px-3">{ctr}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+
+            <tfoot>
+              <tr className="bg-gray-50 border-t font-medium">
+                <td className="py-2 px-3">Total</td>
+                <td className="py-2 px-3">{totals.impressions}</td>
+                <td className="py-2 px-3">{totals.msg}</td>
+                <td className="py-2 px-3">{totals.web}</td>
+                <td className="py-2 px-3">{totals.phone}</td>
+                <td className="py-2 px-3">{totals.msg + totals.web + totals.phone}</td>
+                <td className="py-2 px-3">
+                  {totals.impressions
+                    ? `${(((totals.msg + totals.web + totals.phone) / totals.impressions) * 100).toFixed(1)}%`
+                    : "—"}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-sm">
-          <thead>
-            <tr className="border-b bg-white">
-              <th className="py-2 px-3 text-left">Area</th>
-              <th className="py-2 px-3">Impressions</th>
-              <th className="py-2 px-3">Clicks (Msg)</th>
-              <th className="py-2 px-3">Clicks (Web)</th>
-              <th className="py-2 px-3">Clicks (Phone)</th>
-              <th className="py-2 px-3">Total Clicks</th>
-              <th className="py-2 px-3">CTR</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {rows.map((r) => {
-              const total = r.clicks_message + r.clicks_website + r.clicks_phone;
-              const ctr = r.impressions
-                ? `${((total / r.impressions) * 100).toFixed(1)}%`
-                : "—";
-
-              const isUnattributed = r.area_id === "__unattributed__";
-
-              return (
-                <tr
-                  key={r.area_id}
-                  className={isUnattributed ? "bg-amber-50 border-b" : "border-b"}
-                >
-                  <td className="py-2 px-3">{r.area_name}</td>
-                  <td className="py-2 px-3">{r.impressions}</td>
-                  <td className="py-2 px-3">{r.clicks_message}</td>
-                  <td className="py-2 px-3">{r.clicks_website}</td>
-                  <td className="py-2 px-3">{r.clicks_phone}</td>
-                  <td className="py-2 px-3">{total}</td>
-                  <td className="py-2 px-3">{ctr}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-
-          <tfoot>
-            <tr className="bg-gray-50 border-t font-medium">
-              <td className="py-2 px-3">Total</td>
-              <td className="py-2 px-3">{totals.impressions}</td>
-              <td className="py-2 px-3">{totals.msg}</td>
-              <td className="py-2 px-3">{totals.web}</td>
-              <td className="py-2 px-3">{totals.phone}</td>
-              <td className="py-2 px-3">{totals.msg + totals.web + totals.phone}</td>
-              <td className="py-2 px-3">
-                {totals.impressions
-                  ? `${(((totals.msg + totals.web + totals.phone) / totals.impressions) * 100).toFixed(1)}%`
-                  : "—"}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
-      </div>
-    </div>
+      {/* History modal */}
+      {histAreaId && (
+        <AreaHistoryModal
+          open={histOpen}
+          onClose={() => setHistOpen(false)}
+          cleanerId={cleanerId}
+          areaId={histAreaId}
+          areaName={histAreaName}
+          categoryId={categoryFilter}
+        />
+      )}
+    </>
   );
 }
