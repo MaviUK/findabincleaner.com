@@ -19,13 +19,13 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 /* ---------------- helpers ---------------- */
 
 function supplierDetails() {
-  // Make sure nibing.uy domain + sender are verified in Resend
-  const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
+  // Make sure Klean.ly domain + sender are verified in Resend
+  const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <info@klean.ly>";
 
   // Best effort: derive supplier "email" shown on the invoice from the FROM address
-  // e.g. "Kleanly <kleanly@nibing.uy>" -> "kleanly@nibing.uy"
+  // e.g. "Kleanly <info@klean.ly>" -> "info@klean.ly"
   const m = String(fromEmail).match(/<([^>]+)>/);
-  const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "kleanly@nibing.uy";
+  const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "info@klean.ly";
 
   return {
     fromEmail,
