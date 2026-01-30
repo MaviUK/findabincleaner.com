@@ -29,9 +29,9 @@ const resendClient = () => {
 /* ---------------- helpers ---------------- */
 
 function supplierDetails() {
-  const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
+  const fromEmail = process.env.INVOICE_FROM_EMAIL || "Kleanly <info@klean.ly>";
   const m = String(fromEmail).match(/<([^>]+)>/);
-  const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "kleanly@nibing.uy";
+  const displayEmail = m?.[1] || process.env.INVOICE_SUPPLIER_EMAIL || "info@klean.ly";
 
   return {
     fromEmail,
