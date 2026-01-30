@@ -11,7 +11,7 @@ const supabase = createClient(
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const FROM = process.env.INVOICE_FROM_EMAIL || "Kleanly <kleanly@nibing.uy>";
+const FROM = process.env.INVOICE_FROM_EMAIL || "Kleanly <info@klean.ly>";
 const SUBJECT = "Reminder: Your sponsorship renews in 72 hours";
 
 /// Run window: 72h ± 12 hours (good for a once-per-day run)
