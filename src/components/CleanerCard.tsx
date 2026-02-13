@@ -1,10 +1,12 @@
 // src/components/CleanerCard.tsx
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 
 type Cleaner = {
-  cleaner_id: string;
+  cleaner_id?: string; // ✅ allow optional
+  id?: string;         // ✅ allow preview/other shapes
+
   business_name: string | null;
   logo_url: string | null;
   website: string | null;
@@ -19,6 +21,10 @@ type Cleaner = {
 
   google_rating?: number | null;
   google_reviews_count?: number | null;
+
+  // ✅ allow legacy naming too
+  rating_avg?: number | null;
+  rating_count?: number | null;
 };
 
 type Props = {
@@ -30,7 +36,6 @@ type Props = {
   position?: number;
   featured?: boolean;
 
-  // ✅ NEW: the search/user origin (the point used to decide nearby results)
   originLat?: number | null;
   originLng?: number | null;
 };
@@ -50,7 +55,6 @@ function buildWhatsAppUrl(whatsapp: string, text: string) {
   const raw = (whatsapp || "").trim();
   if (!raw) return "";
 
-  // If they stored a full wa.me link already
   if (raw.startsWith("http")) {
     const join = raw.includes("?") ? "&" : "?";
     return `${raw}${join}text=${encodeURIComponent(text)}`;
@@ -67,20 +71,12 @@ function isValidEmail(v: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
 
-// Display-only: always show UK numbers starting with 0 instead of +44/44
 function formatUkPhoneForDisplay(raw: string) {
   if (!raw) return "";
   let s = raw.replace(/\s+/g, "").trim();
 
-  // +44XXXXXXXXXX -> 0XXXXXXXXXX
-  if (s.startsWith("+44")) {
-    return "0" + s.slice(3);
-  }
-
-  // 44XXXXXXXXXX -> 0XXXXXXXXXX (some store without +)
-  if (s.startsWith("44") && s.length >= 11) {
-    return "0" + s.slice(2);
-  }
+  if (s.startsWith("+44")) return "0" + s.slice(3);
+  if (s.startsWith("44") && s.length >= 11) return "0" + s.slice(2);
 
   return s;
 }
@@ -91,23 +87,41 @@ export default function CleanerCard({
   categoryId,
   position,
   featured,
-  originLat,
-  originLng,
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
+
+  // ✅ FIX: normalize cleanerId (supports preview + different shapes)
+  const cleanerId =
+    (cleaner.cleaner_id && String(cleaner.cleaner_id)) ||
+    (cleaner.id && String(cleaner.id)) ||
+    "";
+
+  // ✅ FIX: treat preview cards as non-real
+  const isPreview = cleanerId === "preview" || cleanerId === "preview-card" || !cleanerId;
 
   const name = cleaner.business_name || "Cleaner";
   const websiteUrl = cleaner.website ? normalizeUrl(cleaner.website) : "";
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // modal state
-  const [showEnquiry, setShowEnquiry] = useState(false);
+  // ✅ FIX: accept either google_* OR rating_* fields
+  const rating =
+    typeof cleaner.google_rating === "number"
+      ? cleaner.google_rating
+      : typeof cleaner.rating_avg === "number"
+      ? cleaner.rating_avg
+      : null;
 
-  // Desktop: reveal phone number instead of calling
+  const reviewCount =
+    typeof cleaner.google_reviews_count === "number"
+      ? cleaner.google_reviews_count
+      : typeof cleaner.rating_count === "number"
+      ? cleaner.rating_count
+      : null;
+
+  const [showEnquiry, setShowEnquiry] = useState(false);
   const [showPhoneNumber, setShowPhoneNumber] = useState(false);
 
-  // enquiry form state
   const [enqName, setEnqName] = useState("");
   const [enqAddress, setEnqAddress] = useState("");
   const [enqPhone, setEnqPhone] = useState("");
@@ -118,48 +132,38 @@ export default function CleanerCard({
   const [enqSending, setEnqSending] = useState(false);
   const [enqSent, setEnqSent] = useState(false);
 
-  // must acknowledge info before sending
   const [enqAccepted, setEnqAccepted] = useState(false);
+  const [lastChannel, setLastChannel] = useState<"email" | "whatsapp" | null>(null);
 
-  // track last action so we can show correct message
-  const [lastChannel, setLastChannel] = useState<"email" | "whatsapp" | null>(
-    null
-  );
-
-  // Google Places loaded?
   const hasPlaces =
     typeof window !== "undefined" &&
     (window as any).google &&
     (window as any).google.maps &&
     (window as any).google.maps.places;
 
-  // Keep a ref to the google autocomplete instance
-  const [ac, setAc] = useState<any>(null);
+  // ✅ FIX: useRef so onPlaceChanged always reads the latest instance (no stale state)
+  const acRef = useRef<any>(null);
 
-function logClick(event: "click_message" | "click_phone" | "click_website") {
-  try {
-    // ✅ Only log if we have a real DB cleaner id (prevents Settings preview from logging)
-    if (!cleaner.cleaner_id) return;
+  function logClick(event: "click_message" | "click_phone" | "click_website") {
+    try {
+      // ✅ FIX: never log on preview card
+      if (isPreview) return;
 
-    const resolvedAreaId =
-      cleaner.area_id ?? areaId ?? null;
+      const resolvedAreaId = cleaner.area_id ?? areaId ?? null;
+      const resolvedCategoryId = cleaner.category_id ?? categoryId ?? null;
 
-    const resolvedCategoryId =
-      cleaner.category_id ?? categoryId ?? null;
-
-    void recordEventFetch({
-      event,
-      cleanerId: cleaner.cleaner_id,
-      areaId: resolvedAreaId,
-      categoryId: resolvedCategoryId,
-      sessionId,
-      meta: { position: position ?? null },
-    });
-  } catch (e) {
-    console.warn("record click failed", e);
+      void recordEventFetch({
+        event,
+        cleanerId,
+        areaId: resolvedAreaId,
+        categoryId: resolvedCategoryId,
+        sessionId,
+        meta: { position: position ?? null },
+      });
+    } catch (e) {
+      console.warn("record click failed", e);
+    }
   }
-}
-
 
   const canSend =
     enqName.trim().length > 0 &&
@@ -182,37 +186,23 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
   }, [name, enqName, enqAddress, enqPhone, enqEmail, enqMessage]);
 
   function validateOrSetError(): boolean {
-    if (!enqName.trim()) {
-      setEnqError("Please enter your name.");
-      return false;
-    }
-    if (!enqAddress.trim()) {
-      setEnqError("Please select your address.");
-      return false;
-    }
-    if (!enqPhone.trim()) {
-      setEnqError("Please enter your phone number.");
-      return false;
-    }
-    if (!isValidEmail(enqEmail)) {
-      setEnqError("Please enter a valid email address.");
-      return false;
-    }
-    if (!enqMessage.trim()) {
-      setEnqError("Please enter your message.");
-      return false;
-    }
-    if (!enqAccepted) {
-      setEnqError("Please confirm you have read and understood the information.");
-      return false;
-    }
+    if (!enqName.trim()) return setEnqError("Please enter your name."), false;
+    if (!enqAddress.trim()) return setEnqError("Please select your address."), false;
+    if (!enqPhone.trim()) return setEnqError("Please enter your phone number."), false;
+    if (!isValidEmail(enqEmail)) return setEnqError("Please enter a valid email address."), false;
+    if (!enqMessage.trim()) return setEnqError("Please enter your message."), false;
+    if (!enqAccepted)
+      return setEnqError("Please confirm you have read and understood the information."), false;
     setEnqError(null);
     return true;
   }
 
   async function postEnquiry(channel: "email" | "whatsapp") {
+    // ✅ FIX: don’t allow sending from preview card
+    if (isPreview) throw new Error("Preview listing cannot send enquiries.");
+
     const payload = {
-      cleanerId: cleaner.cleaner_id,
+      cleanerId,
       cleanerName: cleaner.business_name ?? "",
       name: enqName,
       address: enqAddress,
@@ -230,18 +220,14 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
     });
 
     const data = await res.json().catch(() => ({} as any));
-    if (!res.ok || !data?.ok) {
-      throw new Error(data?.error || "Failed to send enquiry");
-    }
+    if (!res.ok || !data?.ok) throw new Error(data?.error || "Failed to send enquiry");
   }
 
   async function sendEnquiryEmail() {
     setEnqSent(false);
     setEnqError(null);
-
     if (!validateOrSetError()) return;
 
-    // ✅ set channel BEFORE sending so button text shows "Sending…"
     setLastChannel("email");
     setEnqSending(true);
 
@@ -259,29 +245,17 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
   async function sendViaWhatsApp() {
     setEnqSent(false);
     setEnqError(null);
-
     if (!validateOrSetError()) return;
 
-    if (!whatsapp) {
-      setEnqError("WhatsApp is not available for this business.");
-      return;
-    }
+    if (!whatsapp) return setEnqError("WhatsApp is not available for this business.");
 
-    // ✅ set channel BEFORE sending so button text shows "Saving…"
     setLastChannel("whatsapp");
     setEnqSending(true);
 
     try {
-      // 1) Store in DB (via same endpoint)
       await postEnquiry("whatsapp");
-
-      // 2) Open WhatsApp
       setEnqSent(true);
-      window.open(
-        buildWhatsAppUrl(whatsapp, whatsappPrefill),
-        "_blank",
-        "noopener,noreferrer"
-      );
+      window.open(buildWhatsAppUrl(whatsapp, whatsappPrefill), "_blank", "noopener,noreferrer");
     } catch (e: any) {
       setEnqError(e?.message || "Sorry — something went wrong.");
       setLastChannel(null);
@@ -307,6 +281,8 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
   }
 
   function openEnquiry() {
+    // ✅ FIX: block enquiry modal from preview card (optional — remove if you want it openable)
+    if (isPreview) return;
     setShowEnquiry(true);
     setEnqError(null);
     setEnqSent(false);
@@ -318,14 +294,11 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
     ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
-  const logoImgClass = featured
-    ? "h-full w-full object-contain"
-    : "h-full w-full object-cover";
+  const logoImgClass = featured ? "h-full w-full object-contain" : "h-full w-full object-cover";
 
   return (
     <>
       <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
-        {/* Logo */}
         <div className={logoBoxClass}>
           {cleaner.logo_url ? (
             <img
@@ -338,23 +311,17 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
 
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
-            {/* Info */}
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">
-                {name}
-              </div>
+              <div className="text-lg font-bold text-gray-900 truncate">{name}</div>
 
-              {/* Google rating */}
-              {typeof (cleaner as any).google_rating === "number" && (
+              {/* ✅ rating line */}
+              {typeof rating === "number" && (
                 <div className="text-xs text-gray-600 mt-1">
-                  ⭐ {(cleaner as any).google_rating.toFixed(1)}{" "}
-                  {typeof (cleaner as any).google_reviews_count === "number"
-                    ? `(${(cleaner as any).google_reviews_count} reviews)`
-                    : ""}
+                  ⭐ {rating.toFixed(1)}{" "}
+                  {typeof reviewCount === "number" ? `(${reviewCount} reviews)` : ""}
                 </div>
               )}
 
-              {/* MOBILE ICON ACTIONS */}
               <div className="flex gap-3 mt-3 sm:hidden">
                 {(whatsapp || phone) && (
                   <button
@@ -365,6 +332,7 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                       openEnquiry();
                     }}
                     title="Message"
+                    disabled={isPreview}
                   >
                     💬
                   </button>
@@ -379,6 +347,7 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                       window.location.href = `tel:${phone}`;
                     }}
                     title="Call"
+                    disabled={isPreview}
                   >
                     📞
                   </button>
@@ -400,16 +369,16 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
               </div>
             </div>
 
-            {/* DESKTOP ACTIONS */}
             <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
               {(whatsapp || phone) && (
                 <button
                   type="button"
-                  className="h-10 rounded-full bg-teal-600 text-white font-semibold text-sm hover:bg-teal-700"
+                  className="h-10 rounded-full bg-teal-600 text-white font-semibold text-sm hover:bg-teal-700 disabled:opacity-50"
                   onClick={() => {
                     logClick("click_message");
                     openEnquiry();
                   }}
+                  disabled={isPreview}
                 >
                   Message
                 </button>
@@ -418,11 +387,12 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
               {phone && (
                 <button
                   type="button"
-                  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50"
+                  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
                   onClick={() => {
                     logClick("click_phone");
                     setShowPhoneNumber((v) => !v);
                   }}
+                  disabled={isPreview}
                 >
                   {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
                 </button>
@@ -445,21 +415,16 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
         </div>
       </div>
 
-      {/* Enquiry modal */}
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
-          {/* bottom-sheet on mobile, centered on desktop */}
           <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
             <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[calc(100dvh-1.5rem)]">
-              {/* Header */}
               <div className="px-5 pt-5 pb-3 border-b border-black/5 shrink-0">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
-                    <h2 className="text-xl font-bold truncate">
-                      Enquiry to {name}
-                    </h2>
+                    <h2 className="text-xl font-bold truncate">Enquiry to {name}</h2>
                     <p className="text-sm text-gray-600 mt-1">
                       Address, phone and email are required.
                     </p>
@@ -476,17 +441,12 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                 </div>
               </div>
 
-              {/* Body (scrolls) */}
               <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1 overscroll-contain">
                 {enqSent && (
                   <div className="text-sm text-green-800 bg-green-50 border border-green-100 rounded-lg px-3 py-2">
                     ✅ Enquiry saved.
-                    {lastChannel === "email"
-                      ? " A copy has been emailed to you."
-                      : null}
-                    {lastChannel === "whatsapp"
-                      ? " WhatsApp opened in a new tab."
-                      : null}
+                    {lastChannel === "email" ? " A copy has been emailed to you." : null}
+                    {lastChannel === "whatsapp" ? " WhatsApp opened in a new tab." : null}
                   </div>
                 )}
 
@@ -507,12 +467,13 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                 <Field label="Address *">
                   {hasPlaces ? (
                     <Autocomplete
-                      onLoad={(inst) => setAc(inst)}
+                      onLoad={(inst) => {
+                        acRef.current = inst;
+                      }}
                       onPlaceChanged={() => {
                         try {
-                          const place = ac?.getPlace?.();
-                          const value =
-                            place?.formatted_address || place?.name || "";
+                          const place = acRef.current?.getPlace?.();
+                          const value = place?.formatted_address || place?.name || "";
                           if (value) {
                             setEnqAddress(value);
                             setEnqSent(false);
@@ -547,9 +508,7 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                       required
                     />
                   )}
-                  <p className="text-xs text-gray-500">
-                    Pick from suggestions for best results.
-                  </p>
+                  <p className="text-xs text-gray-500">Pick from suggestions for best results.</p>
                 </Field>
 
                 <Field label="Phone Number *">
@@ -579,9 +538,7 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                     required
                   />
                   {enqEmail.trim().length > 0 && !isValidEmail(enqEmail) ? (
-                    <p className="text-xs text-red-600">
-                      Enter a valid email address.
-                    </p>
+                    <p className="text-xs text-red-600">Enter a valid email address.</p>
                   ) : null}
                 </Field>
 
@@ -605,7 +562,6 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                 )}
               </div>
 
-              {/* Footer (always visible) */}
               <div className="px-5 py-4 border-t border-black/5 bg-white shrink-0">
                 <div className="flex flex-col gap-2">
                   <label className="flex items-start gap-2 text-[11px] text-gray-600 leading-relaxed py-1">
@@ -616,16 +572,14 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                       onChange={(e) => setEnqAccepted(e.target.checked)}
                     />
                     <span>
-                      I have read and understand that my details and message will
-                      be shared with the business I am contacting so they can
-                      respond. We also store this information securely in
-                      Kleanly’s database for up to 24 months for record-keeping,
-                      support and service improvement. I may be contacted for
-                      feedback about my experience. No marketing.
+                      I have read and understand that my details and message will be shared with the
+                      business I am contacting so they can respond. We also store this information
+                      securely in Kleanly’s database for up to 24 months for record-keeping, support
+                      and service improvement. I may be contacted for feedback about my experience.
+                      No marketing.
                     </span>
                   </label>
 
-                  {/* ✅ MOBILE ONLY: WhatsApp button (only if business has WhatsApp) */}
                   {whatsapp && (
                     <button
                       type="button"
@@ -635,11 +589,6 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                         logClick("click_message");
                         void sendViaWhatsApp();
                       }}
-                      title={
-                        !canSend
-                          ? "Please complete all fields and confirm you have read and understood the information above"
-                          : "Send via WhatsApp"
-                      }
                     >
                       {enqSending && lastChannel === "whatsapp"
                         ? "Saving…"
@@ -649,19 +598,11 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                     </button>
                   )}
 
-                  {/* ✅ EMAIL: always visible (desktop should effectively only use this) */}
                   <button
                     type="button"
-                    onClick={() => {
-                      void sendEnquiryEmail();
-                    }}
+                    onClick={() => void sendEnquiryEmail()}
                     disabled={!canSend}
                     className="inline-flex items-center justify-center rounded-xl h-11 px-4 text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={
-                      !canSend
-                        ? "Please complete all fields and confirm you have read and understood the information above"
-                        : "Send enquiry"
-                    }
                   >
                     {enqSending && lastChannel === "email"
                       ? "Sending…"
@@ -672,8 +613,8 @@ function logClick(event: "click_message" | "click_phone" | "click_website") {
                 </div>
 
                 <p className="text-xs text-gray-600 pt-2">
-                  Your enquiry won’t send until all required fields are completed
-                  and you confirm you have read the information above.
+                  Your enquiry won’t send until all required fields are completed and you confirm
+                  you have read the information above.
                 </p>
               </div>
             </div>
