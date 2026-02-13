@@ -2,6 +2,8 @@
 import React, { useMemo, useRef, useState } from "react";
 import { Autocomplete } from "@react-google-maps/api";
 import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
+import { PAYMENT_METHODS } from "../constants/paymentMethods";
+
 
 type Cleaner = {
   cleaner_id?: string; // ✅ allow optional
@@ -143,6 +145,29 @@ export default function CleanerCard({
 
   // ✅ FIX: useRef so onPlaceChanged always reads the latest instance (no stale state)
   const acRef = useRef<any>(null);
+
+  const pmIndex = new Map(PAYMENT_METHODS.map((p) => [p.key, p]));
+const methods = cleaner.payment_methods ?? [];
+
+{showPayments && methods.length > 0 && (
+  <div className="mt-2 flex flex-wrap gap-2">
+    {methods.map((key: string) => {
+      const pm = pmIndex.get(key);
+      if (!pm) return null;
+
+      return (
+        <span
+          key={key}
+          title={pm.label}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
+        >
+          <img src={pm.iconUrl} alt="" className="h-4 w-4" />
+        </span>
+      );
+    })}
+  </div>
+)}
+
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
