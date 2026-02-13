@@ -347,7 +347,15 @@ export default function CleanerCard({
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
             <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div className="text-lg font-bold text-gray-900 truncate">
+              <div
+  className={[
+    featured ? "text-2xl" : "text-lg",
+    "font-extrabold text-gray-900 truncate",
+  ].join(" ")}
+>
+  {name}
+</div>
+
                 {name}
               </div>
 
@@ -363,29 +371,29 @@ export default function CleanerCard({
 
               {/* ✅ payment icons */}
               {showPayments && methods.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {methods.map((key) => {
-                    const pm = pmIndex.get(key);
-                    if (!pm) return null;
+  <div className="mt-3 pt-3 border-t border-black/5 flex items-center gap-2 flex-wrap">
+    {methods.map((key) => {
+      const pm = pmIndex.get(key);
+      if (!pm) return null;
 
-                    return (
-                      <span
-                        key={key}
-                        title={pm.label}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
-                      >
-                        <img src={pm.iconUrl} alt="" className="h-4 w-4" />
-                      </span>
-                    );
-                  })}
-                </div>
-              )}
+      return (
+        <span
+          key={key}
+          title={pm.label}
+          className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
+        >
+          <img src={pm.iconUrl} alt="" className="h-4 w-4" />
+        </span>
+      );
+    })}
+  </div>
+)}
 
               <div className="flex gap-3 mt-3 sm:hidden">
                 {(whatsapp || phone) && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700"
+                    className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_message");
                       openEnquiry();
@@ -400,7 +408,7 @@ export default function CleanerCard({
                 {phone && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50"
+                    className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_phone");
                       window.location.href = `tel:${phone}`;
@@ -415,7 +423,7 @@ export default function CleanerCard({
                 {websiteUrl && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
+                   className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_website");
                       window.open(
@@ -432,11 +440,12 @@ export default function CleanerCard({
               </div>
             </div>
 
-            <div className="shrink-0 hidden sm:flex flex-col gap-2 w-44">
+            <div className="shrink-0 hidden sm:flex flex-col gap-2 w-32">
+
               {(whatsapp || phone) && (
                 <button
                   type="button"
-                  className="h-10 rounded-full bg-teal-600 text-white font-semibold text-sm hover:bg-teal-700 disabled:opacity-50"
+                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                   onClick={() => {
                     logClick("click_message");
                     openEnquiry();
@@ -450,7 +459,7 @@ export default function CleanerCard({
               {phone && (
                 <button
                   type="button"
-                  className="h-10 rounded-full border border-blue-200 text-blue-700 font-semibold text-sm hover:bg-blue-50 disabled:opacity-50"
+                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                   onClick={() => {
                     logClick("click_phone");
                     setShowPhoneNumber((v) => !v);
@@ -464,7 +473,7 @@ export default function CleanerCard({
               {websiteUrl && (
                 <button
                   type="button"
-                  className="h-10 rounded-full border border-gray-200 text-gray-800 font-semibold text-sm hover:bg-gray-50"
+                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
                   onClick={() => {
                     logClick("click_website");
                     window.open(
