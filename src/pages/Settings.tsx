@@ -292,7 +292,7 @@ export default function Settings() {
               about: null,
               contact_email: session.user.email ?? null,
               payment_methods: [] as string[],
-              service_types: [] as string[],
+              
 
               // ✅ NEW
               google_place_id: null,
@@ -606,7 +606,6 @@ const previewCleaner: any = useMemo(
     phone,
     whatsapp,
     paymentMethods,
-    serviceTypes,
   ]
 );
 
