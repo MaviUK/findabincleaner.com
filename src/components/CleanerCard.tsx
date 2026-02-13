@@ -5,8 +5,8 @@ import { getOrCreateSessionId, recordEventFetch } from "../lib/analytics";
 import { PAYMENT_METHODS } from "../constants/paymentMethods";
 
 type Cleaner = {
-  cleaner_id?: string; // ✅ allow optional
-  id?: string; // ✅ allow preview/other shapes
+  cleaner_id?: string;
+  id?: string;
 
   business_name: string | null;
   logo_url: string | null;
@@ -14,7 +14,7 @@ type Cleaner = {
   phone: string | null;
   whatsapp?: string | null;
 
-  // ✅ payments (DB)
+  // payments (DB)
   payment_methods?: string[] | null;
 
   area_id?: string | null;
@@ -26,7 +26,7 @@ type Cleaner = {
   google_rating?: number | null;
   google_reviews_count?: number | null;
 
-  // ✅ allow legacy naming too
+  // legacy naming
   rating_avg?: number | null;
   rating_count?: number | null;
 };
@@ -95,13 +95,13 @@ export default function CleanerCard({
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
-  // ✅ normalize cleanerId (supports preview + different shapes)
+  // normalize cleanerId (supports preview + different shapes)
   const cleanerId =
     (cleaner.cleaner_id && String(cleaner.cleaner_id)) ||
     (cleaner.id && String(cleaner.id)) ||
     "";
 
-  // ✅ treat preview cards as non-real
+  // treat preview cards as non-real
   const isPreview =
     cleanerId === "preview" || cleanerId === "preview-card" || !cleanerId;
 
@@ -110,7 +110,7 @@ export default function CleanerCard({
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // ✅ accept either google_* OR rating_* fields
+  // accept either google_* OR rating_* fields
   const rating =
     typeof cleaner.google_rating === "number"
       ? cleaner.google_rating
@@ -149,10 +149,10 @@ export default function CleanerCard({
     (window as any).google.maps &&
     (window as any).google.maps.places;
 
-  // ✅ useRef so onPlaceChanged always reads the latest instance (no stale state)
+  // useRef so onPlaceChanged always reads the latest instance
   const acRef = useRef<any>(null);
 
-  // ✅ payments index (use string keys to avoid PaymentKey typing issues)
+  // payments index (string keys)
   const pmIndex = useMemo(
     () => new Map(PAYMENT_METHODS.map((p) => [p.key as string, p])),
     []
@@ -162,7 +162,6 @@ export default function CleanerCard({
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
-      // ✅ never log on preview card
       if (isPreview) return;
 
       const resolvedAreaId = cleaner.area_id ?? areaId ?? null;
@@ -223,7 +222,6 @@ export default function CleanerCard({
   }
 
   async function postEnquiry(channel: "email" | "whatsapp") {
-    // ✅ don’t allow sending from preview card
     if (isPreview) throw new Error("Preview listing cannot send enquiries.");
 
     const payload = {
@@ -314,7 +312,6 @@ export default function CleanerCard({
   }
 
   function openEnquiry() {
-    // ✅ block enquiry modal from preview card
     if (isPreview) return;
     setShowEnquiry(true);
     setEnqError(null);
@@ -333,63 +330,92 @@ export default function CleanerCard({
 
   return (
     <>
-      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
-        <div className={logoBoxClass}>
-          {cleaner.logo_url ? (
-            <img
-              src={cleaner.logo_url}
-              alt={cleaner.business_name ?? "Business logo"}
-              className={logoImgClass}
-            />
-          ) : null}
-        </div>
+      {/* Card */}
+      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5">
+        {/* Top row */}
+        <div className="flex gap-4">
+          <div className={logoBoxClass}>
+            {cleaner.logo_url ? (
+              <img
+                src={cleaner.logo_url}
+                alt={cleaner.business_name ?? "Business logo"}
+                className={logoImgClass}
+              />
+            ) : null}
+          </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-              <div
-  className={[
-    featured ? "text-2xl" : "text-lg",
-    "font-extrabold text-gray-900 truncate",
-  ].join(" ")}
->
-  {name}
-</div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-start justify-between gap-3">
+              <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
+                <div
+                  className={[
+                    featured ? "text-2xl" : "text-lg",
+                    "font-extrabold text-gray-900 truncate",
+                  ].join(" ")}
+                >
+                  {name}
+                </div>
 
-                {name}
+                {/* Rating */}
+                {typeof rating === "number" && (
+                  <div className="text-xs text-gray-600 mt-1">
+                    ⭐ {rating.toFixed(1)}{" "}
+                    {typeof reviewCount === "number"
+                      ? `(${reviewCount} reviews)`
+                      : ""}
+                  </div>
+                )}
+
+                {/* Mobile buttons */}
+                <div className="flex gap-3 mt-3 sm:hidden">
+                  {(whatsapp || phone) && (
+                    <button
+                      type="button"
+                      className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-50"
+                      onClick={() => {
+                        logClick("click_message");
+                        openEnquiry();
+                      }}
+                      title="Message"
+                      disabled={isPreview}
+                    >
+                      💬
+                    </button>
+                  )}
+
+                  {phone && (
+                    <button
+                      type="button"
+                      className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-50"
+                      onClick={() => {
+                        logClick("click_phone");
+                        window.location.href = `tel:${phone}`;
+                      }}
+                      title="Call"
+                      disabled={isPreview}
+                    >
+                      📞
+                    </button>
+                  )}
+
+                  {websiteUrl && (
+                    <button
+                      type="button"
+                      className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
+                      onClick={() => {
+                        logClick("click_website");
+                        window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                      }}
+                      title="Website"
+                    >
+                      🌐
+                    </button>
+                  )}
+                </div>
               </div>
 
-              {/* ✅ rating line */}
-              {typeof rating === "number" && (
-                <div className="text-xs text-gray-600 mt-1">
-                  ⭐ {rating.toFixed(1)}{" "}
-                  {typeof reviewCount === "number"
-                    ? `(${reviewCount} reviews)`
-                    : ""}
-                </div>
-              )}
-
-              {/* ✅ payment icons */}
-              {showPayments && methods.length > 0 && (
-  <div className="mt-3 pt-3 border-t border-black/5 flex items-center gap-2 flex-wrap">
-    {methods.map((key) => {
-      const pm = pmIndex.get(key);
-      if (!pm) return null;
-
-      return (
-        <span
-          key={key}
-          title={pm.label}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
-        >
-          <img src={pm.iconUrl} alt="" className="h-4 w-4" />
-        </span>
-      );
-    })}
-  </div>
-)}
-
-              <div className="flex gap-3 mt-3 sm:hidden">
+              {/* Desktop buttons (narrower) */}
+              <div className="shrink-0 hidden sm:flex flex-col gap-2 w-32">
                 {(whatsapp || phone) && (
                   <button
                     type="button"
@@ -398,105 +424,68 @@ export default function CleanerCard({
                       logClick("click_message");
                       openEnquiry();
                     }}
-                    title="Message"
                     disabled={isPreview}
                   >
-                    💬
+                    Message
                   </button>
                 )}
 
                 {phone && (
                   <button
                     type="button"
-                    className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
+                    className="h-9 rounded-full border border-blue-200 text-blue-700 font-semibold text-xs hover:bg-blue-50 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_phone");
-                      window.location.href = `tel:${phone}`;
+                      setShowPhoneNumber((v) => !v);
                     }}
-                    title="Call"
                     disabled={isPreview}
                   >
-                    📞
+                    {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
                   </button>
                 )}
 
                 {websiteUrl && (
                   <button
                     type="button"
-                   className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
+                    className="h-9 rounded-full border border-gray-200 text-gray-800 font-semibold text-xs hover:bg-gray-50"
                     onClick={() => {
                       logClick("click_website");
-                      window.open(
-                        websiteUrl,
-                        "_blank",
-                        "noopener,noreferrer"
-                      );
+                      window.open(websiteUrl, "_blank", "noopener,noreferrer");
                     }}
-                    title="Website"
                   >
-                    🌐
+                    Website
                   </button>
                 )}
               </div>
             </div>
-
-            <div className="shrink-0 hidden sm:flex flex-col gap-2 w-32">
-
-              {(whatsapp || phone) && (
-                <button
-                  type="button"
-                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
-                  onClick={() => {
-                    logClick("click_message");
-                    openEnquiry();
-                  }}
-                  disabled={isPreview}
-                >
-                  Message
-                </button>
-              )}
-
-              {phone && (
-                <button
-                  type="button"
-                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
-                  onClick={() => {
-                    logClick("click_phone");
-                    setShowPhoneNumber((v) => !v);
-                  }}
-                  disabled={isPreview}
-                >
-                  {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
-                </button>
-              )}
-
-              {websiteUrl && (
-                <button
-                  type="button"
-                  className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
-                  onClick={() => {
-                    logClick("click_website");
-                    window.open(
-                      websiteUrl,
-                      "_blank",
-                      "noopener,noreferrer"
-                    );
-                  }}
-                >
-                  Website
-                </button>
-              )}
-            </div>
           </div>
         </div>
+
+        {/* Footer: Payment icons along the bottom */}
+        {showPayments && methods.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-black/5 flex items-center gap-2 flex-wrap">
+            {methods.map((key) => {
+              const pm = pmIndex.get(key);
+              if (!pm) return null;
+
+              return (
+                <span
+                  key={key}
+                  title={pm.label}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
+                >
+                  <img src={pm.iconUrl} alt="" className="h-4 w-4" />
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
 
+      {/* Enquiry modal */}
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={closeEnquiry}
-          />
+          <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
 
           <div className="absolute inset-0 flex items-end sm:items-center justify-center p-3 sm:p-6">
             <div className="relative w-full max-w-md bg-white rounded-2xl shadow-xl ring-1 ring-black/10 overflow-hidden flex flex-col max-h-[calc(100dvh-1.5rem)]">
@@ -716,7 +705,13 @@ export default function CleanerCard({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
   return (
     <div className="space-y-2">
       <label className="text-sm font-medium text-gray-900">{label}</label>
