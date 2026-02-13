@@ -14,7 +14,7 @@ type Cleaner = {
   phone: string | null;
   whatsapp?: string | null;
 
-  // payments (DB)
+  // ✅ payments (DB)
   payment_methods?: string[] | null;
 
   area_id?: string | null;
@@ -39,7 +39,6 @@ type Props = {
   categoryId?: string | null;
   position?: number;
   featured?: boolean;
-
   originLat?: number | null;
   originLng?: number | null;
 };
@@ -95,13 +94,11 @@ export default function CleanerCard({
 }: Props) {
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
-  // normalize cleanerId (supports preview + different shapes)
   const cleanerId =
     (cleaner.cleaner_id && String(cleaner.cleaner_id)) ||
     (cleaner.id && String(cleaner.id)) ||
     "";
 
-  // treat preview cards as non-real
   const isPreview =
     cleanerId === "preview" || cleanerId === "preview-card" || !cleanerId;
 
@@ -110,7 +107,6 @@ export default function CleanerCard({
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
 
-  // accept either google_* OR rating_* fields
   const rating =
     typeof cleaner.google_rating === "number"
       ? cleaner.google_rating
@@ -149,16 +145,14 @@ export default function CleanerCard({
     (window as any).google.maps &&
     (window as any).google.maps.places;
 
-  // useRef so onPlaceChanged always reads the latest instance
   const acRef = useRef<any>(null);
 
-  // payments index (string keys)
   const pmIndex = useMemo(
     () => new Map(PAYMENT_METHODS.map((p) => [p.key as string, p])),
     []
   );
 
-  const methods = (cleaner.payment_methods ?? []) as string[];
+  const methods = ((cleaner as any).payment_methods ?? []) as string[];
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
@@ -320,169 +314,168 @@ export default function CleanerCard({
     setLastChannel(null);
   }
 
+  // --- styling tweaks to match your "first image" ---
   const logoBoxClass = featured
-    ? "h-40 w-40 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
+    ? "h-24 w-24 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
   const logoImgClass = featured
     ? "h-full w-full object-contain"
     : "h-full w-full object-cover";
 
+  const buttonClass =
+    "h-9 rounded-full px-4 bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50";
+
   return (
     <>
-      {/* Card */}
-      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5">
-        {/* Top row */}
-        <div className="flex gap-4">
-          <div className={logoBoxClass}>
-            {cleaner.logo_url ? (
-              <img
-                src={cleaner.logo_url}
-                alt={cleaner.business_name ?? "Business logo"}
-                className={logoImgClass}
-              />
-            ) : null}
-          </div>
+      <div className="rounded-2xl border border-black/5 bg-white shadow-sm p-4 sm:p-5 flex gap-4">
+        <div className={logoBoxClass}>
+          {cleaner.logo_url ? (
+            <img
+              src={cleaner.logo_url}
+              alt={cleaner.business_name ?? "Business logo"}
+              className={logoImgClass}
+            />
+          ) : null}
+        </div>
 
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-3">
-              <div className={`min-w-0 ${featured ? "pt-1" : ""}`}>
-                <div
-                  className={[
-                    featured ? "text-2xl" : "text-lg",
-                    "font-extrabold text-gray-900 truncate",
-                  ].join(" ")}
-                >
-                  {name}
-                </div>
-
-                {/* Rating */}
-                {typeof rating === "number" && (
-                  <div className="text-xs text-gray-600 mt-1">
-                    ⭐ {rating.toFixed(1)}{" "}
-                    {typeof reviewCount === "number"
-                      ? `(${reviewCount} reviews)`
-                      : ""}
-                  </div>
-                )}
-
-                {/* Mobile buttons */}
-                <div className="flex gap-3 mt-3 sm:hidden">
-                  {(whatsapp || phone) && (
-                    <button
-                      type="button"
-                      className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-50"
-                      onClick={() => {
-                        logClick("click_message");
-                        openEnquiry();
-                      }}
-                      title="Message"
-                      disabled={isPreview}
-                    >
-                      💬
-                    </button>
-                  )}
-
-                  {phone && (
-                    <button
-                      type="button"
-                      className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-50"
-                      onClick={() => {
-                        logClick("click_phone");
-                        window.location.href = `tel:${phone}`;
-                      }}
-                      title="Call"
-                      disabled={isPreview}
-                    >
-                      📞
-                    </button>
-                  )}
-
-                  {websiteUrl && (
-                    <button
-                      type="button"
-                      className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
-                      onClick={() => {
-                        logClick("click_website");
-                        window.open(websiteUrl, "_blank", "noopener,noreferrer");
-                      }}
-                      title="Website"
-                    >
-                      🌐
-                    </button>
-                  )}
-                </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start justify-between gap-3">
+            {/* LEFT: name / rating / payment icons */}
+            <div className="min-w-0">
+              <div
+                className={[
+                  featured ? "text-2xl" : "text-lg",
+                  "font-extrabold text-gray-900 truncate",
+                ].join(" ")}
+              >
+                {name}
               </div>
 
-              {/* Desktop buttons (narrower) */}
-              <div className="shrink-0 hidden sm:flex flex-col gap-2 w-32">
+              {typeof rating === "number" && (
+                <div className="text-xs text-gray-600 mt-1">
+                  ⭐ {rating.toFixed(1)}{" "}
+                  {typeof reviewCount === "number"
+                    ? `(${reviewCount} reviews)`
+                    : ""}
+                </div>
+              )}
+
+              {/* ✅ payment icons directly under title/rating (NOT along the bottom) */}
+              {showPayments && methods.length > 0 && (
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  {methods.map((key) => {
+                    const pm = pmIndex.get(key);
+                    if (!pm) return null;
+
+                    return (
+                      <span
+                        key={key}
+                        title={pm.label}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white shadow-sm"
+                      >
+                        <img src={pm.iconUrl} alt="" className="h-4 w-4" />
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* MOBILE quick buttons (icons) */}
+              <div className="flex gap-3 mt-3 sm:hidden">
                 {(whatsapp || phone) && (
                   <button
                     type="button"
-                    className="h-9 rounded-full bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50"
+                    className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_message");
                       openEnquiry();
                     }}
+                    title="Message"
                     disabled={isPreview}
                   >
-                    Message
+                    💬
                   </button>
                 )}
 
                 {phone && (
                   <button
                     type="button"
-                    className="h-9 rounded-full border border-blue-200 text-blue-700 font-semibold text-xs hover:bg-blue-50 disabled:opacity-50"
+                    className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-50"
                     onClick={() => {
                       logClick("click_phone");
-                      setShowPhoneNumber((v) => !v);
+                      window.location.href = `tel:${phone}`;
                     }}
+                    title="Call"
                     disabled={isPreview}
                   >
-                    {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
+                    📞
                   </button>
                 )}
 
                 {websiteUrl && (
                   <button
                     type="button"
-                    className="h-9 rounded-full border border-gray-200 text-gray-800 font-semibold text-xs hover:bg-gray-50"
+                    className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
                     onClick={() => {
                       logClick("click_website");
                       window.open(websiteUrl, "_blank", "noopener,noreferrer");
                     }}
+                    title="Website"
                   >
-                    Website
+                    🌐
                   </button>
                 )}
               </div>
             </div>
+
+            {/* RIGHT: slimmer buttons */}
+            <div className="shrink-0 hidden sm:flex flex-col gap-2 items-end">
+              {(whatsapp || phone) && (
+                <button
+                  type="button"
+                  className={buttonClass}
+                  onClick={() => {
+                    logClick("click_message");
+                    openEnquiry();
+                  }}
+                  disabled={isPreview}
+                >
+                  Message
+                </button>
+              )}
+
+              {phone && (
+                <button
+                  type="button"
+                  className={buttonClass}
+                  onClick={() => {
+                    logClick("click_phone");
+                    setShowPhoneNumber((v) => !v);
+                  }}
+                  disabled={isPreview}
+                >
+                  {showPhoneNumber ? formatUkPhoneForDisplay(phone) : "Phone"}
+                </button>
+              )}
+
+              {websiteUrl && (
+                <button
+                  type="button"
+                  className={buttonClass}
+                  onClick={() => {
+                    logClick("click_website");
+                    window.open(websiteUrl, "_blank", "noopener,noreferrer");
+                  }}
+                >
+                  Website
+                </button>
+              )}
+            </div>
           </div>
         </div>
-
-        {/* Footer: Payment icons along the bottom */}
-        {showPayments && methods.length > 0 && (
-          <div className="mt-3 pt-3 border-t border-black/5 flex items-center gap-2 flex-wrap">
-            {methods.map((key) => {
-              const pm = pmIndex.get(key);
-              if (!pm) return null;
-
-              return (
-                <span
-                  key={key}
-                  title={pm.label}
-                  className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
-                >
-                  <img src={pm.iconUrl} alt="" className="h-4 w-4" />
-                </span>
-              );
-            })}
-          </div>
-        )}
       </div>
 
-      {/* Enquiry modal */}
       {showEnquiry && (
         <div className="fixed inset-0 z-50">
           <div className="absolute inset-0 bg-black/50" onClick={closeEnquiry} />
