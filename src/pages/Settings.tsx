@@ -18,16 +18,11 @@ type Cleaner = {
   about: string | null;
   contact_email: string | null;
   payment_methods?: string[] | null;
-  service_types?: string[] | null;
 
   // ✅ NEW: Google Place ID (optional)
   google_place_id?: string | null;
 };
 
-const SERVICE_TYPES: { key: string; label: string; icon?: string }[] = [
-  { key: "domestic", label: "Domestic", icon: "🏠" },
-  { key: "commercial", label: "Commercial", icon: "🏢" },
-];
 
 // ✅ Categories we want visible in the business UI (hide domestic-cleaner for now)
 type Category = { id: string; name: string; slug: string };
@@ -49,7 +44,7 @@ type CleanerCardShape = {
   rating_count?: number | null;
   distance_m?: number | null;
   payment_methods?: string[];
-  service_types?: string[];
+  
 };
 
 // Resize an image file to a centered, covered 300x300 PNG
@@ -127,50 +122,6 @@ function PaymentPills({
   );
 }
 
-function ServiceTypePills({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (next: string[]) => void;
-}) {
-  const toggle = (key: string, checked: boolean) => {
-    const set = new Set(value);
-    checked ? set.add(key) : set.delete(key);
-    onChange(Array.from(set));
-  };
-  return (
-    <div className="space-y-2">
-      <div className="text-sm font-medium">Service types</div>
-      <div className="flex flex-wrap gap-2">
-        {SERVICE_TYPES.map((m) => {
-          const checked = value.includes(m.key);
-          return (
-            <label
-              key={m.key}
-              className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm cursor-pointer select-none transition ${
-                checked
-                  ? "bg-black text-white border-black"
-                  : "bg-white hover:bg-gray-50 border-gray-300"
-              }`}
-            >
-              <input
-                type="checkbox"
-                className="sr-only"
-                checked={checked}
-                onChange={(e) => toggle(m.key, e.target.checked)}
-              />
-              {m.icon && (
-                <span className="text-base leading-none">{m.icon}</span>
-              )}
-              <span>{m.label}</span>
-            </label>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 // ✅ Category pills for industries (bin-cleaner / window-cleaner / cleaner)
 function CategoryPills({
@@ -282,7 +233,6 @@ export default function Settings() {
   const [about, setAbout] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [paymentMethods, setPaymentMethods] = useState<string[]>([]);
-  const [serviceTypes, setServiceTypes] = useState<string[]>([]);
 
   // ✅ NEW: Google Place ID
   const [googlePlaceId, setGooglePlaceId] = useState("");
@@ -444,9 +394,7 @@ export default function Settings() {
     setPaymentMethods(
       Array.isArray(c.payment_methods) ? (c.payment_methods as string[]) : []
     );
-    setServiceTypes(
-      Array.isArray(c.service_types) ? (c.service_types as string[]) : []
-    );
+  
 
     // ✅ NEW
     setGooglePlaceId((c as any).google_place_id ?? "");
@@ -483,7 +431,7 @@ export default function Settings() {
         about: about || null,
         contact_email: contactEmail || null,
         payment_methods: paymentMethods,
-        service_types: serviceTypes,
+        
 
         // ✅ NEW
         google_place_id: googlePlaceId.trim() || null,
@@ -563,7 +511,7 @@ export default function Settings() {
 
       const payload: Partial<Cleaner> & {
         payment_methods?: string[];
-        service_types?: string[];
+        
       } = {
         business_name: businessName || null,
         address: addr, // ✅ always trimmed & required
@@ -574,7 +522,7 @@ export default function Settings() {
         contact_email: contactEmail || null,
         logo_url: newLogo ?? logoPreview ?? null,
         payment_methods: paymentMethods,
-        service_types: serviceTypes,
+       
 
         // ✅ NEW
         google_place_id: googlePlaceId.trim() || null,
@@ -640,7 +588,7 @@ const previewCleaner: any = useMemo(
     phone: phone || null,
     whatsapp: whatsapp || null,
     payment_methods: toArr(paymentMethods),
-    service_types: toArr(serviceTypes),
+  
 
     // ✅ ADD THESE (match CleanerCard)
     google_rating: (cleaner as any)?.google_rating ?? null,
@@ -791,7 +739,6 @@ const previewCleaner: any = useMemo(
         {/* RIGHT: Methods, industries, logo, save */}
         <section className="space-y-4 p-4 border rounded-2xl bg-white">
           <PaymentPills value={paymentMethods} onChange={setPaymentMethods} />
-          <ServiceTypePills value={serviceTypes} onChange={setServiceTypes} />
 
           {/* ✅ industries/categories selection */}
           <div className="pt-2 border-t">
