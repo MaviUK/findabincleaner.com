@@ -631,31 +631,37 @@ export default function Settings() {
   );
 
   // Build the preview object for the CleanerCard
-  const previewCleaner: CleanerCardShape = useMemo(
-    () => ({
-      id: cleaner?.id || "preview",
-      business_name: businessName || "Business name",
-      logo_url: logoPreview || undefined,
-      website: website || null,
-      phone: phone || null,
-      whatsapp: whatsapp || null,
-      rating_avg: null,
-      rating_count: null,
-      distance_m: null,
-      payment_methods: toArr(paymentMethods),
-      service_types: toArr(serviceTypes),
-    }),
-    [
-      cleaner?.id,
-      businessName,
-      logoPreview,
-      website,
-      phone,
-      whatsapp,
-      paymentMethods,
-      serviceTypes,
-    ]
-  );
+const previewCleaner: any = useMemo(
+  () => ({
+    cleaner_id: "preview", // keep as preview
+    business_name: businessName || "Business name",
+    logo_url: logoPreview || undefined,
+    website: website || null,
+    phone: phone || null,
+    whatsapp: whatsapp || null,
+    payment_methods: toArr(paymentMethods),
+    service_types: toArr(serviceTypes),
+
+    // ✅ ADD THESE (match CleanerCard)
+    google_rating: (cleaner as any)?.google_rating ?? null,
+    google_reviews_count: (cleaner as any)?.google_reviews_count ?? null,
+
+    // ✅ ALSO add legacy support just in case your DB uses these names
+    rating_avg: (cleaner as any)?.rating_avg ?? null,
+    rating_count: (cleaner as any)?.rating_count ?? null,
+  }),
+  [
+    cleaner,
+    businessName,
+    logoPreview,
+    website,
+    phone,
+    whatsapp,
+    paymentMethods,
+    serviceTypes,
+  ]
+);
+
 
   if (loading || !ready) {
     return <main className="container mx-auto max-w-6xl px-4 py-8">Loading…</main>;
