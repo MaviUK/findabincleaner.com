@@ -37,6 +37,8 @@ type Props = {
   categoryId?: string | null;
   position?: number;
   featured?: boolean;
+  payment_methods?: string[] | null;
+
 
   originLat?: number | null;
   originLng?: number | null;
@@ -89,7 +91,9 @@ export default function CleanerCard({
   categoryId,
   position,
   featured,
+  showPayments = true,
 }: Props) {
+
   const sessionId = useMemo(() => getOrCreateSessionId(), []);
 
   // ✅ FIX: normalize cleanerId (supports preview + different shapes)
@@ -146,8 +150,13 @@ export default function CleanerCard({
   // ✅ FIX: useRef so onPlaceChanged always reads the latest instance (no stale state)
   const acRef = useRef<any>(null);
 
-  const pmIndex = new Map(PAYMENT_METHODS.map((p) => [p.key, p]));
-const methods = cleaner.payment_methods ?? [];
+const pmIndex = useMemo(
+  () => new Map(PAYMENT_METHODS.map((p) => [p.key as string, p])),
+  []
+);
+
+const methods = (cleaner.payment_methods ?? []) as string[];
+
 
 {showPayments && methods.length > 0 && (
   <div className="mt-2 flex flex-wrap gap-2">
