@@ -248,10 +248,8 @@ export default async (req) => {
       );
     }
 
-    const amountCents = Math.max(
-      100,
-      Math.round(availableKm2 * ratePerKm2 * 100)
-    );
+    const amountCents = Math.max(0, Math.round(availableKm2 * ratePerKm2 * 100));
+
 
     // 4) Load cleaner + ensure Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
