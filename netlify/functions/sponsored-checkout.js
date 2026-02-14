@@ -296,12 +296,11 @@ export default async (req) => {
       lock_expires_at: String(expiresAt),
     };
 
-    const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
-    const successUrl = `${publicSite}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
-    // ✅ include lock_id so frontend can release instantly on cancel
-    const cancelUrl = `${publicSite}/dashboard?checkout=cancel&lock_id=${encodeURIComponent(ensuredLockId)}`;
-      ensuredLockId
-    )}`;
+  const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
+
+const successUrl = `${publicSite}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
+const cancelUrl  = `${publicSite}/dashboard?checkout=cancel&lock_id=${encodeURIComponent(ensuredLockId)}`;
+   
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
