@@ -1,7 +1,7 @@
 // src/App.tsx
 import { useEffect, useState, type ReactNode, useCallback } from "react";
 import {
-  HashRouter as Router,
+  BrowserRouter as Router,
   Routes,
   Route,
   Navigate,
@@ -151,13 +151,13 @@ export default function App() {
       const sessionId = params.get("session_id");
 
       const next =
-        checkout === "success"
-          ? `/#/dashboard?checkout=success${
-              sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""
-            }`
-          : `/#/dashboard?checkout=cancel`;
+  checkout === "success"
+    ? `/dashboard?checkout=success${
+        sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""
+      }`
+    : `/dashboard?checkout=cancel`;
 
-      window.location.replace(next);
+window.location.replace(next);
     }
   }, []);
 
