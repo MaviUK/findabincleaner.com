@@ -367,13 +367,30 @@ export default function CleanerCard({
               </div>
 
               {typeof rating === "number" && (
-                <div className="text-xs text-gray-600 mt-1">
-                  ⭐ {rating.toFixed(1)}{" "}
-                  {typeof reviewCount === "number"
-                    ? `(${reviewCount} reviews)`
-                    : ""}
-                </div>
-              )}
+  <div className="text-xs mt-1">
+    {cleaner.google_place_id ? (
+      <a
+        href={`https://search.google.com/local/reviews?placeid=${cleaner.google_place_id}`}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-amber-600 hover:underline"
+      >
+        ⭐ {rating.toFixed(1)}{" "}
+        {typeof reviewCount === "number"
+          ? `(${reviewCount} reviews)`
+          : ""}
+      </a>
+    ) : (
+      <span className="text-gray-600">
+        ⭐ {rating.toFixed(1)}{" "}
+        {typeof reviewCount === "number"
+          ? `(${reviewCount} reviews)`
+          : ""}
+      </span>
+    )}
+  </div>
+)}
+
 
               {/* ✅ Payments: DESKTOP ONLY (hide on mobile) */}
               {showPayments && methods.length > 0 && (
