@@ -14,7 +14,6 @@ type Cleaner = {
   phone: string | null;
   whatsapp?: string | null;
 
-  // payments (DB)
   payment_methods?: string[] | null;
 
   area_id?: string | null;
@@ -25,11 +24,12 @@ type Cleaner = {
 
   google_rating?: number | null;
   google_reviews_count?: number | null;
+  google_place_id?: string | null; // ✅ add this
 
-  // legacy naming too
   rating_avg?: number | null;
   rating_count?: number | null;
 };
+
 
 type Props = {
   cleaner: Cleaner;
