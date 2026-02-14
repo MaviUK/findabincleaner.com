@@ -89,17 +89,17 @@ export default function Dashboard() {
       null;
 
     async function postVerify() {
-      if (!sessionId) return;
-      try {
-        await fetch("/.netlify/functions/stripe-postverify", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ checkout_session: sessionId }),
-        });
-      } catch {
-        // non-fatal
-      }
-    }
+  if (!sessionId) return;
+  try {
+    await fetch("/.netlify/functions/stripe-postverify", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, checkout_session: sessionId }),
+    });
+  } catch {
+    // non-fatal
+  }
+}
 
     async function releaseLockIfAny() {
       if (!lockId) return;
