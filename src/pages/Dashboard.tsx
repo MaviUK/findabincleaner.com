@@ -1,5 +1,5 @@
 // src/pages/Dashboard.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase";
 import CleanerOnboard from "../components/CleanerOnboard";
@@ -21,6 +21,7 @@ type CategoryTab = {
   slug: string;
 };
 
+// ✅ parse query params that are inside the hash (/#/dashboard?x=y)
 function useHashQuery() {
   const { hash } = useLocation();
   return useMemo(() => {
@@ -39,7 +40,8 @@ export default function Dashboard() {
   const [categories, setCategories] = useState<CategoryTab[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
 
-  const qs = useHashQuery();
+  const location = useLocation();
+  const qsHash = useHashQuery();
   const navigate = useNavigate();
 
   const [banner, setBanner] = useState<null | { kind: "success" | "error"; msg: string }>(null);
@@ -54,28 +56,77 @@ export default function Dashboard() {
 
   const activeCategory = categories.find((c) => c.id === activeCategoryId) ?? null;
 
-  // ✅ Handle checkout success/cancel in hash query
+  // ✅ ensure checkout handling only runs once per load
+  const handledCheckoutRef = useRef(false);
+
+  // ✅ Handle checkout success/cancel whether params are in URL search (?checkout=...)
+  // or inside hash (/#/dashboard?checkout=...)
   useEffect(() => {
-    const status = qs.get("checkout"); // "success" | "cancel"
-    const checkoutSession = qs.get("checkout_session");
+    if (handledCheckoutRef.current) return;
+
+    const qsSearch = new URLSearchParams(location.search);
+
+    const status =
+      qsSearch.get("checkout") ||
+      qsHash.get("checkout") || // backward compat
+      null;
 
     if (!status) return;
 
+    handledCheckoutRef.current = true;
+
+    const lockId =
+      qsSearch.get("lock_id") ||
+      qsHash.get("lock_id") ||
+      null;
+
+    // accept either session_id (Stripe standard in our success_url) or checkout_session (older)
+    const sessionId =
+      qsSearch.get("session_id") ||
+      qsSearch.get("checkout_session") ||
+      qsHash.get("session_id") ||
+      qsHash.get("checkout_session") ||
+      null;
+
     async function postVerify() {
-      if (!checkoutSession) return;
+      if (!sessionId) return;
       try {
         await fetch("/.netlify/functions/stripe-postverify", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ checkout_session: checkoutSession }),
+          body: JSON.stringify({ checkout_session: sessionId }),
         });
       } catch {
         // non-fatal
       }
     }
 
-    if (status === "success") {
-      postVerify().finally(() => {
+    async function releaseLockIfAny() {
+      if (!lockId) return;
+      try {
+        await fetch("/.netlify/functions/release-sponsored-lock", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ lock_id: lockId }),
+        });
+      } catch {
+        // non-fatal
+      }
+    }
+
+    function clearCheckoutParams() {
+      // ✅ remove from BOTH places: URL search and hash query
+      const cleanHash = (location.hash || "").replace(/\?.*$/g, "");
+      navigate(
+        { pathname: location.pathname, search: "", hash: cleanHash },
+        { replace: true }
+      );
+    }
+
+    (async () => {
+      if (status === "success") {
+        await postVerify();
+
         setBanner({
           kind: "success",
           msg: "Payment completed. Your sponsorship will appear shortly.",
@@ -88,16 +139,25 @@ export default function Dashboard() {
         // ✅ hard remount editor (clears internal cached state)
         setRefreshKey((k) => k + 1);
 
-        // ✅ clear hash params
-        const clean = window.location.hash.replace(/\?[^#]*/g, "");
-        setTimeout(() => navigate(clean, { replace: true }), 0);
-      });
-    } else if (status === "cancel") {
-      setBanner({ kind: "error", msg: "Checkout cancelled." });
-      const clean = window.location.hash.replace(/\?[^#]*/g, "");
-      setTimeout(() => navigate(clean, { replace: true }), 0);
-    }
-  }, [qs, navigate]);
+        clearCheckoutParams();
+      } else if (status === "cancel") {
+        setBanner({ kind: "error", msg: "Checkout cancelled." });
+
+        // ✅ release lock immediately (prevents “sold out” getting stuck)
+        await releaseLockIfAny();
+
+        // ✅ bump editor once so it refetches availability
+        setSponsorshipVersion((v) => v + 1);
+        setRefreshKey((k) => k + 1);
+
+        clearCheckoutParams();
+      } else {
+        // unknown value -> just clear it
+        clearCheckoutParams();
+      }
+    })();
+    // IMPORTANT: include only stable deps
+  }, [location.pathname, location.search, location.hash, qsHash, navigate]);
 
   // ✅ Load user + cleaner + active categories
   useEffect(() => {
@@ -278,52 +338,38 @@ export default function Dashboard() {
         </section>
       ) : (
         <>
-        <section className="card">
-  <div className="card-pad grid grid-cols-1 sm:grid-cols-[auto_1fr] lg:grid-cols-[auto_1fr_auto] gap-4">
-    {cleaner.logo_url ? (
-      <img
-        src={cleaner.logo_url}
-        alt="logo"
-        className="h-16 w-16 object-contain rounded-lg bg-white ring-1 ring-ink-100"
-      />
-    ) : (
-      <div className="h-16 w-16 rounded-lg bg-ink-100" />
-    )}
+          <section className="card">
+            <div className="card-pad grid grid-cols-1 sm:grid-cols-[auto_1fr] lg:grid-cols-[auto_1fr_auto] gap-4">
+              {cleaner.logo_url ? (
+                <img
+                  src={cleaner.logo_url}
+                  alt="logo"
+                  className="h-16 w-16 object-contain rounded-lg bg-white ring-1 ring-ink-100"
+                />
+              ) : (
+                <div className="h-16 w-16 rounded-lg bg-ink-100" />
+              )}
 
-    <div className="min-w-0">
-      <div className="font-semibold truncate">
-        {cleaner.business_name}
-      </div>
-      <div className="muted truncate">
-        {cleaner.address || "No address yet"}
-      </div>
-    </div>
+              <div className="min-w-0">
+                <div className="font-semibold truncate">{cleaner.business_name}</div>
+                <div className="muted truncate">{cleaner.address || "No address yet"}</div>
+              </div>
 
-    <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
-      <Link
-        to="/settings"
-        className="btn btn-primary w-full sm:w-auto"
-      >
-        Edit profile
-      </Link>
+              <div className="flex flex-col sm:flex-row gap-2 sm:justify-end lg:justify-start">
+                <Link to="/settings" className="btn btn-primary w-full sm:w-auto">
+                  Edit profile
+                </Link>
 
-      <Link
-        to="/invoices"
-        className="btn w-full sm:w-auto"
-      >
-        Invoices
-      </Link>
+                <Link to="/invoices" className="btn w-full sm:w-auto">
+                  Invoices
+                </Link>
 
-      <button
-        className="btn w-full sm:w-auto"
-        onClick={openBillingPortal}
-        disabled={openingPortal}
-      >
-        {openingPortal ? "Opening…" : "Manage billing"}
-      </button>
-    </div>
-  </div>
-</section>
+                <button className="btn w-full sm:w-auto" onClick={openBillingPortal} disabled={openingPortal}>
+                  {openingPortal ? "Opening…" : "Manage billing"}
+                </button>
+              </div>
+            </div>
+          </section>
 
           <section className="card">
             <div className="card-pad space-y-4">
