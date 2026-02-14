@@ -104,6 +104,8 @@ export default function CleanerCard({
     cleanerId === "preview" || cleanerId === "preview-card" || !cleanerId;
 
   const name = cleaner.business_name || "Cleaner";
+  console.log("place id:", name, cleaner.google_place_id);
+
   const websiteUrl = cleaner.website ? normalizeUrl(cleaner.website) : "";
   const phone = cleaner.phone?.trim() || "";
   const whatsapp = cleaner.whatsapp?.trim() || "";
