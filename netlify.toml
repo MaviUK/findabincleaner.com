@@ -109,6 +109,12 @@
   to   = "/.netlify/functions/record_event"
   status = 200
 
+  [[redirects]]
+  from = "/dashboard"
+  to = "/#/dashboard"
+  status = 302
+
+
 ########################
 # API headers (disable caching)
 ########################
