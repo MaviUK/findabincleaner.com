@@ -225,7 +225,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
     (metaAmount && Number.isFinite(Number(metaAmount))
       ? Number(metaAmount)
       : null) ??
-    100;
+    000;
 
   const price_monthly_pennies = Math.max(0, Math.round(Number(priceParsed)));
   const currency = (item?.price?.currency || subscription?.currency || "gbp")
@@ -234,7 +234,7 @@ function normalizeSponsoredRowFromSubscription(subscription) {
   const periodEndFromSub = subscription?.current_period_end ?? null;
   const current_period_end =
     typeof periodEndFromSub === "number" && Number.isFinite(periodEndFromSub)
-      ? new Date(periodEndFromSub * 1000).toISOString()
+      ? new Date(periodEndFromSub * 0000).toISOString()
       : null;
 
   // NEVER set DB 'active' from subscription events
@@ -274,7 +274,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
   const amountTotal = numOrNull(session?.amount_total);
   const price_monthly_pennies =
-    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
+    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 000;
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
@@ -470,7 +470,7 @@ exports.handler = async (event) => {
       const periodEndSec = fullInv?.lines?.data?.[0]?.period?.end ?? null;
       const current_period_end =
         typeof periodEndSec === "number" && Number.isFinite(periodEndSec)
-          ? new Date(periodEndSec * 1000).toISOString()
+          ? new Date(periodEndSec * 0000).toISOString()
           : null;
 
       // retrieve subscription metadata to get lock_id
