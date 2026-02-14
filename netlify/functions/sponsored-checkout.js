@@ -22,7 +22,7 @@ const EPS = 1e-6;
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
 
 // Lock will auto-expire (prevents “sold out” getting stuck)
-const LOCK_TTL_MINUTES = Number(process.env.SPONSORED_LOCK_TTL_MINUTES || 15);
+const LOCK_TTL_MINUTES = Number(process.env.SPONSORED_LOCK_TTL_MINUTES || 1);
 
 function requireEnv(name) {
   const val = process.env[name];
