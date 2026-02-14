@@ -2,9 +2,7 @@
 import { createClient } from "@supabase/supabase-js";
 import Stripe from "stripe";
 
-console.log(
-  "LOADED sponsored-checkout v2026-01-25-PREVIEW_INTERNAL+LOCK-GEOJSON-CANON"
-);
+console.log("LOADED sponsored-checkout v2026-02-14-TTL+RELEASE+SESSIONID");
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "", {
   apiVersion: "2024-06-20",
@@ -22,6 +20,9 @@ const json = (body, status = 200) =>
 
 const EPS = 1e-6;
 const BLOCKING = new Set(["active", "trialing", "past_due", "unpaid"]);
+
+// Lock will auto-expire (prevents “sold out” getting stuck)
+const LOCK_TTL_MINUTES = Number(process.env.SPONSORED_LOCK_TTL_MINUTES || 15);
 
 function requireEnv(name) {
   const val = process.env[name];
@@ -43,6 +44,10 @@ function getSupabaseAdmin() {
   }
 
   return createClient(url, key, { auth: { persistSession: false } });
+}
+
+function isoPlusMinutes(mins) {
+  return new Date(Date.now() + mins * 60 * 1000).toISOString();
 }
 
 export default async (req) => {
@@ -86,10 +91,12 @@ export default async (req) => {
 
     const sb = getSupabaseAdmin();
 
-    // 1) Block if this specific area+slot+category is already sponsored by someone else
+    // 1) Block if already sponsored by someone else
     const { data: rows, error: takenErr } = await sb
       .from("sponsored_subscriptions")
-      .select("business_id, status, stripe_subscription_id, created_at, category_id")
+      .select(
+        "business_id, status, stripe_subscription_id, created_at, category_id"
+      )
       .eq("area_id", areaId)
       .eq("slot", slot)
       .eq("category_id", categoryId)
@@ -98,15 +105,17 @@ export default async (req) => {
     if (takenErr) throw takenErr;
 
     const latestBlocking =
-      (rows || []).find((r) => BLOCKING.has(String(r.status || "").toLowerCase())) ||
-      null;
+      (rows || []).find((r) =>
+        BLOCKING.has(String(r.status || "").toLowerCase())
+      ) || null;
 
     const ownerBusinessId = latestBlocking?.business_id
       ? String(latestBlocking.business_id)
       : null;
 
     const ownedByMe = ownerBusinessId && ownerBusinessId === String(cleanerId);
-    const ownedByOther = ownerBusinessId && ownerBusinessId !== String(cleanerId);
+    const ownedByOther =
+      ownerBusinessId && ownerBusinessId !== String(cleanerId);
 
     if (ownedByOther) {
       return json(
@@ -133,7 +142,7 @@ export default async (req) => {
       );
     }
 
-    // 2) ✅ Call INTERNAL preview (buffered subtraction version)
+    // 2) Preview (should subtract ONLY non-expired active locks)
     const { data: previewData, error: prevErr } = await sb.rpc(
       "area_remaining_preview_internal",
       {
@@ -176,8 +185,9 @@ export default async (req) => {
       );
     }
 
-    // 2c) Ensure lock exists (unique by area_id+slot+category_id)
+    // 2c) Ensure lock exists (unique by area_id+slot+category_id) + refresh TTL
     let ensuredLockId = incomingLockId;
+    const expiresAt = isoPlusMinutes(LOCK_TTL_MINUTES);
 
     if (ensuredLockId) {
       const { error: upErr } = await sb
@@ -188,6 +198,7 @@ export default async (req) => {
           is_active: true,
           geojson: lockGeo,
           final_geojson: lockGeo,
+          expires_at: expiresAt,
         })
         .eq("id", ensuredLockId);
 
@@ -201,6 +212,7 @@ export default async (req) => {
         is_active: true,
         geojson: lockGeo,
         final_geojson: lockGeo,
+        expires_at: expiresAt,
       };
 
       const { data: lockRow, error: lockErr } = await sb
@@ -236,7 +248,10 @@ export default async (req) => {
       );
     }
 
-    const amountCents = Math.max(100, Math.round(availableKm2 * ratePerKm2 * 100));
+    const amountCents = Math.max(
+      100,
+      Math.round(availableKm2 * ratePerKm2 * 100)
+    );
 
     // 4) Load cleaner + ensure Stripe customer
     const { data: cleaner, error: cleanerErr } = await sb
@@ -278,11 +293,15 @@ export default async (req) => {
       available_km2: String(availableKm2),
       rate_per_km2: String(ratePerKm2),
       amount_cents: String(amountCents),
+      lock_expires_at: String(expiresAt),
     };
 
     const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
     const successUrl = `${publicSite}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
-    const cancelUrl = `${publicSite}/?checkout=cancel`;
+    // ✅ include lock_id so frontend can release instantly on cancel
+    const cancelUrl = `${publicSite}/?checkout=cancel&lock_id=${encodeURIComponent(
+      ensuredLockId
+    )}`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -312,6 +331,24 @@ export default async (req) => {
       subscription_data: { metadata: meta },
     });
 
+    // ✅ Store session id on the lock (optional but very useful)
+    // Only works if sponsored_locks has stripe_checkout_session_id column (recommended).
+    try {
+      await sb
+        .from("sponsored_locks")
+        .update({
+          stripe_checkout_session_id: session.id,
+          expires_at: expiresAt, // refresh again
+          is_active: true,
+        })
+        .eq("id", ensuredLockId);
+    } catch (e) {
+      console.warn(
+        "[sponsored-checkout] could not store stripe_checkout_session_id on lock:",
+        e?.message || e
+      );
+    }
+
     return json({
       ok: true,
       url: session.url,
@@ -319,6 +356,8 @@ export default async (req) => {
       lock_id: ensuredLockId,
       amount_cents: amountCents,
       available_km2: availableKm2,
+      lock_expires_at: expiresAt,
+      stripe_session_id: session.id,
     });
   } catch (e) {
     console.error("[sponsored-checkout] error:", e);
