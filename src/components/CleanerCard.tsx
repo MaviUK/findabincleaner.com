@@ -14,7 +14,7 @@ type Cleaner = {
   phone: string | null;
   whatsapp?: string | null;
 
-  // ✅ payments (DB)
+  // payments (DB)
   payment_methods?: string[] | null;
 
   area_id?: string | null;
@@ -26,7 +26,7 @@ type Cleaner = {
   google_rating?: number | null;
   google_reviews_count?: number | null;
 
-  // legacy naming
+  // legacy naming too
   rating_avg?: number | null;
   rating_count?: number | null;
 };
@@ -39,6 +39,7 @@ type Props = {
   categoryId?: string | null;
   position?: number;
   featured?: boolean;
+
   originLat?: number | null;
   originLng?: number | null;
 };
@@ -147,12 +148,13 @@ export default function CleanerCard({
 
   const acRef = useRef<any>(null);
 
+  // Payment method lookup
   const pmIndex = useMemo(
     () => new Map(PAYMENT_METHODS.map((p) => [p.key as string, p])),
     []
   );
 
-  const methods = ((cleaner as any).payment_methods ?? []) as string[];
+  const methods = (cleaner.payment_methods ?? []) as string[];
 
   function logClick(event: "click_message" | "click_phone" | "click_website") {
     try {
@@ -314,17 +316,30 @@ export default function CleanerCard({
     setLastChannel(null);
   }
 
-  // --- styling tweaks to match your "first image" ---
+  // ✅ Sponsored/featured logo: twice as big
+  // Normal is 16x16; featured becomes 32x32.
   const logoBoxClass = featured
-    ? "h-24 w-24 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
+    ? "h-32 w-32 rounded-2xl bg-white overflow-hidden shrink-0 flex items-center justify-center"
     : "h-16 w-16 rounded-xl bg-gray-100 overflow-hidden shrink-0 flex items-center justify-center";
 
   const logoImgClass = featured
     ? "h-full w-full object-contain"
     : "h-full w-full object-cover";
 
-  const buttonClass =
-    "h-9 rounded-full px-4 bg-teal-600 text-white font-semibold text-xs hover:bg-teal-700 disabled:opacity-50";
+  // Desktop buttons: same width, theme colours
+  const desktopBtnBase =
+    "h-9 w-full rounded-full font-semibold text-xs disabled:opacity-50 disabled:cursor-not-allowed transition";
+
+  const desktopBtnMessage =
+    `${desktopBtnBase} bg-teal-600 text-white hover:bg-teal-700`;
+  const desktopBtnPhone =
+    `${desktopBtnBase} bg-emerald-600 text-white hover:bg-emerald-700`;
+  const desktopBtnWebsite =
+    `${desktopBtnBase} bg-slate-700 text-white hover:bg-slate-800`;
+
+  // Mobile compact icon buttons
+  const mobileIconBtn =
+    "h-10 w-10 rounded-full flex items-center justify-center disabled:opacity-50";
 
   return (
     <>
@@ -341,7 +356,6 @@ export default function CleanerCard({
 
         <div className="flex-1 min-w-0">
           <div className="flex items-start justify-between gap-3">
-            {/* LEFT: name / rating / payment icons */}
             <div className="min-w-0">
               <div
                 className={[
@@ -361,9 +375,9 @@ export default function CleanerCard({
                 </div>
               )}
 
-              {/* ✅ payment icons directly under title/rating (NOT along the bottom) */}
+              {/* ✅ Payments: DESKTOP ONLY (hide on mobile) */}
               {showPayments && methods.length > 0 && (
-                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                <div className="hidden sm:flex mt-3 items-center gap-2 flex-wrap">
                   {methods.map((key) => {
                     const pm = pmIndex.get(key);
                     if (!pm) return null;
@@ -372,7 +386,7 @@ export default function CleanerCard({
                       <span
                         key={key}
                         title={pm.label}
-                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-black/10 bg-white shadow-sm"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border bg-white"
                       >
                         <img src={pm.iconUrl} alt="" className="h-4 w-4" />
                       </span>
@@ -381,12 +395,12 @@ export default function CleanerCard({
                 </div>
               )}
 
-              {/* MOBILE quick buttons (icons) */}
+              {/* Mobile action buttons (icons) */}
               <div className="flex gap-3 mt-3 sm:hidden">
                 {(whatsapp || phone) && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full bg-teal-600 text-white flex items-center justify-center hover:bg-teal-700 disabled:opacity-50"
+                    className={`${mobileIconBtn} bg-teal-600 text-white hover:bg-teal-700`}
                     onClick={() => {
                       logClick("click_message");
                       openEnquiry();
@@ -401,7 +415,7 @@ export default function CleanerCard({
                 {phone && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full border border-blue-200 text-blue-700 flex items-center justify-center hover:bg-blue-50 disabled:opacity-50"
+                    className={`${mobileIconBtn} border border-emerald-200 text-emerald-700 hover:bg-emerald-50`}
                     onClick={() => {
                       logClick("click_phone");
                       window.location.href = `tel:${phone}`;
@@ -416,7 +430,7 @@ export default function CleanerCard({
                 {websiteUrl && (
                   <button
                     type="button"
-                    className="h-10 w-10 rounded-full border border-gray-200 text-gray-800 flex items-center justify-center hover:bg-gray-50"
+                    className={`${mobileIconBtn} border border-slate-200 text-slate-800 hover:bg-slate-50`}
                     onClick={() => {
                       logClick("click_website");
                       window.open(websiteUrl, "_blank", "noopener,noreferrer");
@@ -429,12 +443,12 @@ export default function CleanerCard({
               </div>
             </div>
 
-            {/* RIGHT: slimmer buttons */}
-            <div className="shrink-0 hidden sm:flex flex-col gap-2 items-end">
+            {/* Desktop action buttons (same width, different colours) */}
+            <div className="shrink-0 hidden sm:flex flex-col gap-2 w-36">
               {(whatsapp || phone) && (
                 <button
                   type="button"
-                  className={buttonClass}
+                  className={desktopBtnMessage}
                   onClick={() => {
                     logClick("click_message");
                     openEnquiry();
@@ -448,7 +462,7 @@ export default function CleanerCard({
               {phone && (
                 <button
                   type="button"
-                  className={buttonClass}
+                  className={desktopBtnPhone}
                   onClick={() => {
                     logClick("click_phone");
                     setShowPhoneNumber((v) => !v);
@@ -462,7 +476,7 @@ export default function CleanerCard({
               {websiteUrl && (
                 <button
                   type="button"
-                  className={buttonClass}
+                  className={desktopBtnWebsite}
                   onClick={() => {
                     logClick("click_website");
                     window.open(websiteUrl, "_blank", "noopener,noreferrer");
@@ -698,13 +712,7 @@ export default function CleanerCard({
   );
 }
 
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-2">
       <label className="text-sm font-medium text-gray-900">{label}</label>
