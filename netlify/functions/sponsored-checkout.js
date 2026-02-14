@@ -299,7 +299,7 @@ export default async (req) => {
     const publicSite = process.env.PUBLIC_SITE_URL.replace(/\/$/, "");
     const successUrl = `${publicSite}/?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
     // ✅ include lock_id so frontend can release instantly on cancel
-    const cancelUrl = `${publicSite}/?checkout=cancel&lock_id=${encodeURIComponent(
+    const cancelUrl = `${publicSite}/dashboard?checkout=cancel&lock_id=${encodeURIComponent(ensuredLockId)}`;
       ensuredLockId
     )}`;
 
