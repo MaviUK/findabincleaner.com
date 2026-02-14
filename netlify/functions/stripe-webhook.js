@@ -274,7 +274,7 @@ function normalizeSponsoredRowFromCheckoutSession(session) {
 
   const amountTotal = numOrNull(session?.amount_total);
   const price_monthly_pennies =
-    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 100;
+    amountTotal != null ? Math.max(0, Math.round(amountTotal)) : 0;
 
   const currency = String(session?.currency || "gbp").toLowerCase();
 
