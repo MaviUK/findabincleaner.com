@@ -1,7 +1,6 @@
-// src/App.tsx
 import { useEffect, useState, type ReactNode, useCallback } from "react";
 import {
-  HashRouter as Router,
+  BrowserRouter as Router,
   Routes,
   Route,
   Navigate,
@@ -20,14 +19,8 @@ import Settings from "./pages/Settings";
 import Onboarding from "./pages/Onboarding";
 import Analytics from "./pages/Analytics";
 import Invoices from "./pages/Invoices";
-
-// ✅ Legal modal
 import LegalModal from "./components/LegalModal";
-// If your LegalModal exports a type for tabs, you can import it.
-// If not, we’ll just use string literals.
-// import type { LegalTab } from "./components/LegalModal";
 
-// Bump when you change the legal text to force re-acceptance
 const TERMS_VERSION = "2025-09-29";
 
 function ProtectedRoute({
@@ -40,23 +33,22 @@ function ProtectedRoute({
   children: ReactNode;
 }) {
   const location = useLocation();
+
   if (loading) {
     return (
       <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
+        Loading...
       </div>
     );
   }
+
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
+
   return <>{children}</>;
 }
 
-/** TermsGate
- *  Checks the current user's cleaner row for terms acceptance.
- *  If not accepted (or wrong version), redirect to /onboarding.
- */
 function TermsGate({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState(true);
   const [ok, setOk] = useState(false);
@@ -66,6 +58,7 @@ function TermsGate({ children }: { children: ReactNode }) {
       const {
         data: { session },
       } = await supabase.auth.getSession();
+
       if (!session?.user) {
         setOk(false);
         setChecking(false);
@@ -84,6 +77,7 @@ function TermsGate({ children }: { children: ReactNode }) {
       } else {
         setOk(!!row?.terms_accepted && row?.terms_version === TERMS_VERSION);
       }
+
       setChecking(false);
     })();
   }, []);
@@ -91,7 +85,7 @@ function TermsGate({ children }: { children: ReactNode }) {
   if (checking) {
     return (
       <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-        Loading…
+        Loading...
       </div>
     );
   }
@@ -105,7 +99,7 @@ function NotFound() {
   return (
     <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
       <h1 className="section-title text-2xl mb-2">404</h1>
-      <p className="muted">That page doesn’t exist.</p>
+      <p className="muted">That page does not exist.</p>
     </div>
   );
 }
@@ -113,10 +107,7 @@ function NotFound() {
 type LegalTab = "terms" | "privacy" | "cookies" | "sponsored";
 
 export default function App() {
-  // undefined = still checking session, null = no user
   const [user, setUser] = useState<User | null | undefined>(undefined);
-
-  // ✅ Legal modal state (root-mounted)
   const [legalOpen, setLegalOpen] = useState(false);
   const [legalTab, setLegalTab] = useState<LegalTab>("terms");
 
@@ -127,8 +118,6 @@ export default function App() {
 
   const closeLegal = useCallback(() => setLegalOpen(false), []);
 
-  // ✅ Allow opening the modal from anywhere via event
-  // window.dispatchEvent(new CustomEvent("open-legal", { detail: { tab: "privacy" } }))
   useEffect(() => {
     const handler = (e: Event) => {
       const ce = e as CustomEvent<{ tab?: LegalTab }>;
@@ -140,40 +129,32 @@ export default function App() {
     return () => window.removeEventListener("open-legal", handler as EventListener);
   }, [openLegal]);
 
-  // ✅ Stripe return bridge for HashRouter
-  // Stripe strips hashes, so it returns to "/?checkout=success".
-  // We convert that into "/#/dashboard?checkout=success&session_id=..."
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const checkout = params.get("checkout");
 
     if (checkout === "success" || checkout === "cancel") {
       const sessionId = params.get("session_id");
-
       const next =
         checkout === "success"
-          ? `/#/dashboard?checkout=success${
+          ? `/dashboard?checkout=success${
               sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ""
             }`
-          : `/#/dashboard?checkout=cancel`;
+          : `/dashboard?checkout=cancel`;
 
       window.location.replace(next);
     }
   }, []);
 
-  // 🔧 Normalize path for HashRouter (prevents /settings#/settings)
-  // Keep this AFTER Stripe bridge
-
   useEffect(() => {
-    // initial check
     supabase.auth
       .getSession()
       .then(({ data: { session } }) => setUser(session?.user ?? null));
 
-    // keep in sync with auth changes
     const { data: sub } = supabase.auth.onAuthStateChange((_e, session) => {
       setUser(session?.user ?? null);
     });
+
     return () => sub.subscription.unsubscribe();
   }, []);
 
@@ -235,7 +216,7 @@ export default function App() {
             path="/_debug"
             element={
               <div className="container mx-auto max-w-6xl px-4 sm:px-6 py-12">
-                Router is working ✅
+                Router is working
               </div>
             }
           />
@@ -243,7 +224,6 @@ export default function App() {
           <Route path="*" element={<NotFound />} />
         </Routes>
 
-        {/* ✅ Mount the LegalModal once at the app root */}
         <LegalModal open={legalOpen} onClose={closeLegal} defaultTab={legalTab} />
       </Layout>
     </Router>
