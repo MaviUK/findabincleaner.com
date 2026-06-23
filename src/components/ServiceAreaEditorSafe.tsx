@@ -104,6 +104,10 @@ function geoToPaths(geoInput: any): { paths: LatLng[][] }[] {
   return [];
 }
 
+function firstPolygonRing(geoInput: any): LatLng[] {
+  return geoToPaths(geoInput)[0]?.paths?.[0]?.filter(Boolean) ?? [];
+}
+
 function ringToGeoJson(ring: LatLng[]): number[][] {
   const out = ring.map((p) => [Number(p.lng.toFixed(6)), Number(p.lat.toFixed(6))]);
   const first = out[0];
@@ -113,9 +117,10 @@ function ringToGeoJson(ring: LatLng[]): number[][] {
 }
 
 function draftToMultiPolygon(polys: LatLng[][]) {
+  const ring = polys[0] ?? [];
   return {
     type: "MultiPolygon",
-    coordinates: polys.map((ring) => [ringToGeoJson(ring)]),
+    coordinates: [[ringToGeoJson(ring)]],
   };
 }
 
@@ -125,7 +130,7 @@ function areaMetersForRing(ring: LatLng[]) {
 }
 
 function formatArea(polys: LatLng[][]) {
-  const m2 = polys.reduce((sum, ring) => sum + areaMetersForRing(ring), 0);
+  const m2 = areaMetersForRing(polys[0] ?? []);
   return `${(m2 / 1_000_000).toFixed(2)} km² (${(m2 / 10_000).toFixed(1)} ha)`;
 }
 
@@ -221,9 +226,9 @@ export default function ServiceAreaEditorSafe({
 
   const zoomToArea = useCallback((area: ServiceAreaRow) => {
     if (!mapRef.current) return;
-    const paths = geoToPaths(area.gj);
+    const ring = firstPolygonRing(area.gj);
     const bounds = new google.maps.LatLngBounds();
-    paths.forEach((poly) => poly.paths.forEach((ring) => ring.forEach((p) => bounds.extend(p))));
+    ring.forEach((p) => bounds.extend(p));
     if (!bounds.isEmpty()) mapRef.current.fitBounds(bounds, 60);
   }, []);
 
@@ -244,7 +249,8 @@ export default function ServiceAreaEditorSafe({
       setCreating(true);
       setActiveAreaId(area.id);
       setDraftName(area.name || "Service Area");
-      setDraftPolys(geoToPaths(area.gj).map((p) => p.paths[0] || []).filter((r) => r.length >= 3));
+      const ring = firstPolygonRing(area.gj);
+      setDraftPolys(ring.length >= 3 ? [ring] : []);
       zoomToArea(area);
     },
     [resetDraft, zoomToArea]
@@ -253,11 +259,15 @@ export default function ServiceAreaEditorSafe({
   const onMapClick = useCallback(
     (ev: google.maps.MapMouseEvent) => {
       if (!isDrawing || !ev.latLng) return;
+      if (draftPolys.length >= 1) {
+        setError("Only one polygon is allowed per service area. Clear the current polygon to redraw it.");
+        return;
+      }
       const next = { lat: ev.latLng.lat(), lng: ev.latLng.lng() };
       setDrawingPoints((prev) => (samePoint(prev[prev.length - 1], next) ? prev : [...prev, next]));
       setError(null);
     },
-    [isDrawing]
+    [draftPolys.length, isDrawing]
   );
 
   const finishPolygon = useCallback(() => {
@@ -266,7 +276,7 @@ export default function ServiceAreaEditorSafe({
       return;
     }
 
-    setDraftPolys((prev) => [...prev, drawingPoints]);
+    setDraftPolys([drawingPoints]);
     setDrawingPoints([]);
     setIsDrawing(false);
     setError(null);
@@ -292,8 +302,13 @@ export default function ServiceAreaEditorSafe({
       return;
     }
 
-    if (!draftPolys.length) {
-      setError("Draw at least one polygon.");
+    if (draftPolys.length !== 1) {
+      setError("Each service area must have exactly one polygon.");
+      return;
+    }
+
+    if (draftPolys[0].length < 3) {
+      setError("Draw at least 3 points before saving.");
       return;
     }
 
@@ -375,7 +390,7 @@ export default function ServiceAreaEditorSafe({
                 )}
 
                 <div className="text-sm text-gray-600 mb-2">
-                  Polygons: {draftPolys.length} | Points: {drawingPoints.length} | Coverage: {formatArea(draftPolys)}
+                  Polygon: {draftPolys.length === 1 ? "ready" : "not drawn"} | Points: {drawingPoints.length} | Coverage: {formatArea(draftPolys)}
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -393,9 +408,9 @@ export default function ServiceAreaEditorSafe({
                       Undo Point
                     </button>
                   )}
-                  {creating && !isDrawing && (
+                  {creating && !isDrawing && draftPolys.length === 0 && (
                     <button className="btn" onClick={() => setIsDrawing(true)} disabled={loading}>
-                      Add Polygon
+                      Draw Polygon
                     </button>
                   )}
                   <button className="btn" onClick={saveDraft} disabled={loading || isDrawing}>
@@ -479,7 +494,7 @@ export default function ServiceAreaEditorSafe({
               <li>Click New Area.</li>
               <li>Click around the map to add points.</li>
               <li>Press Finish Polygon, then Save Area.</li>
-              <li>Use Add Polygon if an area needs more than one polygon.</li>
+              <li>Each service area can contain one polygon only.</li>
             </ul>
           </div>
         </div>
@@ -500,11 +515,13 @@ export default function ServiceAreaEditorSafe({
               onClick={onMapClick}
               onDblClick={onMapDblClick}
             >
-              {serviceAreas.flatMap((area) =>
-                geoToPaths(area.gj).map((poly, index) => (
+              {serviceAreas.map((area) => {
+                const ring = firstPolygonRing(area.gj);
+                if (ring.length < 3) return null;
+                return (
                   <Polygon
-                    key={`area-${area.id}-${index}`}
-                    paths={poly.paths}
+                    key={`area-${area.id}`}
+                    paths={ring}
                     options={{
                       ...basePolyOptions,
                       strokeColor: "#111827",
@@ -513,8 +530,8 @@ export default function ServiceAreaEditorSafe({
                       zIndex: 100,
                     }}
                   />
-                ))
-              )}
+                );
+              })}
 
               {draftPolys.map((ring, index) => (
                 <Polygon
