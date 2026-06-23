@@ -29,6 +29,29 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      (() => {
+        const cleanAreaCards = () => {
+          document.querySelectorAll("li").forEach((card) => {
+            const buttons = Array.from(card.querySelectorAll("button"));
+            const hasSponsor = buttons.some((b) => b.textContent?.trim() === "Sponsor (Featured)");
+            if (!hasSponsor) return;
+
+            buttons.forEach((b) => {
+              if (b.textContent?.trim() === "Manage") b.remove();
+            });
+          });
+        };
+
+        window.addEventListener("load", () => {
+          cleanAreaCards();
+          new MutationObserver(cleanAreaCards).observe(document.body, {
+            childList: true,
+            subtree: true,
+          });
+        });
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
